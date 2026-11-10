@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Haagse Heibel — The Hague crime-o-map</title>
+    <meta name="description" content="A gamified crime map of The Hague: hover the streets, click one, and watch its voxel cutscene." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23101935'/><rect x='3' y='3' width='10' height='10' fill='%23ffd60a'/><rect x='5' y='6' width='2' height='2' fill='%23101935'/><rect x='9' y='6' width='2' height='2' fill='%23101935'/><rect x='5' y='10' width='6' height='1' fill='%23101935'/></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="map"></div>
+
+      <header id="logo">
+        <h1><span>HAAGSE</span><span class="hot">HEIBEL</span></h1>
+        <p>The Hague crime-o-map <b id="logo-year"></b></p>
+      </header>
+
+      <aside id="panel">
+        <div class="search">
+          <input id="search" type="search" placeholder="Find a street…" autocomplete="off" spellcheck="false" />
+          <ul id="results" hidden></ul>
+        </div>
+        <div class="btns">
+          <button id="btn-random" class="btn">🎲 Random street</button>
+          <button id="btn-mayhem" class="btn hot">💥 Find mayhem</button>
+        </div>
+        <div class="legend" id="legend"></div>
+        <div class="boards">
+          <div class="board">
+            <h3>Most heibel</h3>
+            <ol id="board-hot"></ol>
+          </div>
+          <div class="board">
+            <h3>Snooze zones</h3>
+            <ol id="board-calm"></ol>
+          </div>
+        </div>
+        <button id="btn-about" class="link">How is this calculated?</button>
+      </aside>
+
+      <button id="btn-sound" class="round" title="Sound on/off" aria-label="Toggle sound">🔊</button>
+      <div id="hint">Hover the map · click a neighbourhood to zoom · click a street to drop in</div>
+      <div id="tip" hidden></div>
+
+      <div id="speed"></div>
+
+      <section id="cutscene" hidden>
+        <canvas></canvas>
+        <div class="stage-fx"></div>
+        <div class="stage-flash"></div>
+        <div id="hud">
+          <button id="btn-back" class="btn back">◀ MAP</button>
+          <div id="title">
+            <div class="kicker" id="t-kicker"></div>
+            <h2 id="t-name"></h2>
+            <div class="meter" id="t-meter"></div>
+          </div>
+          <div id="file">
+            <h3>CASE FILE</h3>
+            <div id="file-body"></div>
+          </div>
+          <div id="ticker">
+            <span class="tag">HEIBEL NEWS</span>
+            <span id="news"></span>
+            <span class="count">SHENANIGANS <b id="count">000</b></span>
+          </div>
+          <div id="hud-btns">
+            <button id="btn-next" class="btn">🎲 Next street</button>
+          </div>
+          <div id="drag-hint">drag to look around · scroll to zoom</div>
+        </div>
+      </section>
+
+      <div id="about" hidden>
+        <div class="card">
+          <h2>How is this calculated?</h2>
+          <div id="about-body"></div>
+          <button id="about-close" class="btn">Got it</button>
+        </div>
+      </div>
+
+      <div id="loading"><div class="blocks"><i></i><i></i><i></i></div><p>LOADING DEN HAAG…</p></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
