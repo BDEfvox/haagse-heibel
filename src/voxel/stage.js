@@ -272,6 +272,7 @@ export class Stage {
     if (this.focusReq && this.time < this.focusReq.until) {
       const f = this.focusReq;
       tx = f.x * 0.85; tz = lerp(L.zc, f.z, 0.8); dist *= f.zoom; ty = 2;
+      el = Math.min(1.3, el + 0.16); // look over the front-row trees
     } else if (this.user.zoom < 0.95) {
       tx = clamp(r.tx, -18, 18);
     }
