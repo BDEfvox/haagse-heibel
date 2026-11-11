@@ -958,6 +958,18 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   png.data = Buffer.from(png8.buffer);
   fs.writeFileSync(path.join(OUT, 'city-terrain.png'), PNG.sync.write(png, { colorType: 0, inputColorType: 0, inputHasAlpha: false }));
   console.log(`  city-terrain.png ${GW}x${GH}`);
+  // the same at half the size, for phones and graphics cards that cannot take the full one: each pixel is the mean of four
+  {
+    const hw = GW >> 1, hh = GH >> 1, half = new Uint8Array(hw * hh);
+    for (let r = 0; r < hh; r++) for (let c = 0; c < hw; c++) {
+      const i = r * 2 * GW + c * 2, v = (TERRAIN[i] + TERRAIN[i + 1] + TERRAIN[i + GW] + TERRAIN[i + GW + 1]) / 4;
+      half[r * hw + c] = v <= 6 ? Math.max(0, Math.min(200, Math.round((v + 4) / 0.05))) : Math.min(255, 200 + Math.round((v - 6) / 0.4));
+    }
+    const p2 = new PNG({ width: hw, height: hh, colorType: 0, inputColorType: 0, inputHasAlpha: false });
+    p2.data = Buffer.from(half.buffer);
+    fs.writeFileSync(path.join(OUT, 'city-terrain-8.png'), PNG.sync.write(p2, { colorType: 0, inputColorType: 0, inputHasAlpha: false }));
+    console.log(`  city-terrain-8.png ${hw}x${hh}`);
+  }
 }
 
 // ================================================================= 6. INDEX
@@ -966,7 +978,7 @@ const index = {
   extent: EXT, tile: TILE, tiles: tileList,
   ground: { file: 'city-ground.png', cell: 8, w: W2 / 4, h: H2 / 4 },
   height: { file: 'city-height.png', cell: 16, w: W2 / 8, h: H2 / 8 },
-  terrain: { file: 'city-terrain.png', cell: TCELL, w: TGW, h: TGH, enc: [-4, 0.05, 200, 6, 0.4] },
+  terrain: { file: 'city-terrain.png', cell: TCELL, w: TGW, h: TGH, enc: [-4, 0.05, 200, 6, 0.4], small: { file: 'city-terrain-8.png', cell: TCELL * 2, w: TGW >> 1, h: TGH >> 1 } },
   sources: [
     { name: '3DBAG (TU Delft / Kadaster) building footprints and heights, WFS', url: 'https://data.3dbag.nl/' },
     { name: 'OpenStreetMap contributors via Overpass API (ODbL)', url: 'https://overpass-api.de/' },

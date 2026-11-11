@@ -389,9 +389,11 @@ async function boot() {
     await sleep(300);
   }
   /** Move the focus to another street without moving the camera (the viewer roamed onto it). */
+  let shifting = false, pendingClose = null;
   async function shiftFocus(p0, lngLat) {
     if (busy || !current || !p0) return;
     busy = true;
+    shifting = true;
     try {
       const p = withLevel(p0);
       const ok = await stage.show(p, hooks, { ...stageOpts(p, lngLat), keep: true });
@@ -412,9 +414,13 @@ async function boot() {
       recover('That street would not load. Try another one.');
     } finally {
       busy = false;
+      shifting = false;
+      // a way out asked for while the next street was being built (zoomed out, or pressed Map) happens now
+      if (pendingClose) { const z = pendingClose.viaZoom; pendingClose = null; closeStreet(z); }
     }
   }
   async function closeStreet(viaZoom) {
+    if (busy && shifting) { pendingClose = { viaZoom: viaZoom === true }; return; }
     if (busy || !current) return;
     busy = true;
     try { await doClose(viaZoom === true); } catch (e) { console.error(e); recover(); } finally { busy = false; }

@@ -3,7 +3,7 @@
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
 import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT } from './kit.js';
-import { buildWorld, preload, U, cutWeight, CUT } from './world.js';
+import { buildWorld, preload, U, cutWeight, CUT, setMaxTexture, trimTiles } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
@@ -74,6 +74,7 @@ export class Stage {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.setClearColor(0x000000, 0);
+    setMaxTexture(this.renderer.capabilities.maxTextureSize);
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.Fog('#d9f2ff', 300, 3000);
     this.camera = new THREE.PerspectiveCamera(FOV, 1, 1, 9000);
@@ -376,7 +377,7 @@ export class Stage {
       const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
       view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
       if (this.sky !== sky) hooks.onSwap?.();
-      this._teardown();
+      this._teardown(true);
       dress();
     }
     try {
@@ -605,10 +606,11 @@ export class Stage {
     this._clearPointers?.();
     this.mode = 'idle';
     this._teardown();
+    trimTiles(this.lite ? 6 : 24); // the map page is next: keep only the tiles a nearby street would reuse
     this.keys.clear();
   }
   /** Take the current street off the stage (the render loop and the input state are left alone). */
-  _teardown() {
+  _teardown(swap = false) {
     if (this.cine) { this.cine = null; this.hooks?.onCine?.(false); }
     if (this.leaveTo && !this.leaveTo.done) { this.leaveTo.done = true; this.leaveTo.resolve(); }
     this.leaveTo = null;
@@ -622,7 +624,8 @@ export class Stage {
       this.dyn = null;
     }
     if (this.crowd) { this.scene.remove(this.crowd.group); this.crowd.dispose(); this.crowd = null; }
-    if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; clearSigns(); }
+    // on a swap the next street's signs are already made and share the cache: only a full close clears it
+    if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; if (!swap) clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
     this.actors = [];
     this.life = [];

@@ -77,14 +77,19 @@ async function pixels(url, div = 1) {
   g.drawImage(img, 0, 0, c.width, c.height);
   return g.getImageData(0, 0, c.width, c.height);
 }
+let _maxTex = 16384;
+/** The largest texture the graphics card takes (the stage tells us before anything is loaded). */
+export function setMaxTexture(n) { if (n > 0) _maxTex = n; }
 const SMALL = typeof matchMedia === 'function' && (matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) < 560);
 export function loadCity() {
   return (_city ||= (async () => {
     const ix = await loadIndex();
+    // phones, and graphics cards that cannot hold the full height map as a texture, get the half-size one
+    const T = ix.terrain, half = !!T && (SMALL || _maxTex < T.w), small = half && T.small ? T.small : null;
     const [ground, height, terr] = await Promise.all([pixels(ROOT + ix.ground.file), pixels(ROOT + ix.height.file),
-      ix.terrain ? pixels(ROOT + ix.terrain.file, SMALL ? 2 : 1).catch(() => null) : null]);
+      T ? pixels(ROOT + (small ? small.file : T.file), half && !small ? 2 : 1).catch(() => null) : null]);
     const city = { ix, ground, height };
-    setupTerrain(city, terr, SMALL ? 2 : 1);
+    setupTerrain(city, terr, half ? (small ? small.cell / T.cell : 2) : 1);
     return city;
   })().catch((e) => { _city = null; throw e; }));
 }
@@ -288,16 +293,17 @@ function cutPatch(mat, tint = true, tile = false) {
       .replace('#include <common>', '#include <common>\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;\nuniform float uNight;\nfloat wHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }')
       .replace('#include <color_fragment>', `#include <color_fragment>
         float wGlow = 0.0; vec3 wLit = vec3(0.0);
-        ${windows ? `if (vWF.x > 999.0) {
+        ${windows ? `float wDu = fwidth(vWU), wDy = fwidth(vWY); // derivatives must not be taken inside a branch
+        if (vWF.x > 999.0) {
           // windows painted on a plain wall: evenly spread along it, one row per floor
           float wMode = floor(vWF.x / 1000.0), wLen = vWF.x - wMode * 1000.0, wTop = vWF.y;
           float wT = clamp((vWU / vWF.x + 1.0) * 0.5, 0.0, 1.0);
           float wN = wMode > 1.5 ? 1.0 : max(1.0, floor(wLen / 3.1)), wPitch = wMode > 1.5 ? 3.0 : 2.8;
           float wX = wT * wN, wFy = (vWY - (wMode > 1.5 ? 3.0 : 0.95)) / wPitch;
-          vec2 wC = vec2(fract(wX), fract(wFy)), wE = vec2(fwidth(wX), fwidth(wFy)) + 1e-4;
+          vec2 wC = vec2(fract(wX), fract(wFy)), wE = vec2(wDu * 0.5 * wN / vWF.x, wDy / wPitch) + 1e-4;
           vec2 wLo = wMode > 1.5 ? vec2(0.4 / wLen, 0.08) : vec2(0.27, 0.0), wHi = wMode > 1.5 ? vec2(1.0 - 0.4 / wLen, 0.52) : vec2(0.73, 0.47);
           vec2 wIn = smoothstep(wLo - wE, wLo + wE, wC) * (1.0 - smoothstep(wHi - wE, wHi + wE, wC));
-          float wOn = wIn.x * wIn.y * step(0.0, wFy) * step(vWY + (wMode > 1.5 ? 1.4 : 1.5), wTop) * step(abs(vNormal.y), 0.5) * (1.0 - smoothstep(0.05, 0.3, vCut));
+          float wOn = wIn.x * wIn.y * step(0.0, wFy) * step(vWY + (wMode > 1.5 ? 1.4 : 1.5), wTop) * (1.0 - smoothstep(0.05, 0.3, vCut));
           wOn *= 1.0 - smoothstep(0.35, 0.9, max(wE.x, wE.y)); // too far away to tell windows apart: let them melt into the wall
           float wR = wHash(vec3(floor(wX) + wLen, floor(wFy), vWF.z * 91.0));
           vec3 wGlass = mix(vec3(0.27, 0.57, 0.8), vec3(0.016, 0.03, 0.07), uNight);
@@ -309,7 +315,7 @@ function cutPatch(mat, tint = true, tile = false) {
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6, 0.62, 0.58), smoothstep(0.2, 0.85, vCut) * 0.93);`)
       .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, wLit, wGlow);\n\t#include <opaque_fragment>');
   };
-  mat.customProgramCacheKey = () => 'cut9' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
+  mat.customProgramCacheKey = () => 'cut10' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
   return mat;
 }
 /** Ground pieces outside the detailed area leave a hole where that area is. */
@@ -1328,6 +1334,10 @@ function dropTile(key) {
   _byNum.delete(c.num);
   c.dispose();
 }
+/** Let go of all but the `keep` most recently used tiles (called when the street view closes: the map page needs the memory). */
+export function trimTiles(keep) {
+  for (const key of [..._built.keys()]) { if (_built.size <= keep) break; dropTile(key); }
+}
 /** Height of the surface at a point in map metres, away from any street's detailed area. */
 function surfaceAt(city, mx, my) {
   const c = _byNum.get(tileNum(Math.floor(mx / TILE), Math.floor(my / TILE)));
@@ -1485,8 +1495,12 @@ class Streamer {
       want.sort((a, b) => a[0] - b[0]);
       this.want = want.map((q) => q[1]);
       this.wantSet = new Set(this.want);
-      // tiles built for an earlier street come straight back
-      for (const key of this.want) if (!this.live.has(key) && _built.has(key)) this._attach(key, _built.get(key));
+    }
+    // tiles built for an earlier street come straight back, a few per frame so a street swap does not stutter
+    let back = 0;
+    for (const key of this.want) {
+      if (back >= 5) break;
+      if (!this.live.has(key) && _built.has(key)) { this._attach(key, _built.get(key)); back++; }
     }
     let flying = this.pending.size;
     for (const key of this.want) {

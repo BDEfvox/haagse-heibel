@@ -473,7 +473,7 @@ export class Crowd {
         if (near && !o.on) this._fill(o);
         else if (!near && o.on) this._empty(o);
       }
-      if (this.agents.length > 64 && (this.tick & 255) === 0) this.agents = this.agents.filter((a) => !a.dead);
+      if (this.agents.length > 64 && (this.tick & 255) === 1) this.agents = this.agents.filter((a) => !a.dead); // tick was bumped above: 1, not 0
     }
     // who is where: a grid for looking ahead
     const head = this.head, next = this.next, A = this.agents, n = A.length, gx0 = x - (GN * CELL) / 2, gz0 = z - (GN * CELL) / 2;
