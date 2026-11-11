@@ -149,6 +149,12 @@ class Pool {
       this.anim = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
       this.anim.setUsage(THREE.DynamicDrawUsage);
       g.setAttribute('iC2', this.c2); g.setAttribute('iC3', this.c3); g.setAttribute('iC4', this.c4); g.setAttribute('iAnim', this.anim);
+    } else {
+      // The shader is shared with the people, and reads these for every pool. A pool that leaves them out gets whatever
+      // the graphics driver has lying around (by the book 0, 0, 0, 1: every car and lamp post tipped over by a radian),
+      // so cars, bikes, lamp posts and trams carry their own, all zeros: no limbs, no tipping, no extra colours.
+      for (const k of ['iC2', 'iC3', 'iC4']) g.setAttribute(k, new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3));
+      g.setAttribute('iAnim', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
     }
     this.mesh = new THREE.InstancedMesh(g, mat, cap);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
