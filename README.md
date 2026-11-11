@@ -98,6 +98,9 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
 - `src/voxel/landmarks.js` — buildings that are something in particular (churches, fuel stations,
   windmills, the lighthouse), landmark shapes from OpenStreetMap's 3D building parts, free-standing
   features and perimeter walls and fences
+- `src/voxel/specials.js`, `specials2.js` — hand-made drawers for buildings everyone knows (the
+  Ridderzaal, the Peace Palace, the Grote Kerk, the Kurhaus, the skyline towers), matched to their
+  footprints by position
 - `src/voxel/crowd.js` — street life for the whole city, the open street included: walkers, cyclists,
   cars, trams, parked cars and lamp posts as instanced meshes on lanes derived from the road map. It
   carries on unchanged when the focus moves to another street; gags borrow passers-by from it

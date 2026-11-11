@@ -3,7 +3,8 @@ Data licences
 
 The files in this folder are derived data, simplified, combined and reformatted for this site.
 
-- Streets, land cover, water, rails, trees and points of interest:
+- Streets, land cover, water, rails, trees, points of interest, building types, building parts, barriers (walls, fences, hedges),
+  point features (windmills, fuel stations, statues and similar) and landmark names:
   (c) OpenStreetMap contributors, Open Database Licence (ODbL) 1.0.
   https://www.openstreetmap.org/copyright
   The OpenStreetMap-derived parts of these files are made available under the ODbL.

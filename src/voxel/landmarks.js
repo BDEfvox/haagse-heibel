@@ -4,6 +4,11 @@
 // tagged with setB(centreX, centreZ, height + 2, halfDepth) so the cutaway shader can flatten them.
 import * as THREE from 'three';
 import { inRing, obbOf, rectsOf } from './geo.js';
+import { SPECIALS as S1 } from './specials.js';
+import { SPECIALS2 as S2 } from './specials2.js';
+
+// hand-made landmarks (the Ridderzaal, the Peace Palace, the skyline towers, ...): see specials.js and specials2.js
+const SPECIALS = [...S1, ...S2];
 
 const _c = new THREE.Color();
 const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexString();
@@ -83,14 +88,34 @@ function mkCtx(v, gl, b, col, rnd, night) {
     .map((r) => (sw ? { x: -r.z, z: r.x, w: r.d, d: r.w } : { x: r.x, z: r.z, w: r.w, d: r.d }));
   let main = rects[0];
   for (const r of rects) if (r.w * r.d > main.w * main.d) main = r;
-  const cs = Math.cos(th), sn = Math.sin(th);
+  const cs = Math.cos(th), sn = Math.sin(th), v0 = v.n, g0 = gl.n;
   const c = {
     v, gl, rnd, night, col, b, o, th, rects, main,
     L: Math.max(o.w, o.d), D: Math.min(o.w, o.d), h: Math.max(2.4, b.h || 6), area: b.area || o.w * o.d,
     rad: Math.min(o.w, o.d) / 2,
     // local -> scene
     wp: (lx, lz) => [o.cx + lx * cs + lz * sn, o.cz - lx * sn + lz * cs],
-    tag(top) { v.setB(o.cx, o.cz, top + 2, c.rad); gl.setB(o.cx, o.cz, top + 2, c.rad); },
+    /** Unit vector in this frame for a compass bearing (0 north, 90 east): which way is the sea, the square, the west door. */
+    compass(deg) {
+      const a = (deg * Math.PI) / 180, dx = Math.sin(a), dz = -Math.cos(a);
+      return [dx * cs - dz * sn, dx * sn + dz * cs];
+    },
+    /** The corner of the real outline that lies furthest in a compass direction, in this frame. */
+    far(deg) {
+      const a = (deg * Math.PI) / 180, dx = Math.sin(a), dz = -Math.cos(a);
+      let best = b.ring[0], bd = -Infinity;
+      for (const q of b.ring) { const d = q[0] * dx + q[1] * dz; if (d > bd) { bd = d; best = q; } }
+      const px = best[0] - o.cx, pz = best[1] - o.cz;
+      return [px * cs - pz * sn, px * sn + pz * cs];
+    },
+    inside: (lx, lz) => inRing(o.cx + lx * cs + lz * sn, o.cz - lx * sn + lz * cs, b.ring),
+    /** The building's full height, for the cutaway. It also re-tags what this drawer has drawn so far, so it may be called last. */
+    tag(top) {
+      for (const [k, n0] of [[v, v0], [gl, g0]]) {
+        k.setB(o.cx, o.cz, top + 2, c.rad);
+        if (k.tag) for (let i = n0; i < k.n; i++) k.tag[i * 4 + 2] = top + 2;
+      }
+    },
   };
   v.setT(th, o.cx, o.cz); gl.setT(th, o.cx, o.cz);
   c.tag(c.h);
@@ -114,6 +139,32 @@ function flatTop(c, hgt, wall, rects = c.rects) {
     if (Math.min(r.w, r.d) > 2) v.box(r.x, hgt + 0.3, r.z, r.w - 0.5, 0.08, r.d - 0.5, '#4a4e57');
   }
 }
+/**
+ * Pitched roofs on every rectangle of the footprint: a ridge along the long side, or a hip on a squarish one.
+ * Returns the highest rise drawn.
+ */
+function roofs(c, y, col, opts = {}) {
+  const v = c.v, steep = opts.steep || 0.42, max = opts.max || 7;
+  let top = 0;
+  for (const r of c.rects) {
+    if (opts.skip && opts.skip(r)) continue;
+    const span = Math.min(r.w, r.d);
+    if (span < 2.2) { v.box(r.x, y, r.z, r.w + 0.15, 0.3, r.d + 0.15, col, 0.04); top = Math.max(top, 0.3); continue; }
+    const rise = clamp(span * steep, 1, max), n = clamp(Math.round(rise / 0.8), 3, 7);
+    if (Math.max(r.w, r.d) < span * 1.25) hip(v, r.x, y, r.z, r.w, r.d, rise, n, col);
+    else gable(v, r.x, y, r.z, r.w, r.d, rise, n, col, r.w >= r.d);
+    top = Math.max(top, rise);
+  }
+  return top;
+}
+/** An old building under a sloping roof (the register says so) gets one; a modern box keeps its flat roof. Returns the height added. */
+function lid(c, hgt, wall, col, opts) {
+  if (c.b.roof && hgt < 40) return roofs(c, hgt, col || c.col.roof, opts);
+  flatTop(c, hgt, wall);
+  return 0.4;
+}
+/** Where the walls stop when the measured height includes part of a sloping roof. */
+const eaves = (c, min = 4) => (c.b.roof ? Math.max(min, c.h - clamp(c.D * 0.1, 0.5, 2.5)) : Math.max(min, c.h));
 /** Biggest rectangles first, at most n. */
 const top = (c, n) => c.rects.slice().sort((a, b) => b.w * b.d - a.w * a.d).slice(0, n);
 const flag = (v, x, y, z, H, dir = 1) => {
@@ -124,18 +175,26 @@ const flag = (v, x, y, z, H, dir = 1) => {
 
 // ------------------------------------------------------------------ free-standing shapes (centre at local 0, 0)
 function windmillShape(v, H, s0, wall) {
-  const n = 6, sh = H / n;
-  for (let i = 0; i < n; i++) v.box(0, i * sh, 0, s0 * (1 - 0.38 * i / (n - 1)), sh, s0 * (1 - 0.38 * i / (n - 1)), wall, 0.03);
-  const st = s0 * 0.62;
-  v.box(0, H * 0.3, 0, s0 * 1.3, 0.3, s0 * 1.3, '#4a3b30');
-  v.box(0, H, 0, st * 1.2, 1.1, st * 1.2, '#3b2f2a');
-  pyramid(v, 0, H + 1.1, 0, st * 1.2, st * 1.2, st * 0.8, 3, '#2f2a27');
-  const hubY = H + 0.5, hz = st * 0.6 + 0.6, len = clamp(H * 0.55, 6, 15), step = (len * 0.707) / 6;
-  v.box(0, hubY - 0.5, hz, 1, 1, 1.2, '#3b2f2a');
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
-    for (let i = 1; i <= 6; i++) v.box(sx * i * step, hubY + sy * i * step - step * 0.6, hz + 0.3, step * 1.25, step * 1.25, 0.3, i % 2 ? '#e9e1cf' : '#6b4a2f');
-  }
-  return H + 1.1 + st * 0.8 + len * 0.707;
+  // a tapering body with a gallery, a cap, and four sails at rest in a plus
+  const n = 7, sh = H / n;
+  for (let i = 0; i < n; i++) { const s = s0 * (1 - (0.48 * i) / (n - 1)); v.box(0, i * sh, 0, s, sh, s, wall, 0.03); }
+  const st = s0 * 0.52;
+  v.box(0, H * 0.32, 0, s0 * 1.45, 0.35, s0 * 1.45, '#4a3b30');
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) v.box(sx * s0 * 0.68, H * 0.32 + 0.35, sz * s0 * 0.68, 0.2, 1, 0.2, '#e9e1cf');
+  v.box(0, H, 0, st * 1.35, 1.4, st * 1.5, '#3b2f2a');
+  pyramid(v, 0, H + 1.4, 0, st * 1.35, st * 1.5, st * 0.7, 3, '#2f2a27');
+  const hubY = H + 0.7, hz = st * 0.75 + 0.7, len = clamp(H * 0.62, 7, 15);
+  v.box(0, hubY - 0.6, hz - 0.5, 1.2, 1.2, 1.4, '#3b2f2a');
+  // spars
+  v.box(0, hubY - len, hz, 0.4, len * 2, 0.3, '#5a4030');
+  v.box(0, hubY - 0.2, hz, len * 2, 0.4, 0.3, '#5a4030');
+  // sail frames, each on the trailing side of its spar
+  const fw = clamp(len * 0.17, 1.2, 2.2), fl = len * 0.78, at = len - fl / 2 - 0.2;
+  v.box(fw / 2 + 0.2, hubY + at - fl / 2, hz + 0.1, fw, fl, 0.12, '#e9e1cf', 0.05);
+  v.box(-fw / 2 - 0.2, hubY - at - fl / 2, hz + 0.1, fw, fl, 0.12, '#e9e1cf', 0.05);
+  v.box(at, hubY - fw - 0.2, hz + 0.1, fl, fw, 0.12, '#e9e1cf', 0.05);
+  v.box(-at, hubY + 0.2, hz + 0.1, fl, fw, 0.12, '#e9e1cf', 0.05);
+  return hubY + len + 0.5;
 }
 function lighthouseShape(v, gl, H, s0, night) {
   const n = 7, sh = H / n;
@@ -213,12 +272,12 @@ function church(c) {
   const sH = clamp(tw * 1.8, 6, 24);
   let s = rnd.chance(0.5) ? 1 : -1;
   const at = (sg) => main.x + sg * (main.w / 2 - tw / 2);
-  if (!inRing(c.b.ring, ...c.wp(at(s), main.z)) && inRing(c.b.ring, ...c.wp(at(-s), main.z))) s = -s;
+  if (!inRing(...c.wp(at(s), main.z), c.b.ring) && inRing(...c.wp(at(-s), main.z), c.b.ring)) s = -s;
   const tx = at(s);
   c.tag(Ht + sH + 3);
   body(c, hn, wall, 1);
   gable(v, main.x - s * tw * 0.5, hn, main.z, main.w - tw, main.d, rise, 5, c.col.roof, true);
-  for (const r of c.rects) if (r !== main) flatTop(c, hn, wall, [r]);
+  roofs(c, hn, c.col.roof, { skip: (r) => r === main, steep: 0.5, max: rise });
   v.setW(1); v.box(tx, 0, main.z, tw, Ht, tw, wall, 0.03); v.setW(0);
   v.box(tx, Ht - 2.8, main.z, tw + 0.25, 2.2, tw + 0.25, '#2d2a28');
   v.box(tx, Ht - 0.6, main.z, tw + 0.5, 0.6, tw + 0.5, shade(wall, 1.15));
@@ -297,16 +356,16 @@ function station(c) {
 function school(c) {
   const { v, rnd, L, main } = c;
   if (c.area < 200) return false;
-  const hh = Math.max(c.h, 6), wall = rnd.pick(['#b5523b', '#c98b5e', '#d8b07a', '#a8472f']);
+  const hh = eaves(c, 6), wall = rnd.pick(['#b5523b', '#c98b5e', '#d8b07a', '#a8472f']);
   body(c, hh, wall);
-  flatTop(c, hh, wall);
+  const rf = lid(c, hh, wall);
   const zf = main.z + main.d / 2, ac = rnd.pick(BRIGHT);
   v.box(main.x, 3.1, zf + 1.1, 4.4, 0.3, 2.4, ac);
   for (const sx of [-1, 1]) v.box(main.x + sx * 2, 0, zf + 2, 0.2, 3.1, 0.2, '#d6d6d6');
   const fx = main.x - main.w / 2 + 1.2;
   v.box(fx, 0, zf + 1.2, 0.14, 7, 0.14, '#d6d6d6');
   for (let i = 0; i < 3; i++) v.box(fx + 0.8, 6.9 - 0.4 * i, zf + 1.2, 1.5, 0.4, 0.06, NL[i]);
-  c.tag(hh + 1);
+  c.tag(hh + rf + 1);
   return true;
 }
 function hospital(c) {
@@ -459,33 +518,45 @@ function supermarket(c) {
 }
 function museum(c) {
   const { v, gl, rnd, main, night } = c;
-  const hh = Math.max(c.h, 8), wall = rnd.pick(['#e3ded3', '#d9d2c3', '#cfc4b0', '#b5523b']);
+  const hh = eaves(c, 8), wall = rnd.pick(['#e3ded3', '#d9d2c3', '#cfc4b0', '#b5523b']);
   body(c, hh, wall, 1);
-  flatTop(c, hh, wall);
-  gable(v, main.x, hh + 0.4, main.z, main.w * 0.8, main.d * 0.8, 1.6, 2, '#7f8d97', main.w >= main.d);
+  let rf = 2;
+  if (c.b.roof) rf = roofs(c, hh, SLATE);
+  else {
+    flatTop(c, hh, wall);
+    gable(v, main.x, hh + 0.4, main.z, main.w * 0.8, main.d * 0.8, 1.6, 2, '#7f8d97', main.w >= main.d);
+  }
   const zf = main.z + main.d / 2, pw = clamp(main.w * 0.6, 6, 28), n = clamp(Math.floor(pw / 3.5) + 1, 3, 8), ch = Math.min(hh - 1.2, 9);
   v.box(main.x, 0, zf + 1.9, pw + 1, 0.4, 3.8, '#c9c4b8');
   v.box(main.x, 0.4, zf + 1.6, pw, 0.4, 3.0, '#d9d2c3');
   for (let i = 0; i < n; i++) v.box(main.x - pw / 2 + 0.7 + (i * (pw - 1.4)) / (n - 1), 0.8, zf + 2.8, 0.8, ch, 0.8, '#efe9dc');
   v.box(main.x, 0.8 + ch, zf + 1.9, pw + 0.6, 1.0, 3.4, '#d9d2c3');
   (night ? gl : v).box(main.x, 0.8, zf + 0.06, 3, 3.2, 0.08, night ? '#ffd97a' : '#6f8896');
-  c.tag(hh + 3);
+  c.tag(hh + rf + 1);
   return true;
 }
 function government(c) {
-  const { v, rnd, main, L } = c;
-  const hh = Math.max(c.h, 9), wall = rnd.pick(['#d9d2c3', '#e3ded3', '#cfc4b0', '#b5523b']);
+  const { v, rnd, main } = c;
+  const hh = eaves(c, 9), wall = rnd.pick(c.b.year > 0 && c.b.year < 1900 ? ['#9c4a37', '#a85a3f', '#8a4a3a', '#cfc4b0'] : ['#d9d2c3', '#e3ded3', '#cfc4b0', '#b5523b']);
   body(c, hh, wall, 1);
-  flatTop(c, hh, wall);
-  const cw = main.w * 0.4, cd = main.d * 0.72, ch = clamp(hh * 0.3, 2.5, 5);
-  v.setW(1); v.box(main.x, hh, main.z, cw, ch, cd, wall, 0.03); v.setW(0);
-  gable(v, main.x, hh + ch, main.z, cw, cd, 1.8, 2, '#5d646d', true);
   const zf = main.z + main.d / 2;
+  let top;
+  if (c.b.roof && hh < 40) {
+    // an old seat of government: steep slate roofs, a stone band under the eaves
+    top = hh + roofs(c, hh, SLATE, { steep: 0.5, max: 9 });
+    for (const r of c.rects) v.box(r.x, hh - 0.5, r.z, r.w + 0.2, 0.5, r.d + 0.2, STONE);
+  } else {
+    flatTop(c, hh, wall);
+    const cw = main.w * 0.4, cd = main.d * 0.72, ch = clamp(hh * 0.3, 2.5, 5);
+    v.setW(1); v.box(main.x, hh, main.z, cw, ch, cd, wall, 0.03); v.setW(0);
+    gable(v, main.x, hh + ch, main.z, cw, cd, 1.8, 2, '#5d646d', true);
+    top = hh + ch + 1.8;
+  }
   v.box(main.x, 0, zf + 1.2, Math.min(main.w * 0.5, 14), 0.5, 2.6, '#c9c4b8');
   v.box(main.x, 0.5, zf + 1.4, Math.min(main.w * 0.4, 10), 0.4, 1.8, '#d9d2c3');
   const H = 9;
-  flag(v, main.x + cw / 2 - 1, hh + ch + 1.8, main.z, H, 1);
-  c.tag(hh + ch + 2 + H);
+  if (c.area > 500) flag(v, main.x, top - 0.4, main.z, H, 1);
+  c.tag(top + H);
   return true;
 }
 function bunker(c) {
@@ -502,9 +573,9 @@ function bunker(c) {
 }
 function fireStation(c) {
   const { v, gl, rnd, main, night } = c;
-  const hh = Math.max(c.h, 7), wall = rnd.pick(['#b5523b', '#a8472f', '#c98b5e']);
+  const hh = eaves(c, 7), wall = rnd.pick(['#b5523b', '#a8472f', '#c98b5e']);
   body(c, hh, wall);
-  flatTop(c, hh, wall);
+  lid(c, hh, wall);
   const zf = main.z + main.d / 2 + 0.04, n = clamp(Math.floor(main.w / 5), 2, 5);
   for (let i = 0; i < n; i++) {
     const x = main.x - main.w / 2 + ((i + 0.5) * main.w) / n;
@@ -519,13 +590,13 @@ function fireStation(c) {
 }
 function police(c) {
   const { v, gl, rnd, main, night } = c;
-  const hh = Math.max(c.h, 6), wall = rnd.pick(['#e3e6e8', '#cfd8dc', '#d7c9b8']);
+  const hh = eaves(c, 6), wall = rnd.pick(['#e3e6e8', '#cfd8dc', '#d7c9b8']);
   body(c, hh, wall);
-  flatTop(c, hh, wall);
+  const rf = lid(c, hh, wall);
   for (const r of top(c, 4)) v.box(r.x, hh - 2.4, r.z, r.w + 0.2, 1.1, r.d + 0.2, '#1d4ed8');
   const zf = main.z + main.d / 2;
   (night ? gl : v).box(main.x, 2.6, zf + 0.25, 1.1, 1.1, 0.4, night ? '#4f8bff' : '#1d4ed8');
-  c.tag(hh + 1);
+  c.tag(hh + rf + 1);
   return true;
 }
 function canopy(c) {
@@ -547,15 +618,22 @@ function canopy(c) {
 }
 function hotel(c) {
   const { v, gl, rnd, main, night } = c;
-  const hh = Math.max(c.h, 9), wall = rnd.pick(['#e3e6e8', '#cfd8dc', '#d7c9b8', '#b5523b', '#9fb0ba']);
+  const old = c.b.roof && c.h < 40;
+  const hh = eaves(c, 9), wall = old ? rnd.pick(['#e6dcc6', '#d7c9b8', '#b5523b', '#a85a3f']) : rnd.pick(['#e3e6e8', '#cfd8dc', '#d7c9b8', '#b5523b', '#9fb0ba']);
   body(c, hh, wall);
-  flatTop(c, hh, wall);
+  const rf = lid(c, hh, wall);
   const zf = main.z + main.d / 2, col = rnd.pick(BRIGHT);
   v.box(main.x, 3.2, zf + 1.4, Math.min(8, main.w * 0.4), 0.3, 2.8, col);
   for (const sx of [-1, 1]) v.box(main.x + sx * Math.min(3.7, main.w * 0.18), 0, zf + 2.5, 0.25, 3.2, 0.25, '#d6d6d6');
-  v.box(main.x, hh + 0.3, zf - 0.6, Math.min(8, main.w * 0.5), 1.8, 0.5, '#2b2f36');
-  (night ? gl : v).box(main.x, hh + 0.6, zf - 0.3, Math.min(7, main.w * 0.45), 1.2, 0.1, night ? '#ffd97a' : col);
-  c.tag(hh + 3);
+  if (old) {
+    // a sign board over the door instead of letters on a flat roof
+    v.box(main.x, 4.2, zf + 0.2, Math.min(8, main.w * 0.5), 1.4, 0.3, '#2b2f36');
+    (night ? gl : v).box(main.x, 4.4, zf + 0.4, Math.min(7, main.w * 0.45), 1.0, 0.1, night ? '#ffd97a' : col);
+  } else {
+    v.box(main.x, hh + 0.3, zf - 0.6, Math.min(8, main.w * 0.5), 1.8, 0.5, '#2b2f36');
+    (night ? gl : v).box(main.x, hh + 0.6, zf - 0.3, Math.min(7, main.w * 0.45), 1.2, 0.1, night ? '#ffd97a' : col);
+  }
+  c.tag(hh + Math.max(rf, 2.2) + 1);
   return true;
 }
 function industrial(c) {
@@ -580,24 +658,21 @@ function industrial(c) {
   c.tag(hh + rise + 1);
   return true;
 }
+/** A palace, a manor, a listed town house: pale or brick walls, a stone band, dark slate roofs, tall chimneys. */
 function castle(c) {
-  const { v, rnd, main, L, D } = c;
-  const hh = Math.max(c.h, 8), wall = rnd.pick(['#b5523b', '#a8472f', '#9c4a37', '#cfc4b0']);
+  const { v, rnd, main } = c;
+  const hh = eaves(c, 7), wall = rnd.pick(c.b.year && c.b.year < 1750 ? ['#9c4a37', '#a85a3f', '#d8cfb8', '#cfc4b0'] : ['#d8cfb8', '#e3ded3', '#b5523b', '#cfc4b0']);
   body(c, hh, wall, 1);
-  const rise = clamp(main.d * 0.55, 3, 10);
-  gable(v, main.x, hh, main.z, main.w, main.d, rise, 6, c.col.roof, true);
-  for (const r of c.rects) if (r !== main) flatTop(c, hh, wall, [r]);
-  const ts = clamp(Math.min(main.w, main.d) * 0.16, 2.6, 4.2), th = hh + 4, ch = ts * 1.3;
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    const x = main.x + sx * (main.w / 2 - ts / 2 + 0.3), z = main.z + sz * (main.d / 2 - ts / 2 + 0.3);
-    v.setW(1); v.box(x, 0, z, ts, th, ts, shade(wall, 0.95), 0.03); v.setW(0);
-    pyramid(v, x, th, z, ts + 0.5, ts + 0.5, ch * 1.3, 4, SLATE);
-  }
-  for (let i = 0; i < 5; i++) {
-    const w = main.d * (1 - i * 0.18) * 0.92;
-    v.box(main.x + main.w / 2 - 0.4, hh + i * 1.1, main.z, 0.7, 1.1, Math.max(0.8, w), wall);
-  }
-  c.tag(th + ch * 1.3 + 2);
+  for (const r of c.rects) v.box(r.x, hh - 0.5, r.z, r.w + 0.2, 0.5, r.d + 0.2, STONE);
+  const rf = c.b.roof || (c.b.year > 0 && c.b.year < 1900) ? roofs(c, hh, SLATE, { steep: 0.45, max: 8 }) : (flatTop(c, hh, wall), 0.4);
+  // chimneys on the main block
+  if (rf > 2) for (const sx of [-1, 1]) v.box(main.x + sx * main.w * 0.3, hh + rf * 0.35, main.z, 1.1, rf * 0.75 + 1.2, 1.1, shade(wall, 0.85));
+  // steps and a door surround
+  const zf = main.z + main.d / 2;
+  v.box(main.x, 0, zf + 0.9, Math.min(main.w * 0.3, 8), 0.4, 1.8, '#c9c4b8');
+  v.box(main.x, 0.4, zf + 0.1, 2.6, 3.4, 0.2, STONE);
+  v.box(main.x, 0.4, zf + 0.22, 1.5, 2.7, 0.1, '#3b2f2a');
+  c.tag(hh + rf + 2.5);
   return true;
 }
 
@@ -608,13 +683,42 @@ const DRAW = {
   23: hotel, 24: industrial, 25: castle,
 };
 export const TYPED = new Set(Object.keys(DRAW).map(Number));
+/** What a hand-made landmark drawer gets to work with. */
+const KIT = { gable, hip, pyramid, dome, onion, arch, line, body, flatTop, roofs, flag, shade, clamp, BRICKS, STONE, SLATE };
+
+const TILE_M = 256;
+const _special = new WeakMap();
+/**
+ * Is building bi of tile t (file name key "tx_ty") one of the hand-made landmarks? Works on the raw tile data, so the
+ * tile builder and the open street agree. Returns the landmark entry or null.
+ */
+export function specialOf(key, t, bi) {
+  let m = _special.get(t);
+  if (!m) {
+    m = new Map();
+    _special.set(t, m);
+    const [tx, ty] = key.split('_').map(Number), ox = tx * TILE_M, oy = ty * TILE_M;
+    const near = SPECIALS.filter((s) => Math.abs(s.x - ox - TILE_M / 2) < 500 && Math.abs(s.y - oy - TILE_M / 2) < 500);
+    if (near.length) (t.b || []).forEach((e, i) => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, a = 0;
+      for (let k = 3; k + 1 < e.length; k += 2) {
+        const x = e[k], y = e[k + 1], j = k + 2 < e.length - 1 ? k + 2 : 3;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        a += x * e[j + 1] - e[j] * y;
+      }
+      const cx = ox + (x0 + x1) / 20, cy = oy + (y0 + y1) / 20, area = Math.abs(a) / 200;
+      for (const s of near) if (Math.abs(s.x - cx) < 12 && Math.abs(s.y - cy) < 12 && area >= (s.minArea || 0)) m.set(i, s);
+    });
+  }
+  return m.get(bi) || null;
+}
 
 /**
- * Draw a building of a known type. b = { ring, o, rects, h, area, year, roof }, col = { wall, roof }.
- * Returns true if it drew the whole building, false to fall back to the plain block.
+ * Draw a building of a known type, or a hand-made landmark (sp, from specialOf). b = { ring, o, rects, h, area, year, roof },
+ * col = { wall, roof }. Returns true if it drew the whole building, false to fall back to the plain block.
  */
-export function drawTyped(v, gl, b, type, col, rnd, night) {
-  const fn = DRAW[type];
+export function drawTyped(v, gl, b, type, col, rnd, night, sp = null) {
+  const fn = sp ? (c) => sp.draw(c, KIT) : DRAW[type];
   if (!fn || !b || !b.o || !b.ring || b.ring.length < 3) return false;
   if (!(b.o.w > 0.5 && b.o.d > 0.5)) return false;
   const c = mkCtx(v, gl, b, col, rnd, night);
@@ -622,7 +726,7 @@ export function drawTyped(v, gl, b, type, col, rnd, night) {
   try {
     ok = fn(c) !== false;
   } finally {
-    v.setT(); gl.setT();
+    v.setT(); gl.setT(); v.setW(0);
   }
   return ok;
 }
@@ -812,27 +916,31 @@ function playground(v, rnd) {
   return 2.6;
 }
 function wheel(v, gl, f, rnd, night) {
-  const H = f.b > 10 ? f.b : 45, R = H * 0.44, hub = H - R, t = 0.55, zr = 1.4;
-  const rc = '#f1efe8', pts = [];
-  for (let k = 0; k < 8; k++) pts.push([R * Math.cos((k * Math.PI) / 4 + Math.PI / 8) / Math.cos(Math.PI / 8) * 0.96, hub + R * Math.sin((k * Math.PI) / 4 + Math.PI / 8) / Math.cos(Math.PI / 8) * 0.96]);
-  for (const z of [-zr, zr]) {
-    for (let k = 0; k < 8; k++) {
-      const [x0, y0] = pts[k], [x1, y1] = pts[(k + 1) % 8];
-      line(v, x0, y0, x1, y1, z, t, 0.35, rc, 2);
-    }
+  const H = f.b > 10 ? f.b : 45, R = H * 0.44, hub = H - R, zr = 1.5;
+  // the ring: short blocks all the way round, two rims joined by the gondolas
+  const N = Math.max(24, Math.round((2 * Math.PI * R) / 1.5)), seg = (2 * Math.PI * R) / N;
+  for (let k = 0; k < N; k++) {
+    const a = (k / N) * Math.PI * 2, x = R * Math.cos(a), y = hub + R * Math.sin(a);
+    for (const z of [-zr, zr]) v.box(x, y - seg * 0.6, z, seg * 1.2, seg * 1.2, 0.4, '#f1efe8');
   }
-  line(v, -R, hub, R, hub, 0, t, 0.3, '#d6d6d6');
-  line(v, 0, hub - R, 0, hub + R, 0, t, 0.3, '#d6d6d6');
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) line(v, 0, hub, sx * R * 0.7, hub + sy * R * 0.7, 0, t, 0.3, '#d6d6d6', 3);
-  v.box(0, hub - 0.7, 0, 1.4, 1.4, zr * 2 + 1, '#6b7280');
-  for (let k = 0; k < 8; k++) {
-    const [x, y] = pts[k];
-    (night && k % 2 ? gl : v).box(x, y - 2.0, 0, 1.8, 1.6, zr * 2, BRIGHT[k % BRIGHT.length]);
+  // spokes
+  const S = 12;
+  for (let k = 0; k < S; k++) {
+    const a = (k / S) * Math.PI * 2, n = Math.max(6, Math.round(R / 1.1));
+    for (let i = 1; i < n; i++) v.box((R * i * Math.cos(a)) / n, hub + (R * i * Math.sin(a)) / n - 0.3, 0, 0.6, 0.6, 0.3, '#d6d9dc');
   }
-  for (const z of [-zr - 0.6, zr + 0.6]) {
-    for (const sx of [-1, 1]) line(v, sx * R * 0.6, 0, 0, hub - 0.5, z, 0.9, 0.5, '#8f98a1', 5);
+  v.box(0, hub - 1, 0, 2, 2, zr * 2 + 1.6, '#6b7280');
+  // gondolas hang below the ring
+  for (let k = 0; k < S; k++) {
+    const a = ((k + 0.5) / S) * Math.PI * 2, x = R * Math.cos(a), y = hub + R * Math.sin(a);
+    (night && k % 2 ? gl : v).box(x, y - 2.6, 0, 2.2, 2, zr * 2 - 0.5, BRIGHT[k % BRIGHT.length]);
   }
-  v.box(0, 0, 0, R * 1.3, 0.4, zr * 2 + 2.4, '#55575c');
+  // an A-frame either side of the ring
+  for (const z of [-zr - 1, zr + 1]) for (const sx of [-1, 1]) {
+    const n = Math.max(8, Math.round(hub / 1.2));
+    for (let i = 0; i <= n; i++) v.box(sx * R * 0.55 * (1 - i / n), (hub * i) / n - 0.5, z, 1, 1.3, 0.6, '#8f98a1');
+  }
+  v.box(0, 0, 0, R * 1.4, 0.5, zr * 2 + 4, '#55575c');
   return H + 2;
 }
 function flagpole(v, f) {

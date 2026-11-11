@@ -7,7 +7,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "data": "node scripts/build-data.mjs",
-    "world": "node scripts/build-world.mjs"
+    "world": "node scripts/build-world.mjs && node scripts/special-parts.mjs"
   },
   "keywords": [],
   "author": "",

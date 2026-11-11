@@ -231,7 +231,7 @@ const tiles = new Map(); // key -> {b,g,r,l,t,p, names:Map}
 function getTile(tx, ty) {
   const k = tileKey(tx, ty);
   let t = tiles.get(k);
-  if (!t) tiles.set(k, (t = { tx, ty, b: [], g: [], r: [], l: [], t: [], p: [], names: new Map() }));
+  if (!t) tiles.set(k, (t = { tx, ty, b: [], bl: [], g: [], r: [], l: [], t: [], p: [], q: [], x: [], f: [], names: new Map() }));
   return t;
 }
 const inWorld = (x, y) => x >= EXT[0] && x < EXT[2] && y >= EXT[1] && y < EXT[3];
@@ -253,6 +253,18 @@ const bump = (o, k) => (o[k] = (o[k] || 0) + 1);
 // ================================================================= 1. BUILDINGS (3DBAG)
 console.log('[1] 3DBAG buildings');
 const BUILDINGS = []; // {ring (metres, open), h} for the height raster
+const BLD = []; // buildings that went into a tile (parallel to tile.b via tile.bl): {ring, bb, cx, cy, codes, bp, bt}
+function mkBuilding(ring, bb) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const f = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    a += f; cx += (ring[j][0] + ring[i][0]) * f; cy += (ring[j][1] + ring[i][1]) * f;
+  }
+  if (Math.abs(a) < 1e-6) { cx = (bb[0] + bb[2]) / 2; cy = (bb[1] + bb[3]) / 2; } else { cx /= 3 * a; cy /= 3 * a; }
+  const e = { ring, bb, cx, cy, codes: new Set(), bp: 0, bt: 0, st: 0 };
+  BLD.push(e);
+  return e;
+}
 {
   const corners = [];
   for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) corners.push(toRD(latOf(EXT[1] + ((EXT[3] - EXT[1]) * j) / 8), lonOf(EXT[0] + ((EXT[2] - EXT[0]) * i) / 8)));
@@ -293,7 +305,9 @@ const BUILDINGS = []; // {ring (metres, open), h} for the height raster
         add++;
         const tx = Math.floor(cx / TILE), ty = Math.floor(cy / TILE);
         if (!eligible.has(tileKey(tx, ty))) continue;
-        getTile(tx, ty).b.push([h, roof, year, ...localRing(ring, tx * TILE, ty * TILE)]);
+        const tl = getTile(tx, ty);
+        tl.b.push([h, roof, year, ...localRing(ring, tx * TILE, ty * TILE)]);
+        tl.bl.push(mkBuilding(ring, bb2));
       }
     }
     console.log(`  chunk ${ci},${cj}${cached ? ' (cached)' : ''}: ${feats.length} features, +${add} buildings (total ${stats.buildings})`);
@@ -325,6 +339,25 @@ const Q = {
   },
   lines: (b) => `(way["waterway"~"${rx(['canal', 'river', 'stream', 'ditch', 'drain'])}"](${b});way["railway"~"${rx(['tram', 'rail', 'light_rail'])}"](${b}););out geom;`,
   trees: (b) => `(node["natural"="tree"](${b});way["natural"="tree_row"](${b}););out geom;`,
+  // building types, landmarks and point features (one union; relations are filtered to multipolygons in code)
+  bsite: (b) => '(' + [
+    `nwr["building"~"^(church|chapel|cathedral|mosque|synagogue|temple|religious|train_station|school|university|college|hospital|prison|windmill|stadium|sports_hall|parking|greenhouse|retail|supermarket|museum|theatre|government|civic|castle|bunker|fire_station|roof|hotel|industrial|warehouse)$"](${b});`,
+    `nwr["amenity"~"^(place_of_worship|fuel|school|university|college|hospital|prison|parking|theatre|cinema|concert_hall|townhall|courthouse|embassy|fire_station|police|fountain)$"](${b});`,
+    `nwr["tourism"~"^(attraction|museum|hotel|artwork)$"](${b});`,
+    `nwr["historic"~"^(castle|fort|manor|palace|monument|memorial)$"](${b});`,
+    `nwr["man_made"~"^(windmill|lighthouse|water_tower|tower|mast|communications_tower|chimney|flagpole)$"](${b});`,
+    `nwr["shop"~"^(supermarket|mall|department_store|doityourself)$"](${b});`,
+    `nwr["railway"~"^(station|tram_stop)$"](${b});`,
+    `nwr["leisure"~"^(stadium|sports_hall|sports_centre|playground)$"](${b});`,
+    `nwr["landuse"="greenhouse_horticulture"](${b});`,
+    `nwr["military"="bunker"](${b});`,
+    `nwr["office"~"^(government|diplomatic)$"](${b});`,
+    `nwr["attraction"="big_wheel"](${b});`,
+    `nwr["highway"="bus_stop"]["shelter"="yes"](${b});`,
+    `nwr["amenity"="shelter"]["shelter_type"="public_transport"](${b});`,
+  ].join('') + ');out geom;',
+  bparts: (b) => `(way["building:part"](${b});relation["building:part"]["type"="multipolygon"](${b}););out geom;`,
+  barriers: (b) => `way["barrier"~"${rx(['wall', 'fence', 'hedge', 'city_wall', 'retaining_wall'])}"](${b});out geom;`,
   pois: (b) => `(nwr["amenity"~"${rx(['bar', 'pub', 'nightclub', 'biergarten', 'coffee_shop', 'restaurant', 'fast_food', 'cafe', 'bank', 'atm', 'bicycle_parking', 'bench', 'police', 'waste_basket', 'fuel', 'place_of_worship'])}"](${b});nwr["shop"](${b});nwr["highway"="bus_stop"](${b});nwr["railway"="tram_stop"](${b}););out center;`,
 };
 // small layers (lines/trees/pois): use fresh per-sub-bbox Overpass caches when all exist (or FETCH_SMALL=1),
@@ -658,6 +691,484 @@ await eachSub('pois', (el) => {
   getTile(tx, ty).p.push([kind, dm(x, tx * TILE), dm(y, ty * TILE)]);
 });
 
+// ================================================================= 2f. BUILDING TYPES, BUILDING PARTS, BARRIERS, POINT FEATURES, LANDMARKS
+console.log('[2f] building types / parts / barriers / features');
+const dstats = { bt: {}, q: {}, x: {}, f: {}, bp: 0, parts: 0, partsSkipped: 0, entities: 0 };
+const numM = (v) => { // "12", "12 m", "12,5", "40ft" -> metres, NaN if not a number
+  if (v == null) return NaN;
+  const s = String(v).trim().toLowerCase();
+  let n = parseFloat(s.replace(',', '.'));
+  if (!(n === n)) return NaN;
+  if (/ft|'/.test(s)) n *= 0.3048;
+  return n;
+};
+const CSS_COL = {
+  white: 0xffffff, black: 0x000000, grey: 0x808080, gray: 0x808080, lightgrey: 0xd3d3d3, lightgray: 0xd3d3d3, darkgrey: 0xa9a9a9, darkgray: 0xa9a9a9, silver: 0xc0c0c0,
+  dimgray: 0x696969, dimgrey: 0x696969, slategray: 0x708090, slategrey: 0x708090, gainsboro: 0xdcdcdc, whitesmoke: 0xf5f5f5, red: 0xff0000, darkred: 0x8b0000,
+  brown: 0xa52a2a, maroon: 0x800000, beige: 0xf5f5dc, tan: 0xd2b48c, khaki: 0xf0e68c, yellow: 0xffff00, lightyellow: 0xffffe0, gold: 0xffd700, orange: 0xffa500,
+  darkorange: 0xff8c00, orangered: 0xff4500, green: 0x008000, darkgreen: 0x006400, lightgreen: 0x90ee90, olive: 0x808000, lime: 0x00ff00, teal: 0x008080,
+  blue: 0x0000ff, darkblue: 0x00008b, navy: 0x000080, lightblue: 0xadd8e6, skyblue: 0x87ceeb, cyan: 0x00ffff, purple: 0x800080, pink: 0xffc0cb, salmon: 0xfa8072,
+  ivory: 0xfffff0, cream: 0xfffdd0, chocolate: 0xd2691e, sienna: 0xa0522d, peru: 0xcd853f, wheat: 0xf5deb3, bisque: 0xffe4c4, linen: 0xfaf0e6, firebrick: 0xb22222,
+  indianred: 0xcd5c5c, coral: 0xff7f50, tomato: 0xff6347, crimson: 0xdc143c, burlywood: 0xdeb887, sandybrown: 0xf4a460, sand: 0xc2b280, brick: 0x9c4a3c,
+};
+function parseColour(v) {
+  if (v == null) return -1;
+  const s = String(v).trim().toLowerCase().replace(/\s+/g, '');
+  let m = /^#([0-9a-f]{6})$/.exec(s);
+  if (m) return parseInt(m[1], 16);
+  m = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(s);
+  if (m) return parseInt(m[1] + m[1] + m[2] + m[2] + m[3] + m[3], 16);
+  return s in CSS_COL ? CSS_COL[s] : -1;
+}
+function roofShapeCode(v) {
+  if (!v) return 0;
+  const s = String(v).toLowerCase();
+  if (s === 'flat' || s === 'no') return 0;
+  if (s === 'gabled') return 1;
+  if (s === 'hipped') return 2;
+  if (s === 'pyramidal') return 3;
+  if (s === 'dome') return 4;
+  if (s === 'onion') return 5;
+  if (s === 'cone' || s === 'round') return 6;
+  if (s === 'skillion' || s === 'lean_to') return 7;
+  return 8;
+}
+function ringCentroid(ring) {
+  const e = mkBuildingLike(ring);
+  return [e.cx, e.cy];
+}
+function mkBuildingLike(ring) { // same centroid as mkBuilding but without registering
+  const bb = ringBBox(ring);
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const f = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    a += f; cx += (ring[j][0] + ring[i][0]) * f; cy += (ring[j][1] + ring[i][1]) * f;
+  }
+  if (Math.abs(a) < 1e-6) return { cx: (bb[0] + bb[2]) / 2, cy: (bb[1] + bb[3]) / 2 };
+  return { cx: cx / (3 * a), cy: cy / (3 * a) };
+}
+const inPoly = (x, y, P) => pipRing(x, y, P.ring) && !P.holes.some((h) => pipRing(x, y, h));
+function distSeg(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
+}
+function distRing(px, py, ring) {
+  let d = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) d = Math.min(d, distSeg(px, py, ring[j][0], ring[j][1], ring[i][0], ring[i][1]));
+  return d;
+}
+// spatial grid of the 3DBAG buildings that are in tiles (50 m cells, building listed in every cell its bbox touches)
+const GC = 50;
+const BGRID = new Map();
+const gk = (i, j) => i * 100003 + j;
+for (const e of BLD) {
+  for (let i = Math.floor(e.bb[0] / GC); i <= Math.floor(e.bb[2] / GC); i++) for (let j = Math.floor(e.bb[1] / GC); j <= Math.floor(e.bb[3] / GC); j++) {
+    const k = gk(i, j);
+    (BGRID.get(k) || BGRID.set(k, []).get(k)).push(e);
+  }
+}
+let stampN = 0;
+function eachBuildingIn(bb, fn) {
+  stampN++;
+  for (let i = Math.floor(bb[0] / GC); i <= Math.floor(bb[2] / GC); i++) for (let j = Math.floor(bb[1] / GC); j <= Math.floor(bb[3] / GC); j++) {
+    const l = BGRID.get(gk(i, j));
+    if (!l) continue;
+    for (const e of l) { if (e.st === stampN) continue; e.st = stampN; fn(e); }
+  }
+}
+function buildingAtPoint(x, y, maxD) { // containing building, else nearest within maxD metres
+  let hit = null, best = maxD;
+  eachBuildingIn([x - maxD, y - maxD, x + maxD, y + maxD], (e) => {
+    if (hit && hit.inside) return;
+    if (x >= e.bb[0] && x <= e.bb[2] && y >= e.bb[1] && y <= e.bb[3] && pipRing(x, y, e.ring)) { hit = { e, inside: true }; return; }
+    const d = distRing(x, y, e.ring);
+    if (d <= best) { best = d; hit = { e, inside: false }; }
+  });
+  return hit && hit.e;
+}
+
+function overlapShare(b, P) { // share of a 5x5 grid of points inside footprint b that also lie in polygon P
+  let kept = 0, hit = 0;
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
+    const x = b.bb[0] + ((b.bb[2] - b.bb[0]) * (i + 0.5)) / 5, y = b.bb[1] + ((b.bb[3] - b.bb[1]) * (j + 0.5)) / 5;
+    if (!pipRing(x, y, b.ring)) continue;
+    kept++;
+    if (x >= P.bb[0] && x <= P.bb[2] && y >= P.bb[1] && y <= P.bb[3] && inPoly(x, y, P)) hit++;
+  }
+  return kept ? hit / kept : 0;
+}
+
+// ---- classification of an OSM object into bt codes
+function typeCodes(t, area) {
+  const c = new Set(), b = t.building, rel = t.religion;
+  const isWorship = t.amenity === 'place_of_worship' || ['church', 'chapel', 'cathedral', 'mosque', 'synagogue', 'temple', 'religious'].includes(b);
+  if (isWorship) {
+    if (['church', 'chapel', 'cathedral'].includes(b)) c.add(1);
+    else if (b === 'mosque') c.add(2);
+    else if (b === 'synagogue' || b === 'temple') c.add(3);
+    else if (rel === 'muslim') c.add(2);
+    else if (rel && rel !== 'christian') c.add(3);
+    else c.add(1);
+  }
+  if (t.amenity === 'fuel') c.add(4);
+  if (t.railway === 'station' || b === 'train_station') c.add(5);
+  if (['school', 'university', 'college'].includes(t.amenity) || ['school', 'university', 'college'].includes(b)) c.add(6);
+  if (t.amenity === 'hospital' || b === 'hospital') c.add(7);
+  if (t.amenity === 'prison' || b === 'prison') c.add(8);
+  if (t.man_made === 'windmill' || b === 'windmill') c.add(9);
+  if (t.man_made === 'lighthouse') c.add(10);
+  if (t.man_made === 'water_tower') c.add(11);
+  if (t.man_made === 'tower') c.add(12);
+  if (['stadium', 'sports_hall'].includes(t.leisure) || ['stadium', 'sports_hall'].includes(b) || (t.leisure === 'sports_centre' && b)) c.add(13);
+  if ((t.amenity === 'parking' && t.parking === 'multi-storey') || b === 'parking') c.add(14);
+  if (b === 'greenhouse' || t.landuse === 'greenhouse_horticulture') c.add(15);
+  if (['supermarket', 'mall', 'department_store', 'doityourself'].includes(t.shop) || b === 'supermarket' || (b === 'retail' && area > 800)) c.add(16);
+  if (t.tourism === 'museum' || ['theatre', 'cinema', 'concert_hall'].includes(t.amenity) || b === 'museum' || b === 'theatre') c.add(17);
+  if (['townhall', 'courthouse', 'embassy'].includes(t.amenity) || ['government', 'diplomatic'].includes(t.office) || ['government', 'civic'].includes(b) || t.historic === 'palace') c.add(18);
+  if (t.military === 'bunker' || b === 'bunker') c.add(19);
+  if (t.amenity === 'fire_station' || b === 'fire_station') c.add(20);
+  if (t.amenity === 'police') c.add(21);
+  if (b === 'roof') c.add(22);
+  if (t.tourism === 'hotel' || b === 'hotel') c.add(23);
+  if (b === 'industrial' || b === 'warehouse') c.add(24);
+  if (['castle', 'fort', 'manor'].includes(t.historic) || b === 'castle' || (['monument', 'memorial'].includes(t.historic) && b)) c.add(25);
+  return c;
+}
+// Several matches: the most telling type wins (a palace inside a university site is a palace, not a school).
+const BT_ORDER = [10, 9, 11, 8, 5, 1, 2, 3, 25, 18, 17, 13, 7, 20, 21, 22, 4, 14, 12, 19, 6, 23, 16, 15, 24];
+function finalBt(codes) {
+  if (!codes.size) return 0;
+  for (const c of BT_ORDER) if (codes.has(c)) return c;
+  return 0;
+}
+
+// ---- collect the OSM objects
+const ENT = []; // {id, t, polys: [{ring, holes, bb, area}], pt, area}
+await eachSub('bsite', (el) => {
+  const t = el.tags || {};
+  if (el.type === 'relation' && t.type !== 'multipolygon' && t.type !== 'building') return;
+  const e = { id: el.type[0] + el.id, t, polys: [], pt: null, area: 0 };
+  if (el.type === 'node') e.pt = proj(el.lon, el.lat);
+  else {
+    for (const poly of elementPolygons(el)) {
+      const ring = poly[0].map(([lo, la]) => proj(lo, la));
+      if (ring.length < 4) continue;
+      const open = same(ring[0], ring[ring.length - 1]) ? ring.slice(0, -1) : ring;
+      const holes = poly.slice(1).map((h) => h.map(([lo, la]) => proj(lo, la)));
+      const area = ringArea(open) - holes.reduce((s, h) => s + ringArea(h), 0);
+      if (area <= 0) continue;
+      e.polys.push({ ring: open, holes, bb: ringBBox(open), area });
+    }
+    if (e.polys.length) {
+      e.polys.sort((a, b) => b.area - a.area);
+      e.area = e.polys.reduce((s, p) => s + p.area, 0);
+      const c = mkBuildingLike(e.polys[0].ring);
+      e.pt = [c.cx, c.cy];
+    } else if (el.type === 'way' && el.geometry && el.geometry.length) {
+      const g = el.geometry[Math.floor(el.geometry.length / 2)];
+      e.pt = proj(g.lon, g.lat); // open way: use its middle vertex as a point
+    } else if (el.type === 'relation') {
+      const m = (el.members || []).find((q) => q.geometry && q.geometry.length);
+      if (m) { const g = m.geometry[0]; e.pt = proj(g.lon, g.lat); }
+    }
+  }
+  if (!e.pt) return;
+  ENT.push(e);
+});
+dstats.entities = ENT.length;
+
+// ---- building types (bt)
+for (const e of ENT) {
+  const codes = typeCodes(e.t, e.area);
+  if (!codes.size) continue;
+  if (e.polys.length) {
+    // A mapped building outline also claims a footprint that mostly lies in it: the centroid of a
+    // building with a courtyard (Vredespaleis) or an L shape can fall outside its own outline.
+    const isB = !!e.t.building && e.t.building !== 'no';
+    for (const P of e.polys) {
+      eachBuildingIn(P.bb, (b) => {
+        const cIn = b.cx >= P.bb[0] && b.cx <= P.bb[2] && b.cy >= P.bb[1] && b.cy <= P.bb[3] && inPoly(b.cx, b.cy, P);
+        if (cIn || (isB && overlapShare(b, P) >= 0.5)) for (const c of codes) b.codes.add(c);
+      });
+    }
+  } else {
+    // a loose node (a fuel pump, a police post) only claims the building it stands in, or a small one right next to it
+    const b = buildingAtPoint(e.pt[0], e.pt[1], 12);
+    if (b && (pipRing(e.pt[0], e.pt[1], b.ring) || ringArea(b.ring) < 400)) for (const c of codes) b.codes.add(c);
+  }
+}
+const TAGGED = {}; // code -> buildings
+for (const b of BLD) {
+  b.bt = finalBt(b.codes);
+  if (b.bt) bump(dstats.bt, b.bt);
+  for (const c of b.codes) (TAGGED[c] || (TAGGED[c] = [])).push(b);
+}
+const nearTagged = (code, x, y, d) => (TAGGED[code] || []).some((b) => x >= b.bb[0] - d && x <= b.bb[2] + d && y >= b.bb[1] - d && y <= b.bb[3] + d && (pipRing(x, y, b.ring) || distRing(x, y, b.ring) <= d));
+
+// ---- building parts (q) and bp
+const PARTS = []; // {P (outer, holes, bb)}
+await eachSub('bparts', (el) => {
+  const t = el.tags || {};
+  if (!t['building:part'] || t['building:part'] === 'no') return;
+  if (el.type === 'relation' && t.type !== 'multipolygon') return;
+  let roofH = numM(t['roof:height']);
+  if (!(roofH >= 0)) { const rl = numM(t['roof:levels']); roofH = rl > 0 ? rl * 3 : 0; }
+  let H = numM(t.height);
+  if (!(H > 0)) { const lv = numM(t['building:levels']); H = lv > 0 ? lv * 3 + roofH : NaN; }
+  if (!(H > 0) || H > 400) { dstats.partsSkipped++; return; }
+  let minH = numM(t.min_height);
+  if (!(minH >= 0)) { const ml = numM(t['building:min_level']); minH = ml > 0 ? ml * 3 : 0; }
+  if (minH >= H) { dstats.partsSkipped++; return; }
+  roofH = Math.min(roofH, H - minH);
+  const shape = roofShapeCode(t['roof:shape']);
+  const wc = parseColour(t['building:colour']), rc = parseColour(t['roof:colour']);
+  for (const poly of elementPolygons(el)) {
+    const full = poly[0].map(([lo, la]) => proj(lo, la));
+    if (full.length < 4) continue;
+    const open = same(full[0], full[full.length - 1]) ? full.slice(0, -1) : full;
+    if (ringArea(open) < 0.5) continue;
+    const holes = poly.slice(1).map((h) => h.map(([lo, la]) => proj(lo, la)));
+    const c = mkBuildingLike(open);
+    if (!inWorld(c.cx, c.cy)) continue;
+    const tx = Math.floor(c.cx / TILE), ty = Math.floor(c.cy / TILE);
+    if (!eligible.has(tileKey(tx, ty))) continue;
+    const s = simplifyRingOpen(open, 0.3);
+    if (!s) continue;
+    const lr = localRing(s, tx * TILE, ty * TILE);
+    if (lr.length < 6) continue;
+    getTile(tx, ty).q.push([Math.round(H * 10), Math.round(minH * 10), shape, Math.round(roofH * 10), wc, rc, ...lr]);
+    bump(dstats.q, shape);
+    dstats.parts++;
+    PARTS.push({ ring: open, holes, bb: ringBBox(open) });
+  }
+});
+{
+  const PG = new Map();
+  for (const P of PARTS) for (let i = Math.floor(P.bb[0] / GC); i <= Math.floor(P.bb[2] / GC); i++) for (let j = Math.floor(P.bb[1] / GC); j <= Math.floor(P.bb[3] / GC); j++) {
+    const k = gk(i, j);
+    (PG.get(k) || PG.set(k, []).get(k)).push(P);
+  }
+  const inPart = (x, y) => { const l = PG.get(gk(Math.floor(x / GC), Math.floor(y / GC))); return !!l && l.some((P) => x >= P.bb[0] && x <= P.bb[2] && y >= P.bb[1] && y <= P.bb[3] && inPoly(x, y, P)); };
+  if (PARTS.length) for (const b of BLD) {
+    let kept = 0, hit = 0;
+    for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
+      const x = b.bb[0] + ((b.bb[2] - b.bb[0]) * (i + 0.5)) / 5, y = b.bb[1] + ((b.bb[3] - b.bb[1]) * (j + 0.5)) / 5;
+      if (!pipRing(x, y, b.ring)) continue;
+      kept++;
+      if (inPart(x, y)) hit++;
+    }
+    if (kept && hit >= 0.7 * kept) { b.bp = 1; dstats.bp++; }
+  }
+}
+
+// ---- barriers (x)
+const BARR = []; // {kind, h (dm), pts, len}
+function barrierKind(t) {
+  const b = t.barrier;
+  if (b === 'wall') return t.wall === 'retaining_wall' || t.wall === 'city_wall' ? 4 : 1;
+  if (b === 'fence') return 2;
+  if (b === 'hedge') return 3;
+  if (b === 'city_wall' || b === 'retaining_wall') return 4;
+  return 0;
+}
+const BAR_H = { 1: 22, 2: 15, 3: 13, 4: 30 };
+await eachSub('barriers', (el) => {
+  if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
+  const t = el.tags || {};
+  const kind = barrierKind(t);
+  if (!kind || isTunnel(t) || t.location === 'underground') return;
+  const raw = mpts(el.geometry);
+  let len = 0;
+  for (let i = 0; i + 1 < raw.length; i++) len += Math.hypot(raw[i + 1][0] - raw[i][0], raw[i + 1][1] - raw[i][1]);
+  if (len < 4) return;
+  const pts = dpSimplify(raw, TOL_LINE);
+  if (pts.length < 2) return;
+  const hv = numM(t.height);
+  const h = hv >= 0.2 && hv <= 30 ? Math.round(hv * 10) : BAR_H[kind];
+  BARR.push({ kind, h, pts, len, tagged: hv >= 0.2 && hv <= 30 });
+});
+// prison outlines without an explicit wall or fence along most of them become a 5 m wall
+{
+  const SG = new Map(); // wall / fence segments, 20 m cells
+  for (const b of BARR) {
+    if (b.kind === 3) continue;
+    for (let i = 0; i + 1 < b.pts.length; i++) {
+      const [ax, ay] = b.pts[i], [bx, by] = b.pts[i + 1];
+      for (let ci = Math.floor(Math.min(ax, bx) / 20); ci <= Math.floor(Math.max(ax, bx) / 20); ci++) for (let cj = Math.floor(Math.min(ay, by) / 20); cj <= Math.floor(Math.max(ay, by) / 20); cj++) {
+        const k = gk(ci, cj);
+        (SG.get(k) || SG.set(k, []).get(k)).push([ax, ay, bx, by]);
+      }
+    }
+  }
+  const nearWall = (x, y) => {
+    const ci = Math.floor(x / 20), cj = Math.floor(y / 20);
+    for (let i = ci - 1; i <= ci + 1; i++) for (let j = cj - 1; j <= cj + 1; j++) {
+      const l = SG.get(gk(i, j));
+      if (l) for (const s of l) if (distSeg(x, y, s[0], s[1], s[2], s[3]) <= 5) return true;
+    }
+    return false;
+  };
+  dstats.prisons = [];
+  for (const e of ENT) {
+    if (e.t.amenity !== 'prison') continue;
+    for (const P of e.polys) {
+      const ring = P.ring.concat([P.ring[0]]);
+      let n = 0, near = 0;
+      for (let i = 0; i + 1 < ring.length; i++) {
+        const [ax, ay] = ring[i], [bx, by] = ring[i + 1];
+        const L = Math.hypot(bx - ax, by - ay), m = Math.max(1, Math.ceil(L / 4));
+        for (let k = 0; k < m; k++) { n++; if (nearWall(ax + ((bx - ax) * (k + 0.5)) / m, ay + ((by - ay) * (k + 0.5)) / m)) near++; }
+      }
+      const walled = n > 0 && near / n > 0.5;
+      dstats.prisons.push({ id: e.id, name: e.t.name || '', building: e.t.building || '', area: Math.round(P.area), frac: n ? +(near / n).toFixed(2) : 0, walled });
+      if (walled || P.area < 200) continue;
+      const pts = dpSimplify(ring, TOL_LINE);
+      let len = 0;
+      for (let i = 0; i + 1 < pts.length; i++) len += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+      if (len >= 4) BARR.push({ kind: 1, h: 50, pts, len, prison: true });
+    }
+  }
+  // a prison's walls and fences are mapped without a height: they are not garden walls, make them 5 m
+  dstats.prisonWalls = 0;
+  for (const e of ENT) {
+    if (e.t.amenity !== 'prison') continue;
+    for (const P of e.polys) {
+      const bb = [P.bb[0] - 10, P.bb[1] - 10, P.bb[2] + 10, P.bb[3] + 10];
+      for (const b of BARR) {
+        if (b.kind !== 1 && b.kind !== 2) continue; // not hedges, not quay walls
+        if (b.h >= 50 || b.tagged) continue;
+        let n = 0, hit = 0;
+        for (const [x, y] of b.pts) {
+          n++;
+          if (x < bb[0] || x > bb[2] || y < bb[1] || y > bb[3]) continue;
+          if (inPoly(x, y, P) || distRing(x, y, P.ring) <= 3) hit++; // on the site or its outline, not across the street
+        }
+        if (hit > n / 2) { b.h = 50; dstats.prisonWalls++; }
+      }
+    }
+  }
+}
+
+// ---- point features (f)
+function minRect(ring) { // smallest-area oriented rectangle: centre, long side, short side, bearing (deg clockwise from north, 0..180) of the long axis
+  let best = null;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const dx = ring[i][0] - ring[j][0], dy = ring[i][1] - ring[j][1], l = Math.hypot(dx, dy);
+    if (l < 1e-6) continue;
+    const c = dx / l, s = dy / l;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (const [x, y] of ring) { const u = x * c + y * s, v = -x * s + y * c; if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v; }
+    const area = (u1 - u0) * (v1 - v0);
+    if (!best || area < best.area) best = { area, c, s, u0, u1, v0, v1 };
+  }
+  if (!best) return null;
+  const { c, s, u0, u1, v0, v1 } = best, um = (u0 + u1) / 2, vm = (v0 + v1) / 2;
+  const du = u1 - u0, dv = v1 - v0;
+  const ax = du >= dv ? [c, s] : [-s, c]; // long axis direction
+  let bearing = (Math.atan2(ax[0], ax[1]) * 180) / Math.PI;
+  bearing = ((bearing % 180) + 180) % 180;
+  return { x: um * c - vm * s, y: um * s + vm * c, len: Math.max(du, dv), wid: Math.min(du, dv), bearing };
+}
+const FEATS = []; // {type, x, y, a, b, c}
+const featSeen = new Map();
+function addFeat(type, x, y, a, b, c, dedupe = 2) {
+  if (!inWorld(x, y)) return;
+  const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+  if (!eligible.has(tileKey(tx, ty))) return;
+  const key = type + '/' + Math.floor(x / 10) + '/' + Math.floor(y / 10);
+  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+    const l = featSeen.get(type + '/' + (Math.floor(x / 10) + i) + '/' + (Math.floor(y / 10) + j));
+    if (l && l.some((p) => Math.hypot(p[0] - x, p[1] - y) < dedupe)) return;
+  }
+  (featSeen.get(key) || featSeen.set(key, []).get(key)).push([x, y]);
+  FEATS.push({ type, x, y, a, b, c });
+}
+const BADMEM = ['stolperstein', 'plaque', 'ghost_bike', 'tree', 'bench', 'grave'];
+const roofs = [], fuels = [], POINTS = [];
+for (const e of ENT) {
+  const t = e.t;
+  if (t.building === 'roof' && e.polys.length) roofs.push(e);
+  if (t.amenity === 'fuel') fuels.push(e);
+  const mm = t.man_made, hv = numM(t.height);
+  const hdm = hv > 0 && hv < 1000 ? Math.round(hv * 10) : 0;
+  if (mm === 'windmill') POINTS.push([2, e, 0, 9, 15]);
+  else if (mm === 'lighthouse') POINTS.push([3, e, 0, 10, 15]);
+  else if (mm === 'water_tower') POINTS.push([4, e, 0, 11, 15]);
+  else if (mm === 'mast' || mm === 'communications_tower' || (mm === 'tower' && ['communication', 'radar', 'transmitter', 'radio'].includes(t['tower:type']))) POINTS.push([5, e, hdm, 12, 15]);
+  else if (mm === 'chimney') POINTS.push([6, e, hdm, 12, 15]);
+  else if (mm === 'flagpole') addFeat(12, e.pt[0], e.pt[1], 0, 0, 0);
+  if (t.attraction === 'big_wheel') addFeat(7, e.pt[0], e.pt[1], 0, 0, 0, 10);
+  if (((t.historic === 'memorial' || t.historic === 'monument') && !BADMEM.includes(t.memorial) && !BADMEM.includes(t['memorial:type']) && !t.building) || (t.tourism === 'artwork' && t.artwork_type === 'statue')) addFeat(8, e.pt[0], e.pt[1], 0, 0, 0);
+  if (t.amenity === 'fountain') addFeat(9, e.pt[0], e.pt[1], 0, 0, 0);
+  if ((t.highway === 'bus_stop' && t.shelter === 'yes') || t.railway === 'tram_stop' || (t.amenity === 'shelter' && t.shelter_type === 'public_transport')) addFeat(10, e.pt[0], e.pt[1], 0, 0, 0);
+  if (t.leisure === 'playground') addFeat(11, e.pt[0], e.pt[1], 0, 0, 0, 5);
+}
+for (const [type, e, b, code, d] of POINTS) {
+  if (nearTagged(code, e.pt[0], e.pt[1], d)) continue;
+  addFeat(type, e.pt[0], e.pt[1], 0, b, 0, 10);
+}
+{ // fuel forecourts: canopy (building=roof) on the site if mapped, else the site's centroid; area sites first, then nodes
+  fuels.sort((a, b) => (b.polys.length ? 1 : 0) - (a.polys.length ? 1 : 0));
+  dstats.fuel = { sites: fuels.length, canopy: 0, centroid: 0, merged: 0 };
+  const done = [];
+  for (const e of fuels) {
+    const [px, py] = e.pt;
+    if (done.some((d) => Math.hypot(d[0] - px, d[1] - py) < 25)) { dstats.fuel.merged++; continue; }
+    let best = null;
+    for (const r of roofs) {
+      const rp = r.polys[0];
+      const inside = e.polys.some((P) => P.area > 400 && inPoly(r.pt[0], r.pt[1], P));
+      if (!inside && Math.hypot(r.pt[0] - px, r.pt[1] - py) > 25) continue;
+      if (rp.area < 20 || rp.area > 3000) continue;
+      if (!best || rp.area > best.rp.area) best = { r, rp };
+    }
+    let x = px, y = py, a = 0, bl = 180, cw = 90;
+    if (best) {
+      const m = minRect(best.rp.ring);
+      if (m) { x = m.x; y = m.y; a = Math.round(m.bearing) % 180; bl = Math.round(m.len * 10); cw = Math.round(m.wid * 10); dstats.fuel.canopy++; }
+    } else dstats.fuel.centroid++;
+    done.push([x, y]);
+    addFeat(1, x, y, a, bl, cw, 5);
+  }
+}
+for (const f of FEATS) {
+  bump(dstats.f, f.type);
+  const tx = Math.floor(f.x / TILE), ty = Math.floor(f.y / TILE);
+  getTile(tx, ty).f.push([f.type, dm(f.x, tx * TILE), dm(f.y, ty * TILE), f.a, f.b, f.c]);
+}
+
+// ---- landmarks for the index
+const LANDMARKS = [];
+{
+  const cand = [];
+  for (const e of ENT) {
+    const t = e.t, name = clean(t.name);
+    if (!name) continue;
+    const ok = ['attraction', 'museum'].includes(t.tourism) || ['castle', 'palace', 'monument'].includes(t.historic) || (t.amenity === 'place_of_worship' && t.wikidata) ||
+      t.railway === 'station' || ['lighthouse', 'windmill'].includes(t.man_made) || t.leisure === 'stadium';
+    if (!ok) continue;
+    const [x, y] = e.pt;
+    if (!(x >= MX0 && x <= MX1 && y >= MY0 && y <= MY1)) continue;
+    const codes = typeCodes(t, e.area);
+    let kind = codes.size ? finalBt(codes) : 0;
+    if (!kind && t.historic === 'monument') kind = 25;
+    cand.push({ name, x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, kind, both: t.wikidata && t.wikipedia ? 1 : 0, wd: t.wikidata ? 1 : 0, area: e.area });
+  }
+  cand.sort((a, b) => b.both - a.both || b.wd - a.wd || b.area - a.area || (a.name < b.name ? -1 : 1));
+  const names = new Set();
+  for (const c of cand) {
+    const k = c.name.toLowerCase();
+    if (names.has(k)) continue;
+    names.add(k);
+    LANDMARKS.push({ name: c.name, x: c.x, y: c.y, kind: c.kind });
+    if (LANDMARKS.length >= 80) break;
+  }
+  dstats.landmarkCandidates = cand.length;
+}
+console.log(`  osm entities ${ENT.length}; bt tagged ${Object.values(dstats.bt).reduce((a, b) => a + b, 0)} of ${BLD.length}; parts ${dstats.parts} (skipped ${dstats.partsSkipped}); bp ${dstats.bp}; barriers ${BARR.length}; features ${FEATS.length}`);
+
 // ================================================================= 3. TILE CLIPPING
 console.log('[3] clipping ground / roads / rails into tiles');
 const PAD = 2;
@@ -717,6 +1228,28 @@ for (const r of ROADS) {
 }
 for (const r of RAILS) eachLinePiece(r.pts, (tile, lr) => tile.l.push([r.kind, r.flags, ...lr]));
 
+// barriers; if fences + hedges would weigh more than SOFT_MAX bytes, keep only those longer than 12 m (walls always stay)
+const SOFT_MAX = 12e6;
+function clipBarriers(minSoft) {
+  for (const t of tiles.values()) t.x = [];
+  for (const b of BARR) {
+    if ((b.kind === 2 || b.kind === 3) && b.len < minSoft) continue;
+    eachLinePiece(b.pts, (tile, lr) => tile.x.push([b.kind, b.h, ...lr]));
+  }
+  let soft = 0;
+  for (const t of tiles.values()) for (const e of t.x) if (e[0] === 2 || e[0] === 3) soft += JSON.stringify(e).length + 1;
+  return soft;
+}
+let softBytes = clipBarriers(0);
+dstats.softFilter = false;
+if (softBytes > SOFT_MAX) {
+  console.log(`  fences + hedges would add ${(softBytes / 1e6).toFixed(1)} MB: keeping only those longer than 12 m`);
+  dstats.softFilter = true;
+  softBytes = clipBarriers(12);
+}
+dstats.softBytes = softBytes;
+for (const t of tiles.values()) for (const e of t.x) bump(dstats.x, e[0]);
+
 // ================================================================= 4. WRITE TILES
 console.log('[4] writing tiles');
 fs.rmSync(OUT, { recursive: true, force: true });
@@ -732,8 +1265,13 @@ for (const k of [...tiles.keys()].sort()) {
   if (t.l.length) o.l = t.l;
   if (t.t.length) o.t = t.t;
   if (t.p.length) o.p = t.p;
-  if (!Object.keys(o).length) continue;
+  const hasNew = t.q.length || t.x.length || t.f.length;
+  if (!Object.keys(o).length && !hasNew) continue;
   if (t.names.size) o.n = [...t.names.keys()];
+  if (t.b.length) { o.bt = t.bl.map((e) => e.bt); o.bp = t.bl.map((e) => e.bp); }
+  if (t.q.length) o.q = t.q;
+  if (t.x.length) o.x = t.x;
+  if (t.f.length) o.f = t.f;
   const s = JSON.stringify(o);
   fs.writeFileSync(path.join(TILES_DIR, k + '.json'), s);
   tileList.push(k);
@@ -986,6 +1524,12 @@ const index = {
     { name: 'AHN DTM 0.5 m (Rijkswaterstaat / Het Waterschapshuis, CC0) via PDOK WCS', url: 'https://service.pdok.nl/rws/ahn/wcs/v1_0' },
     { name: 'Bomen (Gemeente Den Haag tree register, open data, CC0 1.0; layer "Bomen met ID")', url: 'https://services1.arcgis.com/sbwSZYQOs4GMs7tr/arcgis/rest/services/Bomen_met_ID/FeatureServer/0' },
   ],
+  landmarks: LANDMARKS,
+  tileKeys: {
+    b: '[height_m, roof(0 flat,1 slanted), year, x0,y0,...] 3DBAG footprint', bt: 'per building (parallel to b): 0 nothing special, 1..25 type code', bp: 'per building (parallel to b): 1 = drawn from q parts instead of as a block',
+    q: '[height_dm, min_height_dm, roofShape(0 flat,1 gabled,2 hipped,3 pyramidal,4 dome,5 onion,6 cone/round,7 skillion,8 other), roofHeight_dm, wallRGB|-1, roofRGB|-1, x0,y0,...] OSM building parts, tile of centroid, not clipped',
+    x: '[kind(1 wall,2 fence,3 hedge,4 city/retaining wall), height_dm, x0,y0,...] barriers clipped per tile', f: '[type, x, y, a, b, c] point features, see HANDOFF.md',
+  },
   generated: new Date().toISOString(),
 };
 fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify(index));
@@ -998,5 +1542,6 @@ console.log(`3DBAG raw features ${stats.bagRaw} (dups ${stats.bagDup}); building
 console.log('ground polygons per class', JSON.stringify(stats.ground));
 console.log('roads per class', JSON.stringify(stats.roads));
 console.log('rails per kind', JSON.stringify(stats.rails));
+console.log(`bt per code ${JSON.stringify(dstats.bt)}; bp=1 ${dstats.bp}; parts ${dstats.parts} per roof shape ${JSON.stringify(dstats.q)}; barrier pieces per kind ${JSON.stringify(dstats.x)} (fences+hedges ${(dstats.softBytes / 1e6).toFixed(1)} MB, long-only filter ${dstats.softFilter}); features per type ${JSON.stringify(dstats.f)}; fuel ${JSON.stringify(dstats.fuel)}; prisons ${JSON.stringify(dstats.prisons)} (walls raised ${dstats.prisonWalls}); landmarks ${LANDMARKS.length}`);
 console.log(`trees in tiles ${stats.trees} (OSM ${stats.treesOsm}, register ${stats.treesRegister}); pois (world) per kind ${JSON.stringify(stats.pois)}`);
 console.log(`tiles written ${tileList.length}; tile json ${(tilesBytes / 1e6).toFixed(1)} MB; largest ${largest.k} ${(largest.size / 1e6).toFixed(2)} MB; world dir total ${(total / 1e6).toFixed(1)} MB`);

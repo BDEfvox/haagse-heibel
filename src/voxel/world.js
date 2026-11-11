@@ -5,7 +5,8 @@ import { Vox, clamp, makeRng, hashStr } from './kit.js';
 import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
-import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED } from './landmarks.js';
+import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } from './landmarks.js';
+import { SPECIAL_PARTS } from './special-parts.js';
 
 const ROOT = './data/world/';
 const TILE = 256;
@@ -409,21 +410,27 @@ function drawGeneric(v, gl, b, look, night, simple = false) {
   const rad = Math.min(o.w, o.d) / 2;
   v.setB(o.cx, o.cz, h + 2, rad); gl.setB(o.cx, o.cz, h + 2, rad);
   const wall = look.wall, roofCol = look.roof;
-  const small = b.area < 22;
+  const small = b.area < 22, one = b.rects.length === 1;
   for (const r of b.rects) {
-    // the windows are painted on by the shader (see cutPatch): a grid on houses, ribbons of glass on towers
-    v.setW(small || h <= 3.4 ? 0 : tall ? 2 : 1);
-    v.box(r.x, 0, r.z, r.w, h, r.d, small ? P.shade(wall, 0.8) : wall, 0.035);
-    v.setW(0);
     const span = Math.min(r.w, r.d);
-    if (b.roof && b.rects.length === 1 && span < 14 && !tall) {
-      const alongX = r.w >= r.d, rise = clamp(span * 0.36, 0.9, 3.2), n = 3;
+    // a sloping roof where the register says there is one: on a terraced house, and on the wings of a big old block alike
+    const sloped = b.roof && !tall && span < 26 && span > (one ? 0 : 2.4);
+    const rise = sloped ? clamp(span * 0.36, 0.9, 5.5) : 0;
+    // the measured height already takes in most of a sloping roof: the walls stop lower, so the ridge ends up near it
+    const hw = sloped ? Math.max(2.4, h - rise * 0.55) : h;
+    if (sloped) { v.setB(o.cx, o.cz, hw + 2, rad); gl.setB(o.cx, o.cz, hw + 2, rad); }
+    // the windows are painted on by the shader (see cutPatch): a grid on houses, ribbons of glass on towers
+    v.setW(small || hw <= 3.4 ? 0 : tall ? 2 : 1);
+    v.box(r.x, 0, r.z, r.w, hw, r.d, small ? P.shade(wall, 0.8) : wall, 0.035);
+    v.setW(0);
+    if (sloped) {
+      const alongX = r.w >= r.d, n = simple ? 2 : rise > 3.4 ? 5 : 3;
       for (let i = 0; i < n; i++) {
         const k = 1 - (i * 0.92) / n;
-        v.box(r.x, h + (i * rise) / n, r.z, alongX ? r.w + 0.1 : r.w * k + 0.1, rise / n, alongX ? r.d * k + 0.1 : r.d + 0.1, roofCol, 0.05);
+        v.box(r.x, hw + (i * rise) / n, r.z, alongX ? r.w + 0.1 : r.w * k + 0.1, rise / n, alongX ? r.d * k + 0.1 : r.d + 0.1, roofCol, 0.05);
       }
       // a chimney breaks the roof line
-      if (!small && !simple && rnd.chance(0.5)) v.box(r.x + (alongX ? rnd.range(-0.3, 0.3) * r.w : 0), h + rise * 0.3, r.z + (alongX ? 0 : rnd.range(-0.3, 0.3) * r.d), 0.6, rise * 0.7 + 0.7, 0.6, '#8a5a48', 0.08);
+      if (!small && !simple && rnd.chance(0.5)) v.box(r.x + (alongX ? rnd.range(-0.3, 0.3) * r.w : 0), hw + rise * 0.3, r.z + (alongX ? 0 : rnd.range(-0.3, 0.3) * r.d), 0.6, rise * 0.7 + 0.7, 0.6, '#8a5a48', 0.08);
     } else {
       v.box(r.x, h, r.z, r.w + 0.15, 0.3, r.d + 0.15, tall ? P.shade(wall, 0.8) : '#efe9dc');
       if (span > 2 && !simple) v.box(r.x, h + 0.3, r.z, r.w - 0.5, 0.08, r.d - 0.5, '#4a4e57');
@@ -1108,7 +1115,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     b.area = ringArea(b.ring);
     b.look = lookOf(b.key, b.bi, b);
     // a church stays a church: buildings with a type or a landmark's own parts are drawn by the tiles, not as house fronts here
-    b.ext = !!((b.t.bp && b.t.bp[b.bi]) || (b.t.bt && TYPED.has(b.t.bt[b.bi])));
+    b.ext = !!((b.t.bp && b.t.bp[b.bi]) || (b.t.bt && TYPED.has(b.t.bt[b.bi])) || specialOf(b.key, b.t, b.bi));
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(b.ring, b.o);
     const o = b.o, pr = path.project(o.cx, o.cz);
     b.s = pr.s; b.v = pr.v; b.dist = pr.d;
@@ -1404,16 +1411,17 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     flats.push(flat);
     for (let i = 0; i + 1 < flat.length; i += 2) ring.push([flat[i], flat[i + 1]]);
     if (ring.length < 3) return;
-    if (t.bp && t.bp[bi]) return; // drawn from its parts, below
+    const sp = specialOf(key, t, bi);
+    if (t.bp && t.bp[bi] && !sp) return; // drawn from its parts, below
     const b = { ring, h: e[0], roof: e[1], year: e[2] };
     b.o = obbOf(ring);
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
     const look = lookOf(key, bi, b), type = t.bt ? t.bt[bi] : 0;
-    if (type && TYPED.has(type)) {
+    if (sp || (type && TYPED.has(type))) {
       const n0 = vx.n, g0 = glx.n;
       let done = false;
-      try { done = drawTyped(vx, glx, b, type, { wall: look.wall, roof: look.roof }, look.rnd, night); } catch (err) { vx.n = n0; glx.n = g0; }
+      try { done = drawTyped(vx, glx, b, type, { wall: look.wall, roof: look.roof }, look.rnd, night, sp); } catch (err) { vx.n = n0; glx.n = g0; if (import.meta.env.DEV) console.warn('landmark drawer failed', sp ? sp.id : type, err); }
       vx.setT(); glx.setT(); vx.setW(0);
       if (done) return;
       vx.n = n0; glx.n = g0; // it declined: a plain block after all (drawn here too, so it never changes with the focus)
@@ -1423,17 +1431,19 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     drawGeneric(v, gl, b, look, night, lod === 2);
   });
   const xr = makeRng(hashStr('extras|' + key));
-  for (const e of t.q || []) {
+  const hidden = SPECIAL_PARTS[key];
+  (t.q || []).forEach((e, qi) => {
     // a landmark's own shape, part by part (towers, wings, domes), from the map's 3D building parts
+    if (hidden && hidden.includes(qi)) return; // under a hand-made landmark
     const ring = [];
     let cx = 0, cz = 0;
     for (let i = 6; i + 1 < e.length; i += 2) { const x = e[i] / 10, z = TILE - e[i + 1] / 10; ring.push([x, z]); cx += x; cz += z; }
-    if (ring.length < 3) continue;
+    if (ring.length < 3) return;
     cx /= ring.length; cz /= ring.length;
     const n0 = vx.n, g0 = glx.n;
     try { drawParts(vx, glx, [{ ring, h: e[0] / 10, min: e[1] / 10, roof: e[2], roofH: e[3] / 10, wall: e[4], roofCol: e[5] }], { wall: '#b9a58f', roof: '#5d646d' }, cx, cz, e[0] / 10, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
-  }
+  });
   for (const e of t.f || []) {
     // free-standing things: fuel station canopies, windmills, masts, statues, fountains, shelters
     if (lod === 2 && !(e[0] >= 2 && e[0] <= 7)) continue; // from far away only the tall ones matter
