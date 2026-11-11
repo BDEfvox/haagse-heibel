@@ -116,6 +116,7 @@ function schedule() {
   const a = ac;
   if (!a || !tune) return;
   const spb = 60 / tune.bpm / 2;
+  if (nextT < a.currentTime) nextT = a.currentTime + 0.02; // after a throttled background tab: skip the missed beats instead of playing them all at once
   while (nextT < a.currentTime + 0.15) {
     const at = Math.max(0, nextT - a.currentTime);
     const b = tune.bass[step % tune.bass.length], l = tune.lead[step % tune.lead.length];

@@ -21,6 +21,8 @@ const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.k
 const BB = [51.98, 4.15, 52.15, 4.47];
 const BBS = BB.join(',');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Names come from sources anyone can edit: drop control and invisible direction-changing characters and markup brackets.
+const clean = (v) => String(v ?? '').replace(/[\p{Cc}\p{Cf}<>]/gu, '').trim().slice(0, 80);
 
 // ---------------------------------------------------------------- fetching
 async function cachedJson(name, fn) {
@@ -33,7 +35,7 @@ async function cachedJson(name, fn) {
 async function getJson(url, opts = {}) {
   for (let a = 0; a < 4; a++) {
     try {
-      const r = await fetch(url, { ...opts, headers: { 'User-Agent': UA, ...(opts.headers || {}) } });
+      const r = await fetch(url, { ...opts, signal: AbortSignal.timeout(180000), headers: { 'User-Agent': UA, ...(opts.headers || {}) } });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return await r.json();
     } catch (e) {
@@ -58,7 +60,7 @@ async function overpass(name, body) {
       for (const ep of OVERPASS) {
         try {
           console.log(`  overpass ${name} via ${ep} ...`);
-          const r = await fetch(ep, { method: 'POST', headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
+          const r = await fetch(ep, { method: 'POST', signal: AbortSignal.timeout(400000), headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const j = await r.json();
           if (j.remark && /error|timed out|out of memory/i.test(j.remark)) throw new Error('remark: ' + j.remark);
@@ -298,7 +300,7 @@ async function loadBuurten() {
   const bj = await cachedJson('buurten.json', () => getJson(wfsUrl('buurten', FILTER_DH)));
   const wj = await cachedJson('wijken.json', () => getJson(wfsUrl('wijken', FILTER_DH)));
   if (bj.features.length >= 1000) throw new Error('buurten WFS truncated');
-  const wijkName = new Map(wj.features.map((f) => [f.properties.wijkcode, f.properties.wijknaam]));
+  const wijkName = new Map(wj.features.map((f) => [f.properties.wijkcode, clean(f.properties.wijknaam)]));
 
   // crime table: pick latest complete year
   const periods = (await getJson(`${ODATA}/Perioden`)).value.map((p) => p.Key).filter((k) => /JJ00$/.test(k)).sort();
@@ -317,7 +319,7 @@ async function loadBuurten() {
   if (!rows) throw new Error('no crime year with data');
   const crimeBy = new Map(); // code -> {total, cats:Map(label->n)}
   for (const r of rows) {
-    const code = r.WijkenEnBuurten.trim(), cat = r.SoortMisdrijf.trim(), n = r.GeregistreerdeMisdrijven_1 || 0;
+    const code = r.WijkenEnBuurten.trim(), cat = r.SoortMisdrijf.trim(), n = Math.max(0, Math.round(Number(r.GeregistreerdeMisdrijven_1)) || 0); // upstream values are forced to plain counts
     let e = crimeBy.get(code);
     if (!e) crimeBy.set(code, (e = { total: 0, hasTotal: false, cats: new Map(), raw: {} }));
     if (cat === '0.0.0') { e.total = n; e.hasTotal = true; continue; }
@@ -336,7 +338,7 @@ async function loadBuurten() {
     seen.add(code);
     const land = p.oppervlakteLandInHa > 0 ? p.oppervlakteLandInHa / 100 : 0;
     list.push({
-      code, name: p.buurtnaam, wijk: wijkName.get(p.wijkcode) || '', pop: p.aantalInwoners > 0 ? p.aantalInwoners : 0, areaKm2: land, geom: f.geometry,
+      code, name: clean(p.buurtnaam), wijk: wijkName.get(p.wijkcode) || '', pop: p.aantalInwoners > 0 ? p.aantalInwoners : 0, areaKm2: land, geom: f.geometry,
     });
   }
   list.sort((a, b) => (a.code < b.code ? -1 : 1));
@@ -433,6 +435,7 @@ const buurtFeatures = B.list.map((b, i) => {
 console.log('[2] OSM');
 const HW = 'trunk|primary|secondary|tertiary|unclassified|residential|living_street|pedestrian';
 const osmStreets = await overpass('osm-streets', `way["highway"~"^(${HW})$"]["name"](${BBS});out geom;`);
+for (const el of osmStreets.elements) if (el.tags?.name) el.tags.name = clean(el.tags.name);
 const osmPois = await overpass('osm-pois', `(nwr["amenity"~"^(bar|pub|nightclub|biergarten|coffee_shop|restaurant|fast_food|cafe)$"](${BBS});nwr["shop"](${BBS}););out center qt;`);
 const osmTrees = await overpass('osm-trees', `node["natural"="tree"](${BBS});out skel qt;`);
 const osmBld = await overpass('osm-buildings', `way["building"]["building:levels"](${BBS});out center qt;`);
@@ -673,7 +676,7 @@ const meta = {
   sources: [
     { name: 'CBS/PDOK Wijken en buurten ' + GEOM_YEAR + ' (WFS: buurten, wijken, gemeenten)', url: PDOK },
     { name: 'Politie / CBS 47018NED Geregistreerde misdrijven per wijk en buurt, jaarcijfers', url: ODATA + '/' },
-    { name: 'OpenStreetMap contributors via Overpass API (ODbL)', url: 'https://overpass-api.de/' },
+    { name: '© OpenStreetMap contributors (ODbL), fetched via the Overpass API', url: 'https://www.openstreetmap.org/copyright' },
   ],
   method: 'Each neighbourhood gets a score from the percentile rank of registered crimes per 1,000 residents (65%, residents floored at 500) and crimes per km2 (35%); ties get the average rank. Each named street starts from its neighbourhood score and is nudged up or down by what OpenStreetMap says is around it: bars, shops, stations, promenades, beaches, through-roads, parks and quiet residential lanes. Levels run from Sleepy to Mayhem.',
   counts: { buurten: buurtFeatures.length, streets: streetFeatures.length },

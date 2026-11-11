@@ -16,8 +16,10 @@ npm run dev      # http://localhost:5183
 npm run build    # static site in dist/
 ```
 
-Handy URL switches while developing: `?q=Grote Marktstraat` opens a street directly,
-`&lvl=5` forces a crime level, `&only=plofkraak` loops a single gag.
+`?q=Grote Marktstraat` opens a street directly. On the dev server only, `&lvl=5` forces a crime
+level, `&only=plofkraak` loops a single gag, and `__heibel.stage` is available in the console
+(`debugPlay('<gag>')`, `gagNames`). These switches do not exist in the built site, so nobody can
+share a link that shows a street at a level it does not have.
 
 In a street: the camera first follows the action; drag to take over (drag = move, right-drag or
 two fingers = turn, scroll or pinch = zoom, WASD/arrows also work). Red `!` pins mark gags elsewhere
@@ -30,7 +32,8 @@ on the street; **Follow the action** hands the camera back.
 | Neighbourhood borders, residents | CBS / PDOK *Wijken en buurten* 2025 |
 | Registered crimes per neighbourhood, 2025 | Politie open data via CBS table 47018NED |
 | Streets, shops, bars, tram lines, water, parks, trees | OpenStreetMap contributors (ODbL) |
-| Building outlines, heights, roof type, year built | 3DBAG (TU Delft / Kadaster, CC BY 4.0) |
+| Building outlines, heights, roof type, year built | 3DBAG by tudelft3d and 3DGI (CC BY 4.0) |
+| Map label glyphs (self-hosted in `public/fonts/`) | Noto Sans (SIL OFL 1.1) |
 
 **Neighbourhood level (real).** Each of the 114 neighbourhoods gets a 0–100 score: 65% from its
 percentile rank on registered crimes per 1,000 residents (residents floored at 500 so near-empty
@@ -57,6 +60,21 @@ points of interest, plus two low-resolution rasters of the whole city (slow the 
 Registered crime reflects reporting behaviour and visitor numbers as much as danger: a busy centre
 always scores worse than a sleepy suburb. The cartoon scenes are jokes — not a safety guide, and not
 a verdict on the people who live there.
+
+## Security and privacy
+
+- The built page needs nothing from other origins: fonts, map glyphs, the map worker and all data
+  are served from the site itself. There are no cookies, no analytics and no third-party requests.
+  The only thing stored in the browser is the sound on/off choice.
+- `vite build` adds a strict Content-Security-Policy as a meta tag (`vite.config.js`). Static hosts
+  such as GitHub Pages cannot send response headers, so `frame-ancestors`, HSTS and
+  `X-Content-Type-Options` need a CDN or proxy in front if you want them.
+- Every string from the data files is escaped before it reaches HTML, numbers are coerced, and the
+  build scripts strip control and direction-changing characters from names.
+- CI (`.github/workflows/pages.yml`) builds with a read-only token, pins actions to commit hashes,
+  installs without lifecycle scripts and fails on high-severity advisories in shipped dependencies.
+
+Data licences are listed in `public/data/LICENSE.txt` and in the site's About box.
 
 ## How the street scenes work
 

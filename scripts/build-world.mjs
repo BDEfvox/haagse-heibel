@@ -16,6 +16,8 @@ fs.mkdirSync(CACHE, { recursive: true });
 
 const UA = 'hague-map-builder/1.0';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Names come from a source anyone can edit: drop control and invisible direction-changing characters and markup brackets.
+const clean = (v) => String(v ?? '').replace(/[\p{Cc}\p{Cf}<>]/gu, '').trim().slice(0, 80);
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 
 // tunables (raise if output is too large)
@@ -170,7 +172,7 @@ async function overpassQuery(cacheName, body) {
     for (const ep of OVERPASS) {
       try {
         console.log(`  overpass ${cacheName} via ${ep} ...`);
-        const r = await fetch(ep, { method: 'POST', headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
+        const r = await fetch(ep, { method: 'POST', signal: AbortSignal.timeout(400000), headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         if (j.remark && /error|timed out|out of memory/i.test(j.remark)) throw new Error('remark: ' + j.remark);
@@ -202,7 +204,7 @@ async function bagChunk(ci, cj, bb) {
     let j = null, lastErr;
     for (let a = 0; a < 5 && !j; a++) {
       try {
-        const r = await fetch(url, { headers: { 'User-Agent': UA } });
+        const r = await fetch(url, { signal: AbortSignal.timeout(180000), headers: { 'User-Agent': UA } });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         j = await r.json();
         if (!Array.isArray(j.features)) throw new Error('no features');
@@ -214,6 +216,7 @@ async function bagChunk(ci, cj, bb) {
     start += n;
     const nm = typeof j.numberMatched === 'number' ? j.numberMatched : null;
     if (n === 0 || (nm !== null ? start >= nm : n < BAG_PAGE)) break;
+    if (start > 400000) throw new Error(`3DBAG chunk ${ci},${cj} returned an implausible number of features`); // a broken server must not page forever
     await sleep(300);
   }
   fs.writeFileSync(f, zlib.gzipSync(JSON.stringify(all)));
@@ -446,7 +449,7 @@ await eachSub('roads', (el) => {
   if (pts.length < 2) return;
   let w = saneWidth(t.width);
   if (!w) { const lanes = parseInt(t.lanes); w = lanes > 0 && lanes < 12 ? lanes * 32 + 10 : ROAD_W[cls]; }
-  ROADS.push({ cls, w, name: t.name || '', flags: roadFlags(t), pts });
+  ROADS.push({ cls, w, name: clean(t.name), flags: roadFlags(t), pts });
   bump(stats.roads, cls);
 });
 console.log('[2b] waterways + rails');
@@ -457,12 +460,14 @@ await eachSub('lines', (el) => {
   if (pts.length < 2) return;
   if (t.waterway) {
     const w = saneWidth(t.width) || (t.waterway === 'canal' || t.waterway === 'river' ? 80 : 25);
-    ROADS.push({ cls: 20, w, name: t.name || '', flags: (isBridge(t) ? 2 : 0) | (isTunnel(t) ? 4 : 0), pts });
+    ROADS.push({ cls: 20, w, name: clean(t.name), flags: (isBridge(t) ? 2 : 0) | (isTunnel(t) ? 4 : 0), pts });
     bump(stats.roads, 20);
   } else if (t.railway) {
     const kind = { tram: 1, rail: 2, light_rail: 3 }[t.railway];
     if (!kind) return;
-    RAILS.push({ kind, flags: (isBridge(t) ? 2 : 0) | (isTunnel(t) ? 4 : 0), pts });
+    // underground tram and metro track is often tagged only with a negative layer or level
+    const under = isTunnel(t) || Number(t.layer) < 0 || Number(t.level) < 0;
+    RAILS.push({ kind, flags: (isBridge(t) ? 2 : 0) | (under ? 4 : 0), pts });
     bump(stats.rails, kind);
   }
 });

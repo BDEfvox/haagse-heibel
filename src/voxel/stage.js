@@ -2,8 +2,8 @@
 // contexts handed to gag scripts. Gag scripts think in "street space" (x along the street, z across it);
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
-import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt } from './kit.js';
-import { buildWorld, preload, U, cutWeight } from './world.js';
+import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT } from './kit.js';
+import { buildWorld, preload, U, cutWeight, CUT } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
@@ -23,6 +23,16 @@ const DMIN = 20, DMAX = 9000;
 const sm = (x) => x * x * (3 - 2 * x);
 const angDiff = (a, b) => { const d = b - a; return Math.atan2(Math.sin(d), Math.cos(d)); };
 const _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3();
+
+/** Free the GPU buffers of an object that has left the scene for good. */
+const SHARED = new Set([MAT.solid, MAT.glow, MAT.water, CUT.solid, CUT.glow, CUT.depth]);
+function disposeTree(o) {
+  o.traverse((c) => {
+    if (c.geometry) c.geometry.dispose();
+    if (c.material && !SHARED.has(c.material)) c.material.dispose(); // per-object materials (signs, beams, clouds); shared ones stay
+  });
+}
+const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** Make an object live in a context's street space: its position is (x along, y up, z across) from that spot. */
 function warp(obj, ctx, path) {
@@ -79,7 +89,19 @@ export class Stage {
     this.keys = new Set();
     this._bindInput();
     new ResizeObserver(() => this._resize()).observe(root);
-    this._tick = this._tick.bind(this);
+    // one bad frame must not kill the page: log it, and bow out cleanly if it keeps happening
+    this._errs = 0;
+    this._tick = (now) => {
+      if (!this.running) return;
+      this._raf = requestAnimationFrame(this._tick);
+      try {
+        this._frame(now);
+        this._errs = 0;
+      } catch (e) {
+        if (!this._errs++) console.error('frame error', e);
+        if (this._errs > 20) { this.running = false; this.hooks?.onContextLost?.(); }
+      }
+    };
   }
 
   // ------------------------------------------------------------ input
@@ -100,6 +122,7 @@ export class Stage {
     let drag = null, pinch = null;
     const two = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x) }; };
     c.addEventListener('contextmenu', (e) => e.preventDefault());
+    c.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.running = false; this.hooks?.onContextLost?.(); });
     c.addEventListener('pointerdown', (e) => {
       c.setPointerCapture(e.pointerId);
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -132,6 +155,8 @@ export class Stage {
     };
     c.addEventListener('pointerup', end);
     c.addEventListener('pointercancel', end);
+    c.addEventListener('lostpointercapture', end);
+    this._clearPointers = () => { pts.clear(); drag = null; pinch = null; };
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
       if (!this._take()) return;
@@ -174,7 +199,7 @@ export class Stage {
   _view(ctx) {
     const path = this.W.path, p = path.xz(ctx.sc, -(this.W.L.hw + this.W.L.bw) * 0.6 - 1.2);
     path.at(ctx.sc, _f);
-    return { tx: p[0], tz: p[1], ty: 1.5, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit };
+    return { tx: p[0], tz: p[1], ty: 1.5, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 65 };
   }
   _setMode(mode) {
     if (this.mode === mode) return;
@@ -213,7 +238,7 @@ export class Stage {
   async show(st, hooks = {}, opts = {}) {
     this.hide();
     const token = this._tok;
-    const level = clamp(st.level || 1, 1, 5), sky = SKY[level];
+    const level = clamp(Math.round(+st.level) || 1, 1, 5), sky = SKY[level];
     this.hooks = hooks;
     this.root.style.setProperty('--sky-top', sky.top);
     this.root.style.setProperty('--sky-bot', sky.bot);
@@ -226,6 +251,19 @@ export class Stage {
       return false;
     }
     if (token !== this._tok) { W.dispose(); return false; }
+    try {
+      this._begin(W, st, sky, level, opts);
+    } catch (e) {
+      console.error('scene start failed', e);
+      if (!this.W) W.dispose();
+      this.hide();
+      return false;
+    }
+    return true;
+  }
+
+  _begin(W, st, sky, level, opts) {
+    const hooks = this.hooks;
     this.W = W;
     this.sky = sky;
     this.sun.color.set(sky.sun); this.sun.intensity = sky.sunI;
@@ -291,12 +329,12 @@ export class Stage {
           // big comic words are the punchlines: nudge the camera towards them
           if ((o.size ?? 22) >= 20) stage._focus(ctx, wp.x, wp.z, 0.66, 2.4, 1);
         },
-        shake: (a) => { if (near()) stage.fx.shake(a); },
+        shake: (a) => { if (near() && !CALM) stage.fx.shake(a); },
       };
       for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y, p[1], ...rest); };
       const ctx = {
         id, sc, L, st, level, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
-        world: { add: (o) => { warp(o, ctx, path); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); } },
+        world: { add: (o) => { warp(o, ctx, path); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
         spawn(a, x, z, y) {
           a.g.position.set(x, y ?? 0, z);
@@ -311,16 +349,17 @@ export class Stage {
         despawn(a) {
           a.alive = false;
           a.g.parent?.remove(a.g);
+          disposeTree(a.g);
           const i = stage.actors.indexOf(a);
           if (i >= 0) stage.actors.splice(i, 1);
         },
         toLocal(v) { const pr = path.project(v.x, v.z); v.x = pr.s - sc; v.z = pr.v; return v; },
         sfx: (name, ...args) => { if (!document.hidden && near()) sfx[name]?.(...args); },
         focus: (x, z, zoom = 0.6, hold = 2.5, prio = 1) => { const p = map(x, z); this._focus(ctx, p[0], p[1], zoom, hold, prio); },
-        shake: (a) => { if (near()) this.fx.shake(a); },
-        slowmo: (scale, dur) => { if (near()) this.slow = { scale, t: dur }; },
+        shake: (a) => { if (near() && !CALM) this.fx.shake(a); },
+        slowmo: (scale, dur) => { if (near() && !CALM) this.slow = { scale, t: dur }; },
         flash: (color = '#fff', dur = 0.4) => {
-          if (!near()) return;
+          if (!near() || CALM) return; // no full-screen flashes for people who asked for reduced motion
           this.flashEl.style.background = color;
           this.flashEl.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur * 1000, easing: 'ease-out' });
         },
@@ -369,8 +408,8 @@ export class Stage {
     }
     this.running = true;
     this.last = performance.now();
-    requestAnimationFrame(this._tick);
-    return true;
+    cancelAnimationFrame(this._raf); // never two loops at once
+    this._raf = requestAnimationFrame(this._tick);
   }
 
   _clouds(rnd, sky) {
@@ -395,17 +434,19 @@ export class Stage {
   hide() {
     this._tok++;
     this.running = false;
+    cancelAnimationFrame(this._raf);
+    this._clearPointers?.();
     this.mode = 'idle';
     if (this.runner) this.runner.clear();
     if (this.fx) { this.fx.dispose(); this.fx = null; }
     for (const p of this.pins) p.el.remove();
     this.pins = [];
     if (this.dyn) {
-      this.dyn.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+      disposeTree(this.dyn);
       this.scene.remove(this.dyn);
       this.dyn = null;
     }
-    if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; }
+    if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
     this.actors = [];
     this.gags = new Set();
@@ -445,7 +486,7 @@ export class Stage {
     for (let i = this.life.length - 1; i >= 0; i--) {
       const l = this.life[i];
       l.s += l.dir * l.speed * dt;
-      if (l.s < 0 || l.s > l.path.len) { this.dyn.remove(l.a.g); this.life.splice(i, 1); continue; }
+      if (l.s < 0 || l.s > l.path.len) { this.dyn.remove(l.a.g); disposeTree(l.a.g); this.life.splice(i, 1); continue; }
       l.path.at(l.s, _f);
       l.a.g.position.set(_f.x - _f.tz * l.lane, 0, _f.z + _f.tx * l.lane);
       l.a.heading = Math.atan2(_f.tx * l.dir, _f.tz * l.dir);
@@ -469,6 +510,7 @@ export class Stage {
     while (this.pins.length < live.length) {
       const el = document.createElement('button');
       el.className = 'gag-pin';
+      el.setAttribute('aria-label', 'Jump to the action');
       el.innerHTML = '<span>!</span>';
       const pin = { el, ctx: null };
       el.addEventListener('click', () => { if (pin.ctx) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } });
@@ -494,9 +536,7 @@ export class Stage {
   }
 
   // ------------------------------------------------------------ frame
-  _tick(now) {
-    if (!this.running) return;
-    requestAnimationFrame(this._tick);
+  _frame(now) {
     const real = clamp((now - this.last) / 1000, 0, 0.05);
     this.last = now;
     if (this.slow) { this.slow.t -= real; if (this.slow.t <= 0) this.slow = null; }

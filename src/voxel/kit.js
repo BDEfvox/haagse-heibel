@@ -81,15 +81,26 @@ const FACES = [
  */
 export class Vox {
   constructor(seed = 1, tags = false) {
-    this.pos = [];
-    this.nor = [];
-    this.col = [];
-    this.idx = [];
-    this.tag = tags ? [] : null;
+    // typed arrays that grow by doubling: a big scene is millions of numbers, and plain arrays cost several times the memory
+    this.cap = 256; // vertices
+    this.pos = new Float32Array(this.cap * 3);
+    this.nor = new Float32Array(this.cap * 3);
+    this.col = new Float32Array(this.cap * 3);
+    this.tag = tags ? new Float32Array(this.cap * 4) : null;
+    this.idx = new Uint32Array((this.cap / 4) * 6);
     this.B = null;
     this.T = null;
     this.n = 0;
     this._s = seed >>> 0 || 1;
+  }
+  _grow() {
+    const grow = (a, len) => { const b = new a.constructor(len); b.set(a); return b; };
+    this.cap *= 2;
+    this.pos = grow(this.pos, this.cap * 3);
+    this.nor = grow(this.nor, this.cap * 3);
+    this.col = grow(this.col, this.cap * 3);
+    if (this.tag) this.tag = grow(this.tag, this.cap * 4);
+    this.idx = grow(this.idx, (this.cap / 4) * 6);
   }
   _rand() {
     this._s = (Math.imul(this._s, 1664525) + 1013904223) >>> 0;
@@ -100,46 +111,53 @@ export class Vox {
     this.T = angle === undefined ? null : { c: Math.cos(angle), s: Math.sin(angle), x, y, z };
     return this;
   }
-  /** Cutaway tag for following boxes: the owning building's centre and height. */
+  /** Cutaway tag for following boxes: the owning building's centre, height and half-depth. */
   setB(cx, cz, h, r = 0) {
     this.B = cx === undefined ? null : [cx, cz, h, r];
     return this;
   }
   /** vary: random lightness jitter (0..1) to give flat colours a hand-placed feel. */
   box(x, y, z, w, h, d, color, vary = 0) {
+    if (this.n + 24 > this.cap) this._grow();
     _c.set(color);
     if (vary) _c.multiplyScalar(1 + (this._rand() * 2 - 1) * vary);
-    const X = [x - w / 2, x + w / 2], Y = [y, y + h], Z = [z - d / 2, z + d / 2];
-    const T = this.T, B = this.B, pos = this.pos, nor = this.nor, col = this.col, tag = this.tag;
-    for (const f of FACES) {
+    const X0 = x - w / 2, X1 = x + w / 2, Y1 = y + h, Z0 = z - d / 2, Z1 = z + d / 2;
+    const T = this.T, B = this.B, pos = this.pos, nor = this.nor, col = this.col, tag = this.tag, idx = this.idx;
+    const r = _c.r, g = _c.g, bl = _c.b;
+    let n = this.n;
+    for (let fi = 0; fi < 6; fi++) {
+      const f = FACES[fi];
       let nx = f[4][0], nz = f[4][2];
       const ny = f[4][1];
       if (T) { const a = nx * T.c + nz * T.s; nz = -nx * T.s + nz * T.c; nx = a; }
-      for (let k = 0; k < 4; k++) {
+      for (let k = 0; k < 4; k++, n++) {
         const s = f[k];
-        let px = X[s[0]], py = Y[s[1]], pz = Z[s[2]];
+        let px = s[0] ? X1 : X0, py = s[1] ? Y1 : y, pz = s[2] ? Z1 : Z0;
         if (T) { const a = px * T.c + pz * T.s + T.x; pz = -px * T.s + pz * T.c + T.z; px = a; py += T.y; }
-        pos.push(px, py, pz);
-        nor.push(nx, ny, nz);
-        col.push(_c.r, _c.g, _c.b);
-        if (tag) { if (B) tag.push(B[0], B[1], B[2], B[3]); else tag.push(0, 0, 0, 0); }
+        const o = n * 3;
+        pos[o] = px; pos[o + 1] = py; pos[o + 2] = pz;
+        nor[o] = nx; nor[o + 1] = ny; nor[o + 2] = nz;
+        col[o] = r; col[o + 1] = g; col[o + 2] = bl;
+        if (tag && B) { const t = n * 4; tag[t] = B[0]; tag[t + 1] = B[1]; tag[t + 2] = B[2]; tag[t + 3] = B[3]; }
       }
-      const n = this.n;
-      this.idx.push(n, n + 1, n + 2, n, n + 2, n + 3);
-      this.n += 4;
+      const q = (n / 4 - 1) * 6, v0 = n - 4;
+      idx[q] = v0; idx[q + 1] = v0 + 1; idx[q + 2] = v0 + 2; idx[q + 3] = v0; idx[q + 4] = v0 + 2; idx[q + 5] = v0 + 3;
     }
+    this.n = n;
     return this;
   }
   get empty() {
     return this.n === 0;
   }
   geometry() {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    if (this.tag) g.setAttribute('aB', new THREE.Float32BufferAttribute(this.tag, 4));
-    g.setIndex(this.idx);
+    const g = new THREE.BufferGeometry(), n = this.n;
+    // exact-size copies, so the oversized build buffers can be freed straight away
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, n * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.nor.slice(0, n * 3), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(this.col.slice(0, n * 3), 3));
+    if (this.tag) g.setAttribute('aB', new THREE.BufferAttribute(this.tag.slice(0, n * 4), 4));
+    const ni = (n / 4) * 6;
+    g.setIndex(new THREE.BufferAttribute(n > 65535 ? this.idx.slice(0, ni) : Uint16Array.from(this.idx.subarray(0, ni)), 1));
     return g;
   }
   mesh(mat = MAT.solid, cast = true, receive = true) {
@@ -169,6 +187,11 @@ export function piece(fn, seed = 7) {
 
 // ---------------------------------------------------------------- text signs
 const signCache = new Map();
+/** Free every cached sign texture (call when no scene is using them). */
+export function clearSigns() {
+  for (const t of signCache.values()) t.dispose();
+  signCache.clear();
+}
 export function signTexture(text, { fg = '#fff', bg = '#1d4ed8', pad = 6, px = 16, border = null } = {}) {
   const key = [text, fg, bg, pad, px, border].join('|');
   if (signCache.has(key)) return signCache.get(key);

@@ -208,7 +208,8 @@ function* carSpawner(ctx) {
   for (;;) {
     if (major) {
       const dir = rnd.sign();
-      ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, 7));
+      // a long road must not fill up with hundreds of cars
+      if (ctx.road.vehicles.size < Math.min(26, Math.ceil(len / 70))) ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, 7));
     } else if (ctx.road.vehicles.size < maxMinor) {
       ctx.run(drive(ctx, makeCar(rnd, 'car', L.night), L.laneF, oneWay, 5));
     }
@@ -216,19 +217,25 @@ function* carSpawner(ctx) {
   }
 }
 function* bikeSpawner(ctx) {
-  const { L, rnd } = ctx, len = L.x1 - L.x0;
+  const { L, rnd } = ctx, len = L.x1 - L.x0, cap = Math.min(22, Math.ceil(len / 45));
+  let riding = 0;
   yield* wait(rnd.range(0.2, 2));
   for (;;) {
-    const dir = rnd.sign();
-    const bike = makeBike(rnd, makePerson(rnd, { scale: 1.2 }));
-    ctx.run((function* () {
-      const z = dir > 0 ? L.bikeF : L.bikeB;
-      yield* enter(ctx, bike, dir > 0 ? L.x0 + 1.1 : L.x1 - 1.1, z, 0);
-      bike.face(dir > 0 ? E : W);
-      if (rnd.chance(0.12)) ctx.sfx('bell');
-      yield* go(ctx, bike, dir > 0 ? L.x1 - 1.1 : L.x0 + 1.1, z, rnd.range(4.6, 6.4));
-      yield* popOut(ctx, bike);
-    })());
+    if (riding < cap) {
+      const dir = rnd.sign();
+      const bike = makeBike(rnd, makePerson(rnd, { scale: 1.2 }));
+      riding++;
+      ctx.run((function* () {
+        try {
+          const z = dir > 0 ? L.bikeF : L.bikeB;
+          yield* enter(ctx, bike, dir > 0 ? L.x0 + 1.1 : L.x1 - 1.1, z, 0);
+          bike.face(dir > 0 ? E : W);
+          if (rnd.chance(0.12)) ctx.sfx('bell');
+          yield* go(ctx, bike, dir > 0 ? L.x1 - 1.1 : L.x0 + 1.1, z, rnd.range(4.6, 6.4));
+          yield* popOut(ctx, bike);
+        } finally { riding--; }
+      })());
+    }
     yield* wait(rnd.range(2.5, 7) * clamp(140 / len, 0.45, 1));
   }
 }
@@ -1429,7 +1436,7 @@ export function startLocale(ctx, { only = null, delay = 2.4, signature = true, w
   ctx.run(gullSpawner(ctx));
   ctx.run(pigeons(ctx));
   if (withHeli) ctx.run(heli(ctx));
-  if (only && G[only]) {
+  if (only && Object.hasOwn(G, only)) {
     ctx.run((function* () {
       for (;;) {
         yield* wait(2);
@@ -1440,7 +1447,7 @@ export function startLocale(ctx, { only = null, delay = 2.4, signature = true, w
   } else ctx.run(director(ctx, delay, signature));
 }
 export const GAG_NAMES = Object.keys(G);
-export const canPlay = (ctx, name) => !!G[name] && ready(ctx, name);
+export const canPlay = (ctx, name) => Object.hasOwn(G, name) && ready(ctx, name);
 /** Play one gag right now (debugging and tests). Resolves the returned task when it ends. */
 export function playGag(ctx, name) {
   if (!canPlay(ctx, name)) return null;

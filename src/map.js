@@ -1,6 +1,10 @@
 // The overview map: cartoon choropleth of neighbourhoods + streets with a red hover glow.
-import maplibregl from 'maplibre-gl';
+import { Map as MapLibreMap, AttributionControl, NavigationControl, setWorkerUrl } from 'maplibre-gl';
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import 'maplibre-gl/dist/maplibre-gl.css';
+
+// the worker is served from our own origin (no blob: or third-party script needed)
+setWorkerUrl(workerUrl);
 
 export const LV = ['#9aa3ad', '#3ecf73', '#f7c61e', '#ff9233', '#f0443e', '#b0189e'];
 export const LV_NAMES = ['', 'Sleepy', 'Mild', 'Spicy', 'Rowdy', 'Mayhem'];
@@ -18,11 +22,11 @@ export function createMap(el, { buurten, streets, context }, on) {
   const home = [[minX, minY], [maxX, maxY]];
   const pad = () => (narrow() ? { top: 90, bottom: 190, left: 20, right: 20 } : { top: 40, bottom: 50, left: 310, right: 40 });
 
-  const map = new maplibregl.Map({
+  const map = new MapLibreMap({
     container: el,
     style: {
       version: 8,
-      glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+      glyphs: new URL('./fonts/{fontstack}/{range}.pbf', document.baseURI).href.replace(/%7B/g, '{').replace(/%7D/g, '}'), // self-hosted: no third-party requests
       sources: {},
       layers: [{ id: 'sea', type: 'background', paint: { 'background-color': SEA } }],
     },
@@ -37,8 +41,8 @@ export function createMap(el, { buurten, streets, context }, on) {
     fadeDuration: 0,
   });
   map.touchZoomRotate.disableRotation();
-  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap contributors · CBS · Politie open data' }), 'bottom-right');
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+  map.addControl(new AttributionControl({ compact: true, customAttribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors (ODbL) · 3DBAG (CC BY 4.0) · CBS · Politie open data' }), 'bottom-right');
+  map.addControl(new NavigationControl({ showCompass: false }), 'bottom-right');
 
   const ready = new Promise((res) => map.on('load', res)).then(() => {
     map.addSource('ctx', { type: 'geojson', data: context });

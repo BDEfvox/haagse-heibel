@@ -59,7 +59,11 @@ const hash2 = (x, y) => {
 // ---------------------------------------------------------------- loading
 const getJson = (u) => fetch(u).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 export function loadIndex() {
-  return (_index ||= getJson(ROOT + 'index.json').then((ix) => { if (!ix) throw new Error('world index missing'); ix.set = new Set(ix.tiles); return ix; }));
+  return (_index ||= getJson(ROOT + 'index.json').then((ix) => {
+    if (!ix || !Array.isArray(ix.tiles) || !ix.proj) throw new Error('world index missing');
+    ix.set = new Set(ix.tiles);
+    return ix;
+  }).catch((e) => { _index = null; throw e; }));
 }
 async function pixels(url) {
   const img = new Image();
@@ -76,13 +80,17 @@ export function loadCity() {
     const ix = await loadIndex();
     const [ground, height] = await Promise.all([pixels(ROOT + ix.ground.file), pixels(ROOT + ix.height.file)]);
     return { ix, ground, height };
-  })());
+  })().catch((e) => { _city = null; throw e; }));
 }
 function loadTile(ix, key) {
   if (!ix.set.has(key)) return Promise.resolve(null);
+  if (_tiles.has(key)) { const hit = _tiles.get(key); _tiles.delete(key); _tiles.set(key, hit); return hit; } // recently used tiles are kept longest
   if (!_tiles.has(key)) {
     if (_tiles.size > 160) _tiles.delete(_tiles.keys().next().value);
-    _tiles.set(key, getJson(`${ROOT}tiles/${key}.json`));
+    const req = getJson(`${ROOT}tiles/${key}.json`);
+    _tiles.set(key, req);
+    // a failed download is not remembered: the next street that needs this tile asks again
+    req.then((v) => { if (!v && _tiles.get(key) === req) _tiles.delete(key); });
   }
   return _tiles.get(key);
 }
@@ -91,7 +99,7 @@ export function preload(geometry) {
   loadCity().then(({ ix }) => {
     if (!geometry) return;
     const f = frameFor(ix, geometry);
-    for (const k of tileKeys(f, 180)) loadTile(ix, k);
+    for (const k of tileKeys(f, 120).slice(0, 30)) loadTile(ix, k); // a hover is only a hint: warm a handful, not a whole long street
   }).catch(() => {});
 }
 
@@ -347,29 +355,33 @@ function cityBackdrop(city, f, R, lite) {
   const cxm = (R.x0 + R.x1) / 2, czm = (R.z0 + R.z1) / 2;
   const box = new THREE.BoxGeometry(1, 1, 1);
   box.translate(0, 0.5, 0);
-  const inst = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial(), city.cells.length / 4);
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), col = new THREE.Color();
   const tones = ['#c7b29a', '#b9a58f', '#d2c4b0', '#a89684', '#c9bcae', '#b6aea4', '#cbb7a2', '#9fa3a8'].map((t) => new THREE.Color(t));
-  let k = 0;
-  const put = (cs, cell, near) => {
+  // first decide which cells are drawn, then allocate exactly that many instances
+  const keep = [];
+  const pick = (cs, cell, near) => {
     const n = cs.length / 4;
     for (let i = 0; i < n; i++) {
-      const mx = cs[i * 4], my = cs[i * 4 + 1];
-      const [sx, sz] = f.S(mx, my);
+      const [sx, sz] = f.S(cs[i * 4], cs[i * 4 + 1]);
       const d = Math.max(Math.abs(sx - cxm) - (R.x1 - R.x0) / 2, Math.abs(sz - czm) - (R.z1 - R.z0) / 2);
       if (d < 4 + (near ? 0 : cell / 2)) continue; // the detailed area draws its own buildings
       if (near ? d > NEAR : d <= NEAR || d > FAR) continue;
-      const side = cell * Math.sqrt(clamp(cs[i * 4 + 3] * 1.15, 0.2, 1));
-      m.compose(p.set(mx, 0, -my), q, s.set(side, cs[i * 4 + 2], side));
-      inst.setMatrixAt(k, m);
-      col.copy(tones[Math.floor(hash2(Math.round(mx), Math.round(my)) * tones.length)]);
-      if (cs[i * 4 + 2] > 40) col.set('#aebbc4');
-      inst.setColorAt(k, col);
-      k++;
+      keep.push(cs, i, cell);
     }
   };
-  put(city.cells, city.cell, true);
-  put(city.cells2, city.cell * 2, false);
+  pick(city.cells, city.cell, true);
+  pick(city.cells2, city.cell * 2, false);
+  const inst = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial(), Math.max(1, keep.length / 3));
+  let k = 0;
+  for (let j = 0; j < keep.length; j += 3, k++) {
+    const cs = keep[j], i = keep[j + 1], cell = keep[j + 2], mx = cs[i * 4], my = cs[i * 4 + 1];
+    const side = cell * Math.sqrt(clamp(cs[i * 4 + 3] * 1.15, 0.2, 1));
+    m.compose(p.set(mx, 0, -my), q, s.set(side, cs[i * 4 + 2], side));
+    inst.setMatrixAt(k, m);
+    col.copy(tones[Math.floor(hash2(Math.round(mx), Math.round(my)) * tones.length)]);
+    if (cs[i * 4 + 2] > 40) col.set('#aebbc4');
+    inst.setColorAt(k, col);
+  }
   inst.count = k;
   inst.instanceMatrix.needsUpdate = true;
   if (inst.instanceColor) inst.instanceColor.needsUpdate = true;

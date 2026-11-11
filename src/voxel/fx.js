@@ -69,6 +69,7 @@ class Pool {
   dispose() {
     this.mesh.parent?.remove(this.mesh);
     this.mesh.geometry.dispose();
+    this.mesh.material.dispose();
     this.mesh.dispose();
   }
 }
