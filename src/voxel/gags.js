@@ -1,8 +1,8 @@
 // Ambient street life + crime-level shenanigans, written as generator scripts.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, TAU, sculpt, MAT } from './kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, MAT } from './kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from './cast.js';
-import { makeCar, makeTram, makeBike, makeScooter, makeHeli, makeBoat } from './props.js';
+import { makeCar, makeBike, makeScooter, makeHeli, makeBoat } from './props.js';
 
 const X0 = -24, X1 = 24, EX0 = X0 + 0.5, EX1 = X1 - 0.5;
 const E = Math.PI / 2, W = -Math.PI / 2; // headings: +x, −x
@@ -16,7 +16,7 @@ export function* go(ctx, a, x, z, speed = a.speed, stop = 0.06) {
     const s = Math.min(d, speed * dt);
     p.x += (dx / d) * s;
     p.z += (dz / d) * s;
-    if (!a.air) p.y = ctx.L.yAt(p.z);
+    if (!a.air) p.y = 0;
     a.heading = Math.atan2(dx, dz);
     a.moving = speed;
   }
@@ -76,36 +76,48 @@ const say = (ctx, a, str, o = {}) => ctx.fx.text(str, a, o);
 const at = (x, y, z) => new THREE.Vector3(x, y, z);
 
 // ---------------------------------------------------------------- ambient life
+// Walkers, bikes and cars belong to one street-long "ambient" context. A gag borrows a walker by
+// re-homing them into its own 48 m window (same spot in the world, different x origin) and hands them back after.
+function rehome(a, to) {
+  const from = a.ctx;
+  if (from === to) return;
+  const p = a.g.position, sign = Math.sign(a.exitX - p.x) || a.dir || 1;
+  unped(from, a);
+  p.x += from.sc - to.sc;
+  a.exitX = sign > 0 ? to.L.x1 - 0.5 : to.L.x0 + 0.5;
+  a.ctx = to; a.g._ctx = to;
+  to.peds.push(a);
+}
 function spawnPed(ctx, atX = null, opts = {}) {
-  const { L, rnd } = ctx;
+  const { L, rnd } = ctx, ex0 = L.x0 + 0.5, ex1 = L.x1 - 0.5;
   const dir = opts.dir ?? rnd.sign();
   const z = (opts.z ?? rnd.pick([...L.walkB, ...L.walkF])) + rnd.range(-0.15, 0.15);
   const r = rnd();
   const a = makePerson(rnd, { kind: opts.kind || (r < 0.12 ? 'kid' : r < 0.22 ? 'granny' : 'civ') });
-  a.dir = dir; a.lineZ = z; a.exitX = dir > 0 ? EX1 : EX0; a.walkSpeed = a.speed;
-  ctx.spawn(a, atX ?? (dir > 0 ? EX0 : EX1), z);
+  a.dir = dir; a.lineZ = z; a.exitX = dir > 0 ? ex1 : ex0; a.walkSpeed = a.speed;
+  ctx.spawn(a, atX ?? (dir > 0 ? ex0 : ex1), z);
   a.face(dir > 0 ? E : W);
   ctx.peds.push(a);
   ctx.run((function* () {
     a.g.scale.setScalar(0.001);
     yield* popIn(ctx, a);
-    yield* stroll(ctx, a);
+    yield* stroll(a);
   })());
   return a;
 }
 function unped(ctx, a) {
-  const i = ctx.peds.indexOf(a);
-  if (i >= 0) ctx.peds.splice(i, 1);
+  const list = (a.ctx || ctx).peds, i = list.indexOf(a);
+  if (i >= 0) list.splice(i, 1);
 }
-function* stroll(ctx, a) {
+function* stroll(a) {
   while (!a.busy && a.alive) {
     const p = a.g.position, dx = a.exitX - p.x;
-    if (Math.abs(dx) < 0.12) { unped(ctx, a); yield* popOut(ctx, a); return; }
+    if (Math.abs(dx) < 0.12) { unped(a.ctx, a); yield* popOut(a.ctx, a); return; }
     const dt = yield;
     const sp = a.walkSpeed, dz = a.lineZ - p.z;
     p.x += Math.sign(dx) * Math.min(Math.abs(dx), sp * dt);
     p.z += clamp(dz, -sp * dt * 0.7, sp * dt * 0.7);
-    p.y = ctx.L.yAt(p.z);
+    p.y = 0;
     a.heading = Math.atan2(Math.sign(dx), clamp(dz, -1, 1) * 0.6);
     a.moving = sp;
   }
@@ -113,12 +125,18 @@ function* stroll(ctx, a) {
 function release(ctx, a) {
   if (!a.alive) return;
   a.busy = false; a.arms = 'swing'; a.gait = 'walk';
-  ctx.run(stroll(ctx, a));
+  if (ctx.amb) rehome(a, ctx.amb);
+  ctx.run(stroll(a));
 }
 /** Borrow a pedestrian who still has some street ahead of them (spawns one if needed). */
 function* needPed(ctx, xr = 13, filter = null) {
   const ok = (p) => !p.busy && p.alive && Math.abs(p.g.position.x) < xr && Math.abs(p.exitX - p.g.position.x) > 8 && (!filter || filter(p));
   let p = ctx.peds.find(ok);
+  if (!p && ctx.amb) {
+    const off = ctx.amb.sc - ctx.sc;
+    const q = ctx.amb.peds.find((a) => !a.busy && a.alive && Math.abs(a.g.position.x + off) < xr && (!filter || filter(a)));
+    if (q) { rehome(q, ctx); p = q; }
+  }
   if (!p) {
     const np = spawnPed(ctx, null, { kind: 'civ' });
     yield* waitUntil(() => ok(np) || !np.alive, 9);
@@ -128,6 +146,10 @@ function* needPed(ctx, xr = 13, filter = null) {
   return p || null;
 }
 function panic(ctx, x, r = 16) {
+  if (ctx.amb) {
+    const off = ctx.amb.sc - ctx.sc;
+    for (const a of [...ctx.amb.peds]) if (!a.busy && a.alive && Math.abs(a.g.position.x + off - x) <= r) rehome(a, ctx);
+  }
   for (const a of [...ctx.peds]) {
     if (a.busy || !a.alive || Math.abs(a.g.position.x - x) > r) continue;
     a.busy = true;
@@ -142,72 +164,72 @@ function panic(ctx, x, r = 16) {
 }
 
 function* pedSpawner(ctx) {
-  const { L, rnd, st } = ctx;
+  const { L, rnd, st } = ctx, len = L.x1 - L.x0;
   const busy = clamp(((st.shops || 0) + (st.food || 0) + (st.bars || 0)) / Math.max(1, (st.len || 200) / 100) / 4, 0, 1);
-  const cap = Math.round(5 + busy * 9 + (L.kind === 'ped' ? 4 : 0));
-  for (let i = 0; i < Math.round(cap * 0.6); i++) spawnPed(ctx, rnd.range(X0 + 3, X1 - 3));
+  const cap = Math.min(64, Math.round(((5 + busy * 9 + (L.kind === 'ped' ? 4 : 0)) * len) / 48));
+  for (let i = 0; i < Math.round(cap * 0.7); i++) spawnPed(ctx, rnd.range(L.x0 + 3, L.x1 - 3));
   for (;;) {
-    yield* wait(rnd.range(1.2, 3.6) * (1.4 - busy * 0.8));
+    yield* wait(Math.max(0.3, (rnd.range(1.2, 3.6) * (1.4 - busy * 0.8) * 48) / len));
     if (ctx.peds.length < cap) spawnPed(ctx);
   }
 }
+/** A passing car. It vanishes in a puff when it reaches a stretch a gag has closed off. */
 function* drive(ctx, car, z, dir, speed) {
-  const half = (car.len || 3.4) / 2 + 0.6;
-  ctx.spawn(car, dir > 0 ? X0 + half : X1 - half, z, 0);
+  const { L } = ctx, half = (car.len || 3.4) / 2 + 0.6;
+  ctx.spawn(car, dir > 0 ? L.x0 + half : L.x1 - half, z, 0);
   car.face(dir > 0 ? E : W);
   car.g.scale.setScalar(0.001);
   ctx.road.vehicles.add(car);
   yield* popIn(ctx, car, 0.35);
-  yield* go(ctx, car, dir > 0 ? X1 - half : X0 + half, z, speed);
+  const inWin = new Set();
+  const watch = (function* () {
+    for (;;) {
+      yield;
+      const s = ctx.sc + car.g.position.x;
+      for (const c of ctx.locales || []) {
+        const near = Math.abs(s - c.sc) < 28;
+        if (near && c.road.closed > 0) return;
+        if (near) { c.road.vehicles.add(car); inWin.add(c); }
+        else if (inWin.has(c)) { c.road.vehicles.delete(car); inWin.delete(c); }
+      }
+    }
+  })();
+  yield* race(go(ctx, car, dir > 0 ? L.x1 - half : L.x0 + half, z, speed), watch);
+  for (const c of inWin) c.road.vehicles.delete(car);
   ctx.road.vehicles.delete(car);
   yield* popOut(ctx, car);
 }
 function* carSpawner(ctx) {
   const { L, rnd } = ctx;
   if (L.kind === 'ped') return;
-  const major = L.kind === 'major';
-  yield* wait(rnd.range(0.5, 2));
+  const major = L.kind === 'major', len = L.x1 - L.x0;
+  const oneWay = rnd.sign(), maxMinor = Math.floor(len / 170) + 1;
+  yield* wait(rnd.range(0.2, 1.2));
   for (;;) {
-    if (!ctx.road.closed) {
-      if (major) {
-        const dir = rnd.sign();
-        ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, 7));
-      } else if (ctx.road.vehicles.size === 0) {
-        ctx.run(drive(ctx, makeCar(rnd, 'car', L.night), L.laneF, rnd.sign(), 5));
-      }
+    if (major) {
+      const dir = rnd.sign();
+      ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, 7));
+    } else if (ctx.road.vehicles.size < maxMinor) {
+      ctx.run(drive(ctx, makeCar(rnd, 'car', L.night), L.laneF, oneWay, 5));
     }
     yield* wait(major ? rnd.range(2.2, 5.5) : rnd.range(7, 14));
   }
 }
-function* tramSpawner(ctx) {
-  const { L, rnd } = ctx;
-  if (!L.tram) return;
-  let dir = rnd.sign();
-  yield* wait(rnd.range(3, 7));
-  for (;;) {
-    if (!ctx.road.closed) {
-      ctx.sfx('ding');
-      yield* drive(ctx, makeTram(L.night), dir > 0 ? L.tramF : L.tramB, dir, 7.5);
-      dir = -dir;
-    }
-    yield* wait(rnd.range(9, 18));
-  }
-}
 function* bikeSpawner(ctx) {
-  const { L, rnd } = ctx;
+  const { L, rnd } = ctx, len = L.x1 - L.x0;
   yield* wait(rnd.range(0.2, 2));
   for (;;) {
     const dir = rnd.sign();
     const bike = makeBike(rnd, makePerson(rnd, { scale: 1.2 }));
     ctx.run((function* () {
       const z = dir > 0 ? L.bikeF : L.bikeB;
-      yield* enter(ctx, bike, dir > 0 ? EX0 + 0.6 : EX1 - 0.6, z, 0);
+      yield* enter(ctx, bike, dir > 0 ? L.x0 + 1.1 : L.x1 - 1.1, z, 0);
       bike.face(dir > 0 ? E : W);
       if (rnd.chance(0.12)) ctx.sfx('bell');
-      yield* go(ctx, bike, dir > 0 ? EX1 - 0.6 : EX0 + 0.6, z, rnd.range(4.6, 6.4));
+      yield* go(ctx, bike, dir > 0 ? L.x1 - 1.1 : L.x0 + 1.1, z, rnd.range(4.6, 6.4));
       yield* popOut(ctx, bike);
     })());
-    yield* wait(rnd.range(2.5, 7));
+    yield* wait(rnd.range(2.5, 7) * clamp(140 / len, 0.45, 1));
   }
 }
 function* boatSpawner(ctx) {
@@ -217,7 +239,7 @@ function* boatSpawner(ctx) {
   for (;;) {
     const dir = rnd.sign(), boat = makeBoat(rnd);
     boat.air = true;
-    const z = L.canal.z + (dir > 0 ? -0.7 : 0.6) - 0.4;
+    const z = L.canal.z + (dir > 0 ? -0.9 : 0.9);
     yield* enter(ctx, boat, dir > 0 ? X0 + 2.4 : X1 - 2.4, z, L.canal.y);
     boat.face(dir > 0 ? E : W);
     yield* go(ctx, boat, dir > 0 ? X1 - 2.4 : X0 + 2.4, z, 2.6);
@@ -228,7 +250,7 @@ function* boatSpawner(ctx) {
 function* gullSpawner(ctx) {
   const { L, rnd } = ctx;
   for (;;) {
-    yield* wait(L.strip === 'beach' ? rnd.range(1.5, 4) : rnd.range(5, 11));
+    yield* wait(L.strip === 'beach' ? rnd.range(1.5, 4) : rnd.range(6, 13));
     const g = makeBird(rnd, 'gull');
     g.fly = true;
     const dir = rnd.sign(), y = rnd.range(8, 12), z = rnd.range(L.zB, L.zF);
@@ -246,21 +268,21 @@ function* pigeons(ctx) {
   const birds = [];
   for (let i = 0; i < 3; i++) {
     const b = makeBird(rnd, 'pigeon');
-    ctx.spawn(b, rnd.range(-18, 18), L.walkF[0] - 0.7 + rnd.range(-0.2, 0.2));
+    ctx.spawn(b, rnd.range(-18, 18), L.walkF[0] - 0.4 + rnd.range(-0.2, 0.2));
     b.face(rnd.range(0, TAU));
     birds.push(b);
   }
   for (;;) {
     yield* wait(rnd.range(1.5, 4));
     const b = rnd.pick(birds);
-    yield* go(ctx, b, clamp(b.g.position.x + rnd.range(-2.5, 2.5), -21, 21), L.walkF[0] - 0.7 + rnd.range(-0.25, 0.25), 1.6);
+    yield* go(ctx, b, clamp(b.g.position.x + rnd.range(-2.5, 2.5), -21, 21), L.walkF[0] - 0.4 + rnd.range(-0.25, 0.25), 1.6);
   }
 }
 function* heli(ctx) {
   const { L, rnd } = ctx;
   const h = makeHeli();
   h.air = true;
-  ctx.spawn(h, X0 - 10, L.zc, 13);
+  ctx.spawn(h, X0 - 10, L.zc, 16);
   let t = rnd.range(0, 9), chop = 0;
   const aim = new THREE.Vector3(0, 0, 0);
   for (;;) {
@@ -284,7 +306,7 @@ function* heli(ctx) {
 
 function* closeRoad(ctx) {
   ctx.road.closed++;
-  yield* waitUntil(() => ctx.road.vehicles.size === 0, 10);
+  yield* waitUntil(() => ctx.road.vehicles.size === 0, 6);
 }
 const openRoad = (ctx) => { ctx.road.closed = Math.max(0, ctx.road.closed - 1); };
 
@@ -315,7 +337,7 @@ function* footCop(ctx, target, speed = 5.6, delay = 0.6) {
 const G = {};
 
 G.napCat = {
-  w: [3, 2, 1, 0, 0],
+  w: [3, 2, 1, 0, 0], need: ['benches'],
   *run(ctx) {
     const { L, rnd } = ctx, b = rnd.pick(L.benches), cat = makeCat(rnd);
     cat.speed = 2.6;
@@ -331,7 +353,7 @@ G.napCat = {
 };
 
 G.pigeonLady = {
-  w: [3, 2, 1, 0.4, 0],
+  w: [3, 2, 1, 0.4, 0], need: ['benches'],
   *run(ctx) {
     const { L, rnd } = ctx, b = rnd.pick(L.benches);
     const gran = makePerson(rnd, { kind: 'granny' });
@@ -405,6 +427,7 @@ G.balloonKid = {
     // balloon escapes
     const wp = new THREE.Vector3();
     bal.getWorldPosition(wp);
+    ctx.toLocal(wp);
     kid.b.remove(bal);
     ctx.world.add(bal);
     bal.position.copy(wp);
@@ -497,7 +520,7 @@ G.doorbell = {
 
 G.parkingTicket = {
   w: [0, 2, 2, 1, 0], crime: 1,
-  avail: (ctx) => ctx.L.parked.length > 0,
+  avail: (ctx) => ctx.L.parked.length > 0 && ctx.L.houses.length > 0,
   *run(ctx) {
     const { L, rnd } = ctx, car = rnd.pick(L.parked), cop = makePerson(rnd, { kind: 'cop' });
     const z = L.hw + L.bw + 0.75;
@@ -570,7 +593,7 @@ G.herringHeist = {
 };
 
 G.bikeThief = {
-  w: [0, 0, 3, 2, 2], crime: 1,
+  w: [0, 0, 3, 2, 2], crime: 1, need: ['racks'],
   *run(ctx) {
     const { L, rnd } = ctx, r = rnd.pick(L.racks);
     const dir = r.x > 0 ? -1 : 1; // approaches from the far side, escapes across the street
@@ -592,7 +615,7 @@ G.bikeThief = {
     say(ctx, bike, 'YOINK!', { size: 22, color: '#ffd60a' });
     ctx.incident();
     ctx.news(`Bike stolen on ${ctx.st.name}. Witnesses: "ja, dat gebeurt"`);
-    const h = L.houses.reduce((a, b) => (Math.abs(b.door.x - r.x) < Math.abs(a.door.x - r.x) ? b : a));
+    const h = L.houses.length ? L.houses.reduce((a, b) => (Math.abs(b.door.x - r.x) < Math.abs(a.door.x - r.x) ? b : a)) : { door: { x: clamp(r.x - dir * 4, EX0, EX1), z: L.walkB[0] } };
     const owner = makePerson(rnd, {});
     ctx.run((function* () {
       yield* wait(0.5);
@@ -699,26 +722,28 @@ function* raceChase(ctx, ped, thief) {
 
 G.burglar = {
   w: [0, 0, 0, 3, 2], crime: 2,
+  avail: (ctx) => ctx.L.houses.some((h) => !h.tower && Math.abs(h.x) < 19),
   *run(ctx) {
     const { L, rnd } = ctx;
     const pool = L.houses.filter((h) => !h.tower && Math.abs(h.x) < 15);
-    const h = rnd.pick(pool.length ? pool : L.houses);
+    const h = rnd.pick(pool.length ? pool : L.houses.filter((hh) => !hh.tower && Math.abs(hh.x) < 19));
+    const zH = h.z;
     const dir = h.x > 0 ? -1 : 1;
     // alarm lamp
-    const lamp = sculpt((v) => v.box(h.x - h.w / 2 + 0.4, 2.9, L.zH + 0.2, 0.3, 0.3, 0.3, '#ff2d2d'), MAT.glow);
+    const lamp = sculpt((v) => v.box(h.x - h.w / 2 + 0.4, 2.9, zH + 0.2, 0.3, 0.3, 0.3, '#ff2d2d'), MAT.glow);
     ctx.world.add(lamp);
     ctx.sfx('alarm');
-    ctx.fx.text('WEE-OO! WEE-OO!', at(h.x, h.top + 0.5, L.zH), { size: 18, color: '#ff6b6b', dur: 2 });
+    ctx.fx.text('WEE-OO! WEE-OO!', at(h.x, Math.min(h.top, 9) + 0.5, zH), { size: 18, color: '#ff6b6b', dur: 2 });
     const blink = ctx.run((function* () { let t = 0; for (;;) { t += yield; lamp.visible = Math.floor(t * 6) % 2 === 0; } })());
     const rob = makePerson(rnd, { kind: 'robber' });
     rob.hold(item.sack(), 'back');
     rob.air = true;
     yield* enter(ctx, rob, h.win.x, h.win.z + 0.35, h.win.y - 0.3);
     rob.heading = 0;
-    ctx.focus(h.x, L.zH + 2, 0.62, 3.2, 2);
+    ctx.focus(h.x, zH + 2, 0.62, 3.2, 2);
     say(ctx, rob, 'hehehe', { size: 14, color: '#b9fbc0' });
     yield* wait(0.5);
-    const y0 = rob.g.position.y, yg = L.yAt(L.zH + 1.5);
+    const y0 = rob.g.position.y, yg = 0;
     yield* tween(0.45, (t) => { rob.g.position.y = y0 + (yg - y0) * ease.inQuad(t) + Math.sin(t * Math.PI) * 1.2; rob.g.position.z = h.win.z + 0.35 + t * 1.3; });
     rob.air = false;
     ctx.sfx('thud');
@@ -760,7 +785,7 @@ G.shopHeist = {
     const { L, rnd } = ctx, s = rnd.pick(L.shops.filter((x) => x.shop !== 'BANK'));
     const dir = s.x > 0 ? -1 : 1, rob = makePerson(rnd, { kind: 'robber' });
     ctx.sfx('alarm');
-    ctx.fx.text('ALARM!', at(s.x, 4.2, L.zH), { size: 18, color: '#ff6b6b', dur: 1.6 });
+    ctx.fx.text('ALARM!', at(s.x, 4.2, s.z), { size: 18, color: '#ff6b6b', dur: 1.6 });
     yield* enter(ctx, rob, s.door.x, s.door.z);
     rob.hold(item.tv(), 'front');
     rob.arms = 'carry';
@@ -793,7 +818,7 @@ G.scooterSnatch = {
     const vic = makePerson(rnd, { kind: 'granny' });
     const purse = vic.hold(item.purse());
     yield* enter(ctx, vic, dir > 0 ? EX1 : EX0, wz);
-    ctx.run(go(ctx, vic, 0, wz, 2.0));
+    const walk = ctx.run(go(ctx, vic, 0, wz, 2.0));
     yield* wait(2.5);
     const r1 = makePerson(rnd, { kind: 'robber', scale: 1.1 }), r2 = makePerson(rnd, { kind: 'robber', scale: 1.1 });
     const sc = makeScooter(rnd, [r1, r2]);
@@ -834,12 +859,13 @@ G.scooterSnatch = {
     vic.arms = 'fist';
     yield* wait(1.2);
     vic.arms = 'swing';
-    yield* leave(ctx, vic, 2);
+    ctx.runner.stop(walk);
+    yield* leave(ctx, vic, 2.6);
   },
 };
 
 G.fireworks = {
-  w: [0, 0, 0, 2, 2.5], crime: 1,
+  w: [0, 0, 0.6, 2, 2.5], crime: 1, need: ['bins'],
   *run(ctx) {
     const { L, rnd } = ctx, bin = rnd.pick(L.bins), kid = makePerson(rnd, { kind: 'hoodie', scale: 1.05 });
     const dir = rnd.sign();
@@ -883,7 +909,8 @@ G.fireworks = {
 };
 
 G.carChase = {
-  w: [0, 0, 0, 0.7, 3], crime: 3, lock: 'road',
+  w: [0, 0, 0.4, 1.2, 3], crime: 3, lock: 'road',
+  avail: (ctx) => ctx.L.hw >= 2.2,
   *run(ctx) {
     const { L, rnd } = ctx;
     yield* closeRoad(ctx);
@@ -994,10 +1021,10 @@ G.plofkraak = {
     ctx.fx.cash(A.x, by + 1.5, A.z - 0.3, 120, 12, 19);
     ctx.fx.text('KABOOM!', at(A.x, 4, A.z), { size: 54, color: '#ffd60a', dur: 1.8, rise: 1.2, cls: 'huge' });
     const scorch = sculpt((v) => {
-      v.box(A.x, by, L.zH + 0.25, 1.5, 2.5, 0.52, '#1c1c1c', 0.2);
-      v.box(A.x - 0.9, by, L.zH + 0.12, 0.6, 1.5, 0.3, '#2a2a2a', 0.2);
-      v.box(A.x + 0.9, by, L.zH + 0.12, 0.5, 1.9, 0.3, '#2a2a2a', 0.2);
-      v.box(A.x, by + 2.5, L.zH + 0.12, 1.0, 0.7, 0.3, '#2a2a2a', 0.2);
+      v.box(A.x, by, A.zH + 0.25, 1.5, 2.5, 0.52, '#1c1c1c', 0.2);
+      v.box(A.x - 0.9, by, A.zH + 0.12, 0.6, 1.5, 0.3, '#2a2a2a', 0.2);
+      v.box(A.x + 0.9, by, A.zH + 0.12, 0.5, 1.9, 0.3, '#2a2a2a', 0.2);
+      v.box(A.x, by + 2.5, A.zH + 0.12, 1.0, 0.7, 0.3, '#2a2a2a', 0.2);
       for (let i = 0; i < 8; i++) v.box(A.x + rnd.range(-2.2, 2.2), by, A.z + rnd.range(-0.6, 1.6), rnd.range(0.3, 0.7), rnd.range(0.15, 0.4), rnd.range(0.3, 0.7), rnd.pick(['#555', '#8f4a3a', '#dfe6ea', '#333']));
     });
     ctx.world.add(scorch);
@@ -1063,11 +1090,301 @@ G.plofkraak = {
   },
 };
 
-// ---------------------------------------------------------------- the director
-const SIGNATURE = { 1: 'pigeonLady', 2: 'seagullFries', 3: 'bikeThief', 4: 'burglar', 5: 'plofkraak' };
-const PACE = { 1: { gap: [3.5, 6], max: 1 }, 2: { gap: [3, 5], max: 1 }, 3: { gap: [2.2, 4], max: 2 }, 4: { gap: [1.6, 3], max: 3 }, 5: { gap: [1.2, 2.4], max: 4 } };
+// ---------------------------------------------------------------- gags for specific kinds of crime
+G.carBreakIn = {
+  w: [0, 0.6, 2.5, 2.5, 2], crime: 2, need: ['parked'],
+  *run(ctx) {
+    const { L, rnd } = ctx, car = rnd.pick(L.parked), dir = car.x > 0 ? -1 : 1;
+    const z = L.hw + L.bw + 0.75;
+    const thief = makePerson(rnd, { kind: rnd.chance(0.5) ? 'raccoon' : 'robber' });
+    yield* enter(ctx, thief, clamp(car.x - dir * 12, EX0, EX1), L.walkF[0]);
+    thief.gait = 'sneak'; thief.arms = 'sneak';
+    yield* go(ctx, thief, car.x, z, 3.2);
+    thief.heading = Math.PI;
+    yield* wait(0.35);
+    ctx.sfx('snip'); ctx.sfx('thud');
+    ctx.fx.burst(car.x, 1.0, car.z + 0.7, { n: 16, colors: ['#bfe9ff', '#ffffff', '#8fd3f4'], speed: 4, up: 4.5, size: [0.06, 0.12], life: [0.5, 0.9] });
+    ctx.fx.text('KRAK!', at(car.x, 2.4, car.z), { size: 22, color: '#bfe9ff' });
+    const lights = sculpt((v) => { for (const sx of [-1.5, 1.5]) for (const sz of [-0.6, 0.6]) v.box(car.x + sx, 0.55, car.z + sz, 0.22, 0.2, 0.3, '#ffb000'); }, MAT.glow);
+    ctx.world.add(lights);
+    const blink = ctx.run((function* () { let t = 0, beep = 0; for (;;) { const dt = yield; t += dt; beep -= dt; lights.visible = Math.floor(t * 5) % 2 === 0; if (beep < 0) { ctx.sfx('alarm'); beep = 1.7; } } })());
+    yield* wait(0.5);
+    thief.gait = 'walk'; thief.arms = 'swing';
+    thief.hold(item.sack(), 'back');
+    ctx.wanted = thief;
+    ctx.sfx('yoink');
+    say(ctx, thief, 'YOINK!', { size: 22, color: '#ffd60a' });
+    ctx.incident(2);
+    ctx.news(`Car window on ${ctx.st.name} loses argument with ${thief.kind === 'raccoon' ? 'a raccoon' : 'man in stripes'}`);
+    const h = L.houses.length ? L.houses.reduce((a, b) => (Math.abs(b.door.x - car.x) < Math.abs(a.door.x - car.x) ? b : a)) : null;
+    const owner = makePerson(rnd, {});
+    ctx.run((function* () {
+      yield* wait(0.6);
+      yield* enter(ctx, owner, h ? h.door.x : clamp(car.x + dir * 6, EX0, EX1), h ? h.door.z : L.walkB[1]);
+      owner.arms = 'up';
+      ctx.sfx('hey');
+      say(ctx, owner, rnd.pick(['MIJN AUTORADIO!', 'NIET WEER!', 'HÉ! AFBLIJVEN!']), { size: 15, color: '#ff6b6b' });
+      yield* go(ctx, owner, car.x - 1.4, z + 0.2, 5.5);
+      owner.arms = 'fist';
+      yield* wait(2.2);
+      owner.arms = 'swing';
+      if (h) { yield* go(ctx, owner, h.door.x, h.door.z, 2.6); yield* popOut(ctx, owner); } else yield* leave(ctx, owner, 2.6);
+    })());
+    if (ctx.level >= 3) ctx.run(footCop(ctx, thief, 6.2, 0.9));
+    yield* leave(ctx, thief, 7.4, dir > 0 ? EX1 : EX0);
+    yield* wait(2.6);
+    ctx.runner.stop(blink);
+    ctx.world.remove(lights);
+  },
+};
 
-function* director(ctx) {
+G.fenderBender = {
+  w: [0, 1.2, 2, 2, 2], crime: 1, lock: 'road',
+  avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2,
+  *run(ctx) {
+    const { L, rnd } = ctx, dir = rnd.sign();
+    yield* closeRoad(ctx);
+    const z = L.kind === 'major' ? (dir > 0 ? L.laneF : L.laneB) : L.laneF;
+    const a = makeCar(rnd, 'car', L.night), b = makeCar(rnd, rnd.chance(0.3) ? 'taxi' : 'car', L.night);
+    const xs = dir * rnd.range(1, 5), x0 = dir > 0 ? X0 + 2.6 : X1 - 2.6, x1 = dir > 0 ? X1 - 2.6 : X0 + 2.6;
+    // a pigeon with no sense of urgency
+    const bird = makeBird(rnd, 'pigeon');
+    ctx.spawn(bird, xs + dir * 3.2, L.hw + L.bw + 0.6);
+    ctx.run((function* () { yield* go(ctx, bird, xs + dir * 3.2, -(L.hw + L.bw + 0.6), 1.1); yield* wait(4); ctx.despawn(bird); })());
+    yield* enter(ctx, a, x0, z, 0);
+    a.face(dir > 0 ? E : W);
+    yield* go(ctx, a, xs, z, 7.5);
+    ctx.sfx('skid');
+    say(ctx, a, 'EEN DUIF!', { size: 14, color: '#fff' });
+    yield* enter(ctx, b, x0, z, 0);
+    b.face(dir > 0 ? E : W);
+    yield* go(ctx, b, xs - dir * 3.5, z, 10);
+    const ix = xs - dir * 1.7;
+    ctx.sfx('slam');
+    ctx.shake(0.5);
+    ctx.fx.text('BONK!', at(ix, 2.6, z), { size: 30, color: '#ffd60a' });
+    ctx.fx.burst(ix, 0.7, z, { n: 16, colors: ['#ddd', '#888', '#ff3b3b', '#ffd166'], speed: 5, up: 6, size: [0.08, 0.2] });
+    ctx.fx.sparks(ix, 0.8, z, 10);
+    ctx.run(go(ctx, a, xs + dir * 0.9, z, 4));
+    ctx.incident();
+    ctx.news(`Fender-bender on ${ctx.st.name}. Both drivers "had right of way"`);
+    const sz = z + (z > 0 ? 1.5 : -1.5);
+    const d1 = makePerson(rnd, {}), d2 = makePerson(rnd, {});
+    yield* all(enter(ctx, d1, xs + dir * 0.4, sz), enter(ctx, d2, xs - dir * 3.0, sz));
+    d1.heading = dir > 0 ? W : E; d2.heading = dir > 0 ? E : W;
+    d1.arms = d2.arms = 'fist';
+    const lines = ['KIJK UIT JE DOPPEN!', 'JIJ REMDE ZOMAAR!', 'ER LIEP EEN DUIF!', 'EEN DUIF?!'];
+    for (let i = 0; i < 4; i++) { ctx.sfx('hey'); say(ctx, i % 2 ? d1 : d2, lines[i], { size: 14, color: i % 2 ? '#ffb4a2' : '#ff6b6b' }); yield* wait(0.85); }
+    const cop = makePerson(rnd, { kind: 'cop' });
+    yield* enter(ctx, cop, clamp(xs + dir * 11, EX0, EX1), sz);
+    ctx.sfx('whistle');
+    yield* go(ctx, cop, xs + dir * 2.4, sz, 5);
+    say(ctx, cop, 'RUSTIG! FORMULIERTJE INVULLEN.', { size: 13, color: '#7db8ff' });
+    d1.arms = d2.arms = 'swing';
+    yield* wait(1.5);
+    ctx.fx.text('SCHADEFORMULIER ✎', at(xs - dir * 1.3, 2.4, sz), { size: 13, color: '#fff' });
+    ctx.sfx('coin');
+    yield* wait(1.2);
+    yield* all(popOut(ctx, d1), popOut(ctx, d2));
+    ctx.run(leave(ctx, cop, 2.6, clamp(xs + dir * 11, EX0, EX1)));
+    ctx.fx.smoke(b.g.position.x, 0.5, z, 5, ['#888', '#666'], 0.4);
+    yield* all(
+      (function* () { yield* go(ctx, a, x1, z, 6.5); yield* popOut(ctx, a); })(),
+      (function* () { yield* wait(0.8); yield* go(ctx, b, x1, z, 5); yield* popOut(ctx, b); })()
+    );
+    openRoad(ctx);
+  },
+};
+
+G.scuffle = {
+  w: [0, 0, 1.4, 2.4, 2.6], crime: 2,
+  *run(ctx) {
+    const { L, rnd } = ctx, x = rnd.range(-8, 8), z = rnd.pick([L.walkF[0], L.walkB[1]]);
+    const a = makePerson(rnd, {}), b = makePerson(rnd, { kind: rnd.chance(0.3) ? 'chef' : 'civ' });
+    yield* all(
+      (function* () { yield* enter(ctx, a, x - 9, z); yield* go(ctx, a, x - 0.8, z, 4.5); })(),
+      (function* () { yield* enter(ctx, b, x + 9, z); yield* go(ctx, b, x + 0.8, z, 4.5); })()
+    );
+    a.heading = E; b.heading = W;
+    a.arms = b.arms = 'fist';
+    const row = rnd.pick([['DAT IS MIJN PLEK!', 'NIETES!', 'WELLES!'], ['JIJ KEEK NAAR MIJ!', 'IK KEEK NIET!', 'WEL!'], ['AJAX!', 'ADO!', '...ZEG DAT NOG EENS']]);
+    for (let i = 0; i < 3; i++) { ctx.sfx('hey'); say(ctx, i % 2 ? b : a, row[i], { size: 14, color: i % 2 ? '#ffd166' : '#ff6b6b' }); yield* wait(0.75); }
+    ctx.focus(x, z, 0.6, 4.6, 2);
+    a.g.visible = b.g.visible = false;
+    ctx.incident(2);
+    ctx.news(`Difference of opinion on ${ctx.st.name} escalates to dust cloud`);
+    const cop = makePerson(rnd, { kind: 'cop' }), side = rnd.sign();
+    ctx.run((function* () { yield* wait(1.3); yield* enter(ctx, cop, x + side * 10, z); ctx.sfx('whistle'); yield* go(ctx, cop, x + side * 2.4, z, 6); })());
+    const words = ['POW!', 'BAM!', 'OEF!', 'AU!', 'BONK!', 'KLETS!'];
+    for (let i = 0; i < 16; i++) {
+      ctx.fx.smoke(x + rnd.range(-0.7, 0.7), 0.4, z + rnd.range(-0.5, 0.5), 5, ['#f1ede4', '#e4dccb', '#d8cfbd'], 0.7);
+      if (i % 3 === 0) {
+        ctx.fx.text(rnd.pick(words), at(x + rnd.range(-1.6, 1.6), rnd.range(1.6, 3), z), { size: 19, color: rnd.pick(['#ffd60a', '#ff6b6b', '#ffffff']), dur: 0.7 });
+        ctx.sfx(rnd.pick(['thud', 'boing', 'pop']));
+        ctx.shake(0.12);
+      }
+      if (i % 4 === 1) ctx.fx.burst(x, 1.2, z, { n: 5, colors: ['#ffd60a', '#ffffff'], speed: 5, up: 6, glow: true, size: [0.1, 0.16], life: [0.4, 0.8] });
+      yield* wait(0.2);
+    }
+    say(ctx, cop, 'UIT ELKAAR!', { size: 17, color: '#7db8ff' });
+    a.g.visible = b.g.visible = true;
+    a.g.position.x = x - 1.3; b.g.position.x = x + 1.3;
+    a.arms = b.arms = 'up';
+    for (let i = 0; i < 2; i++) { say(ctx, i % 2 ? a : b, '★ ★', { size: 15, color: '#ffe066', dur: 0.8 }); yield* all(hop(a, 0.25, 0.4), hop(b, 0.25, 0.4)); }
+    a.arms = b.arms = 'swing';
+    say(ctx, a, 'sorry', { size: 12, color: '#cfe8ff' });
+    yield* wait(0.6);
+    say(ctx, b, 'ook sorry', { size: 12, color: '#cfe8ff' });
+    yield* wait(0.9);
+    ctx.run(leave(ctx, cop, 2.4, clamp(x + side * 11, EX0, EX1)));
+    yield* all(leave(ctx, a, 4, clamp(x - 11, EX0, EX1)), leave(ctx, b, 4, clamp(x + 11, EX0, EX1)));
+  },
+};
+
+G.shadyDeal = {
+  w: [0, 0, 1.4, 2, 2], crime: 1,
+  *run(ctx) {
+    const { L, rnd } = ctx, z = L.walkF[1], x = rnd.range(-7, 7), dir = rnd.sign();
+    const dealer = makePerson(rnd, { kind: 'hoodie', shirt: '#4a3b2a' });
+    yield* enter(ctx, dealer, clamp(x - dir * 9, EX0, EX1), z);
+    dealer.gait = 'sneak';
+    yield* go(ctx, dealer, x, z, 3);
+    dealer.gait = 'walk'; dealer.heading = Math.PI;
+    say(ctx, dealer, 'psst...', { size: 12, color: '#b9fbc0' });
+    const ped = yield* needPed(ctx, 12);
+    if (!ped) { yield* leave(ctx, dealer, 3, clamp(x + dir * 9, EX0, EX1)); return; }
+    const left = ped.g.position.x < x;
+    yield* go(ctx, ped, x + (left ? -1.1 : 1.1), z - 0.2, 2.6);
+    ped.heading = left ? E : W; dealer.heading = left ? W : E;
+    const wares = sculpt((v) => { for (let i = 0; i < 3; i++) v.box(-0.22 + i * 0.22, 0.95 + (i % 2) * 0.22, 0.26, 0.14, 0.16, 0.05, ['#7cfc9a', '#ffe066', '#ff8fab'][i]); }, MAT.glow);
+    dealer.b.add(wares);
+    dealer.arms = 'up';
+    say(ctx, dealer, rnd.pick(['OREGANO. ECHT WAAR.', '"KRUIDEN"', 'VERS UIT DE... TUIN']), { size: 14, color: '#b9fbc0' });
+    yield* wait(1.3);
+    ped.arms = 'hold';
+    ctx.sfx('coin');
+    ctx.fx.cash(x, 1.3, z, 3, 1.5, 2.5);
+    ctx.incident();
+    ctx.news(`Man sells "oregano" on ${ctx.st.name} at suspicious mark-up`);
+    yield* wait(0.8);
+    const cop = makePerson(rnd, { kind: 'cop' });
+    yield* enter(ctx, cop, clamp(x + dir * 10, EX0, EX1), L.walkF[0]);
+    ctx.sfx('whistle');
+    say(ctx, cop, 'HÉ! WAT IS DAT DAAR?', { size: 15, color: '#7db8ff' });
+    yield* wait(0.35);
+    dealer.b.remove(wares);
+    dealer.arms = 'swing';
+    say(ctx, dealer, 'NIKS!', { size: 15, color: '#ffffff' });
+    ctx.fx.burst(x, 1.1, z, { n: 10, colors: ['#5a8f3c', '#7cfc9a', '#3f6f2a'], speed: 3, up: 4, size: [0.05, 0.1] });
+    ctx.wanted = dealer;
+    ped.arms = 'swing';
+    say(ctx, ped, '♪ la la la ♪', { size: 12, color: '#cfe8ff' });
+    release(ctx, ped);
+    ctx.run((function* () { yield* chase(ctx, cop, dealer, 6.3, 0.8, 8); yield* leave(ctx, cop, 6, dir > 0 ? EX0 : EX1); })());
+    yield* leave(ctx, dealer, 7.6, dir > 0 ? EX0 : EX1);
+    yield* wait(1.5);
+  },
+};
+
+G.phishing = {
+  w: [0, 1.4, 2, 2, 1.6], crime: 1,
+  *run(ctx) {
+    const { L, rnd } = ctx;
+    const ped = yield* needPed(ctx, 9);
+    if (!ped) return;
+    const p = ped.g.position, back = ped.lineZ < 0;
+    const hacker = makePerson(rnd, { kind: 'hoodie', shirt: '#1b4332' });
+    yield* enter(ctx, hacker, clamp(p.x + ped.dir * 2, -20, 20), back ? L.walkF[1] : L.walkB[0]);
+    hacker.heading = back ? Math.PI : 0;
+    ped.arms = 'hold'; ped.heading = back ? 0 : Math.PI;
+    ctx.sfx('ding');
+    say(ctx, ped, rnd.pick(['"UW PAKKET WACHT"', '"HOI MAM, NIEUW NUMMER"', '"U HEEFT GEWONNEN!"']), { size: 12, color: '#cfe8ff', dur: 1.8 });
+    yield* wait(1.2);
+    say(ctx, ped, '*klik*', { size: 13, color: '#ffffff' });
+    const line = sculpt((v) => v.box(0, 0, 0, 1, 0.04, 0.04, '#e8f7ff'), MAT.glow), hook = item.wallet();
+    ctx.world.add(line); ctx.world.add(hook);
+    const hp = hacker.g.position;
+    const set = (t) => {
+      const bx = lerp(hp.x, p.x, t), bz = lerp(hp.z, p.z, t);
+      line.position.set((hp.x + bx) / 2, 1.45, (hp.z + bz) / 2);
+      line.scale.x = Math.max(0.01, Math.hypot(bx - hp.x, bz - hp.z));
+      line.rotation.y = -Math.atan2(bz - hp.z, bx - hp.x);
+      hook.position.set(bx, 1.3, bz);
+    };
+    hook.visible = false;
+    hacker.arms = 'up';
+    ctx.sfx('boing');
+    yield* tween(0.35, set, ease.outQuad);
+    ctx.fx.text('PHISHING!', at((hp.x + p.x) / 2, 3.2, (hp.z + p.z) / 2), { size: 24, color: '#7cfc9a' });
+    hook.visible = true;
+    ctx.sfx('yoink');
+    ped.arms = 'up';
+    yield* tween(0.55, (t) => set(1 - t), ease.inQuad);
+    ctx.world.remove(line); ctx.world.remove(hook);
+    hacker.hold(item.wallet());
+    hacker.arms = 'hold';
+    ctx.fx.cash(hp.x, 1.5, hp.z, 6, 2, 4);
+    say(ctx, hacker, 'hehehe', { size: 14, color: '#b9fbc0' });
+    ctx.incident();
+    ctx.news('Phishing: resident reeled in by "your parcel is waiting" text');
+    yield* wait(0.5);
+    ped.arms = 'fist';
+    ctx.sfx('hey');
+    say(ctx, ped, rnd.pick(['MIJN SPAARGELD!', 'OPGELICHT!', 'HÈ?! €0,00?!']), { size: 15, color: '#ff6b6b' });
+    ctx.wanted = hacker;
+    if (ctx.level >= 4) ctx.run(footCop(ctx, hacker, 6.4, 0.5));
+    yield* leave(ctx, hacker, 7.2);
+    yield* wait(0.8);
+    release(ctx, ped);
+  },
+};
+
+// ---------------------------------------------------------------- which crimes drive which gags
+// Police categories (table 47018NED) behind each gag. Categories that cannot be made funny have no gag.
+const CATS = {
+  carBreakIn: ['1.2.1'], fenderBender: ['1.3.1'], bikeThief: ['1.2.3'], pickpocket: ['1.2.4'], burglar: ['1.1.1', '1.1.2', '2.4.2'],
+  shopHeist: ['2.5.2', '2.5.1'], scooterSnatch: ['1.4.6'], plofkraak: ['1.4.7', '1.6.1'], graffiti: ['2.2.1'],
+  fireworks: ['2.6.9', '3.6.4'], carChase: ['3.5.2', '3.5.5', '1.2.2'], doorbell: ['2.4.1'],
+  scuffle: ['1.4.5', '1.4.3', '1.4.4'], shadyDeal: ['3.1.1', '2.1.1'], phishing: ['3.9.1', '3.9.2', '3.9.3', '3.7.4', '1.6.2'],
+};
+export const THEMES = {
+  carBreakIn: 'Theft from cars', fenderBender: 'Road accidents', bikeThief: 'Bike theft', pickpocket: 'Pickpocketing', burglar: 'Burglary',
+  shopHeist: 'Shoplifting', scooterSnatch: 'Street robbery', plofkraak: 'Hold-ups & blasts', graffiti: 'Vandalism',
+  fireworks: 'Fireworks & disorder', carChase: 'Reckless driving', doorbell: 'Neighbour rows',
+  scuffle: 'Fights & threats', shadyDeal: 'Drugs', phishing: 'Fraud & scams',
+};
+/**
+ * From a neighbourhood's registered crimes by category (`cat`) and the city totals (`cats`): each theme's share
+ * here, how that compares with the city, and the factor that scales how often its gag plays.
+ */
+export function mixFor(cat, cats) {
+  const out = { factor: {}, share: {}, rel: {}, n: {} };
+  if (!cat || !cats) return out;
+  const names = Object.keys(CATS);
+  const here = (n) => CATS[n].reduce((t, k) => t + (cat[k] || 0), 0), city = (n) => CATS[n].reduce((t, k) => t + (cats[k]?.city || 0), 0);
+  const tb = names.reduce((t, n) => t + here(n), 0), tc = names.reduce((t, n) => t + city(n), 0);
+  for (const n of names) {
+    const sb = tb ? here(n) / tb : 0, sc = tc ? city(n) / tc : 0, rel = sc ? sb / sc : 1;
+    out.n[n] = here(n); out.share[n] = sb; out.rel[n] = rel;
+    out.factor[n] = tb < 12 ? 1 : clamp(Math.pow(sb * names.length, 0.55) * Math.pow(rel, 0.6), 0.12, 4.5);
+  }
+  return out;
+}
+const weight = (ctx, n) => G[n].w[ctx.level - 1] * (ctx.mix?.factor?.[n] ?? 1);
+const ready = (ctx, n) => { const g = G[n]; return (!g.need || g.need.every((k) => ctx.L[k] && ctx.L[k].length > 0)) && (!g.avail || g.avail(ctx)); };
+
+// ---------------------------------------------------------------- the director
+const PACE = { 1: { gap: [4, 7], max: 1 }, 2: { gap: [3.5, 6], max: 1 }, 3: { gap: [2.6, 4.6], max: 1 }, 4: { gap: [2, 3.6], max: 2 }, 5: { gap: [1.5, 2.8], max: 2 } };
+
+/** The opening gag: the one this neighbourhood's figures point at most, if this spot can host it. */
+function signatureFor(ctx) {
+  const lv = ctx.level, names = Object.keys(G).filter((n) => G[n].w[lv - 1] > 0 && ready(ctx, n));
+  if (!names.length) return null;
+  if (lv === 1) return names.includes('pigeonLady') ? 'pigeonLady' : names[0];
+  const crime = names.filter((n) => G[n].crime), pool = crime.length ? crime : names;
+  return pool.reduce((a, b) => (weight(ctx, b) > weight(ctx, a) ? b : a));
+}
+function* director(ctx, delay = 2.4, signature = true) {
   const { rnd, level } = ctx, pace = PACE[level], locks = new Set();
   let active = 0;
   const recent = [];
@@ -1077,40 +1394,58 @@ function* director(ctx) {
     if (g.lock) locks.add(g.lock);
     recent.push(name);
     if (recent.length > 3) recent.shift();
+    ctx.gagStart?.(name);
     ctx.run((function* () {
-      try { yield* g.run(ctx); } finally { active--; if (g.lock) locks.delete(g.lock); }
+      try { yield* g.run(ctx); } finally { active--; if (g.lock) locks.delete(g.lock); ctx.gagEnd?.(name); }
     })());
   };
-  yield* wait(2.4);
-  const sig = SIGNATURE[level];
-  if (!G[sig].avail || G[sig].avail(ctx)) launch(sig);
+  yield* wait(delay);
+  if (signature) { const sig = signatureFor(ctx); if (sig) launch(sig); }
   for (;;) {
     yield* wait(rnd.range(pace.gap[0], pace.gap[1]));
     if (active >= pace.max) continue;
-    const opts = Object.keys(G).filter((n) => G[n].w[level - 1] > 0 && !recent.includes(n) && !(G[n].lock && locks.has(G[n].lock)) && (!G[n].avail || G[n].avail(ctx)));
+    const opts = Object.keys(G).filter((n) => weight(ctx, n) > 0 && !recent.includes(n) && !(G[n].lock && locks.has(G[n].lock)) && ready(ctx, n));
     if (!opts.length) { recent.shift(); continue; }
-    let tot = opts.reduce((s, n) => s + G[n].w[level - 1], 0), r = rnd() * tot;
-    let pickN = opts[0];
-    for (const n of opts) { r -= G[n].w[level - 1]; if (r <= 0) { pickN = n; break; } }
+    let r = rnd() * opts.reduce((t, n) => t + weight(ctx, n), 0), pickN = opts[0];
+    for (const n of opts) { r -= weight(ctx, n); if (r <= 0) { pickN = n; break; } }
     launch(pickN);
   }
 }
 
-/** Kick off everything that moves. `only` forces a single gag (debug). */
-export function startShow(ctx, only = null) {
+/** Street-long background life. */
+export function startAmbient(ctx) {
+  ctx.peds = [];
+  ctx.road = { closed: 0, vehicles: new Set() };
+  ctx.run(pedSpawner(ctx));
+  ctx.run(carSpawner(ctx));
+  ctx.run(bikeSpawner(ctx));
+}
+/** One spot on the street where gags play. `only` forces a single gag (debug). */
+export function startLocale(ctx, { only = null, delay = 2.4, signature = true, withHeli = false } = {}) {
   ctx.peds = [];
   ctx.road = { closed: 0, vehicles: new Set() };
   ctx.wanted = null;
-  ctx.run(pedSpawner(ctx));
-  ctx.run(carSpawner(ctx));
-  ctx.run(tramSpawner(ctx));
-  ctx.run(bikeSpawner(ctx));
   ctx.run(boatSpawner(ctx));
   ctx.run(gullSpawner(ctx));
   ctx.run(pigeons(ctx));
-  if (ctx.level >= 5) ctx.run(heli(ctx));
+  if (withHeli) ctx.run(heli(ctx));
   if (only && G[only]) {
-    ctx.run((function* () { for (;;) { yield* wait(2); if (!G[only].avail || G[only].avail(ctx)) yield* G[only].run(ctx); yield* wait(2); } })());
-  } else ctx.run(director(ctx));
+    ctx.run((function* () {
+      for (;;) {
+        yield* wait(2);
+        if (ready(ctx, only)) { ctx.gagStart?.(only); try { yield* G[only].run(ctx); } finally { ctx.gagEnd?.(only); } }
+        yield* wait(2);
+      }
+    })());
+  } else ctx.run(director(ctx, delay, signature));
 }
 export const GAG_NAMES = Object.keys(G);
+export const canPlay = (ctx, name) => !!G[name] && ready(ctx, name);
+/** Play one gag right now (debugging and tests). Resolves the returned task when it ends. */
+export function playGag(ctx, name) {
+  if (!canPlay(ctx, name)) return null;
+  const state = { done: false };
+  ctx.gagStart?.(name);
+  ctx.run((function* () { try { yield* G[name].run(ctx); } finally { state.done = true; ctx.gagEnd?.(name); } })());
+  return state;
+}

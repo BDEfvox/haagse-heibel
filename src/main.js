@@ -5,7 +5,8 @@ import '@fontsource/fredoka/600.css';
 import '@fontsource/fredoka/700.css';
 import './style.css';
 import { createMap, LV, LV_NAMES } from './map.js';
-import { Stage } from './voxel/stage.js';
+import { Stage, preload } from './voxel/stage.js';
+import { mixFor, THEMES } from './voxel/gags.js';
 import { sfx, startMusic, stopMusic, isMuted, setMuted, unlock } from './audio.js';
 
 const $ = (s) => document.querySelector(s);
@@ -36,6 +37,8 @@ async function boot() {
 
   // ------------------------------------------------------------ map + tooltip
   const tip = $('#tip'), mapEl = $('#map'), cut = $('#cutscene'), speed = $('#speed');
+  const geomOf = (p) => streets.features[p.id]?.geometry.coordinates;
+  let warmT = 0;
   const badge = (l) => `<span class="lv" style="background:${LV[l]}">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= l ? 'on' : ''}"></i>`).join('')}<b>${LV_NAMES[l].toUpperCase()}</b></span>`;
   const api = createMap(mapEl, { buurten, streets, context }, {
     hover(p, pt, changed) {
@@ -43,6 +46,9 @@ async function boot() {
       if (changed) {
         play('hover');
         const q = p.f.properties;
+        // start fetching the street's surroundings while the pointer rests on it
+        clearTimeout(warmT);
+        if (p.type === 'street') warmT = setTimeout(() => preload(p.f.geometry.coordinates), 140);
         tip.innerHTML = p.type === 'street'
           ? `<div class="n">${esc(q.name)}</div><div class="s">${esc(q.buurtName)}</div>${badge(q.level)}<div class="go">Click to drop in ▸</div>`
           : `<div class="n">${esc(q.name)}</div><div class="s">${esc(wijkName(q.wijk))}</div>${badge(q.level)}<div class="s" style="margin-top:5px">${q.pop >= 500 ? `<b>${q.rate}</b> crimes per 1,000 residents` : `<b>${q.crimes}</b> registered crimes`}</div><div class="go">Click to zoom in ▸</div>`;
@@ -97,6 +103,8 @@ async function boot() {
     <ul>
       <li><b>Neighbourhood level</b> is real: registered crimes in ${meta.year} per neighbourhood (buurt), published by the Dutch police via CBS. Citywide average: <b>${meta.cityRate}</b> per 1,000 residents.</li>
       <li><b>Street level</b> is an estimate. Street-by-street crime figures are not public in the Netherlands, so every street starts with its neighbourhood's score and gets nudged by what is on it.</li>
+      <li><b>What happens on the street</b> follows the neighbourhood's crime mix: the more a kind of crime is registered there, and the more it stands out from the city average, the more often its cartoon plays. Categories that are no laughing matter count towards the level but have no cartoon.</li>
+      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water, parks and trees (OpenStreetMap). Shop signs are generic, not real businesses.</li>
       <li>Registered crime depends on reporting and on how many visitors an area gets — a busy centre always looks worse than a sleepy suburb. The cartoon scenes are jokes, not a safety guide and not a verdict on anyone who lives there.</li>
     </ul>
     <p>Sources: ${meta.sources.map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a>`).join(' · ')}</p>`;
@@ -138,13 +146,17 @@ async function boot() {
     $('#t-meter').innerHTML = [0, 1, 2, 3, 4].map((i) => `<span class="pip ${i < p.level ? 'on' : ''}" style="--i:${i};--c:${c}"></span>`).join('') + `<span class="lvname" style="--c:${c}">${LV_NAMES[p.level].toUpperCase()}</span>`;
     let html = '';
     if (b) {
-      const top = Array.isArray(b.top) ? b.top : [];
-      const max = Math.max(1, ...top.map((t) => t.n));
+      const mix = mixFor(b.cat, meta.cats);
+      const top = Object.keys(mix.share || {}).filter((k) => mix.n[k] > 0).sort((x, y) => mix.share[y] - mix.share[x]).slice(0, 5);
+      const max = Math.max(0.01, ...top.map((k) => mix.share[k]));
       html += b.pop >= 500
         ? `<div class="big">${b.rate}<small>crimes per 1,000 residents in ${esc(b.name)} (${b.year})</small></div><div class="row"><span>City average</span><b>${meta.cityRate}</b></div>`
         : `<div class="big">${b.crimes}<small>registered crimes in ${esc(b.name)} (${b.year}) — hardly anyone lives here</small></div>`;
       html += `<div class="row"><span>Registered crimes</span><b>${b.crimes.toLocaleString('en')}</b></div>`;
-      if (top.length) html += '<h4>Most reported</h4>' + top.map((t) => `<div class="row"><span>${esc(t.k)}</span><b>${t.n}</b></div><div class="bar"><i style="width:${(t.n / max) * 100}%"></i></div>`).join('');
+      if (top.length) html += '<h4>Crime mix here → what you will see</h4>' + top.map((k) => {
+        const rel = mix.rel[k], tag = rel > 1.35 ? '<em class="up" title="More than the city average">▲</em>' : rel < 0.7 ? '<em class="down" title="Less than the city average">▼</em>' : '';
+        return `<div class="row"><span>${esc(THEMES[k])} ${tag}</span><b>${Math.round(mix.share[k] * 100)}%</b></div><div class="bar"><i style="width:${(mix.share[k] / max) * 100}%"></i></div>`;
+      }).join('');
     }
     const why = String(p.why || '').split('|').filter(Boolean);
     html += `<h4>This street</h4><div class="row"><span>Heibel score</span><b>${p.score}/100</b></div>`;
@@ -155,7 +167,30 @@ async function boot() {
     $('#count').textContent = '000';
     $('#news').textContent = `Our reporter has arrived on ${p.name}…`;
   }
-  const stageOpts = () => ({ only: params.get('only'), seed: params.get('seed') || '' });
+  const stageOpts = (p, lngLat) => ({
+    only: params.get('only'), seed: params.get('seed') || '', geometry: geomOf(p), lngLat,
+    crime: { cat: byCode.get(p.buurt)?.properties.cat, cats: meta.cats },
+  });
+  const touch = matchMedia('(hover: none)').matches;
+  const HINTS = {
+    drop: '',
+    follow: touch ? 'drag to take over the camera' : 'drag to take over the camera · scroll to zoom',
+    free: touch ? 'drag to move · pinch to zoom and turn · tap ! to jump to the action' : 'drag to move · right-drag to turn · scroll to zoom · click ! to jump to the action',
+  };
+  hooks.onMode = (mode) => {
+    cut.dataset.mode = mode;
+    $('#drag-hint').textContent = HINTS[mode] || '';
+    $('#btn-follow').hidden = mode !== 'free';
+    if (mode === 'free' && !cut.dataset.roamed) {
+      cut.dataset.roamed = '1';
+      const t = $('#roam');
+      t.classList.remove('in');
+      void t.offsetWidth;
+      t.classList.add('in');
+      play('coin');
+    }
+  };
+  hooks.onPin = () => play('whoosh');
   const withLevel = (p) => (params.get('lvl') ? { ...p, level: +params.get('lvl') } : p);
 
   async function openStreet(p0, pt) {
@@ -167,12 +202,20 @@ async function boot() {
     await api.ready;
     api.setEnabled(false);
     tip.hidden = true;
-    if (current) {
-      // already in a cutscene: quick swap
+    let lngLat;
+    if (pt) { const ll = api.map.unproject([pt.x, pt.y]); lngLat = [ll.lng, ll.lat]; }
+    const swap = !!current;
+    cut.dataset.mode = 'drop';
+    delete cut.dataset.roamed;
+    $('#btn-follow').hidden = true;
+    $('#drag-hint').textContent = '';
+    // the world around the street loads while the map dives
+    const ready = stage.show(p, hooks, stageOpts(p, lngLat));
+    stage.hold = true;
+    if (swap) {
       play('whoosh');
       cut.classList.remove('titled');
-      stage.ctx?.flash('#fff', 0.35);
-      await sleep(120);
+      cut.classList.add('swap');
     } else {
       play('click'); play('whoosh');
       const at = pt || api.streetPoint(p);
@@ -186,15 +229,29 @@ async function boot() {
       speed.classList.add('on');
       api.dive(p, 900);
       await sleep(760);
+    }
+    const ok = await ready;
+    if (!ok) {
+      // could not build the street: back to the map
+      mapEl.classList.remove('dive');
+      speed.classList.remove('on');
+      mapEl.style.transformOrigin = '';
+      cut.classList.remove('swap');
+      if (!swap) { api.restore(p); api.setEnabled(true); }
+      $('#hint').textContent = 'That street would not load. Try another one.';
+      busy = false;
+      return;
+    }
+    if (!swap) {
       cut.style.setProperty('--ix', '50%');
       cut.style.setProperty('--iy', '50%');
       cut.hidden = false;
     }
     current = p;
     fillHud(p);
-    stage.show(p, hooks, stageOpts());
-    cut.classList.remove('close');
+    cut.classList.remove('close', 'swap');
     cut.classList.add('open');
+    stage.hold = false;
     history.replaceState(null, '', `#s=${p.id}`);
     await sleep(520);
     play('slam');
@@ -204,7 +261,7 @@ async function boot() {
     mapEl.classList.remove('dive');
     speed.classList.remove('on');
     mapEl.style.transformOrigin = '';
-    api.restore(p);
+    if (!swap) api.restore(p);
     await sleep(300);
     busy = false;
   }
@@ -228,6 +285,7 @@ async function boot() {
     busy = false;
   }
   $('#btn-back').onclick = closeStreet;
+  $('#btn-follow').onclick = () => { play('click'); stage.follow(); };
   $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null));
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -236,6 +294,7 @@ async function boot() {
   });
 
   await api.ready;
+  preload();
   $('#loading').classList.add('gone');
   setTimeout(() => $('#loading').remove(), 500);
 

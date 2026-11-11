@@ -319,8 +319,9 @@ async function loadBuurten() {
   for (const r of rows) {
     const code = r.WijkenEnBuurten.trim(), cat = r.SoortMisdrijf.trim(), n = r.GeregistreerdeMisdrijven_1 || 0;
     let e = crimeBy.get(code);
-    if (!e) crimeBy.set(code, (e = { total: 0, hasTotal: false, cats: new Map() }));
+    if (!e) crimeBy.set(code, (e = { total: 0, hasTotal: false, cats: new Map(), raw: {} }));
     if (cat === '0.0.0') { e.total = n; e.hasTotal = true; continue; }
+    if (n > 0) e.raw[cat] = (e.raw[cat] || 0) + n;
     const label = CRIME_LABEL[cat] || 'Other';
     e.cats.set(label, (e.cats.get(label) || 0) + n);
   }
@@ -348,6 +349,7 @@ async function loadBuurten() {
     const c = crimeBy.get(b.code);
     if (c && c.hasTotal && b.areaKm2 > 0) {
       b.crimes = c.total;
+      b.cat = c.raw;
       b.rate = Math.round((c.total / Math.max(b.pop, 500)) * 1000 * 10) / 10;
       b.density = Math.round((c.total / b.areaKm2) * 10) / 10;
       const top = [...c.cats.entries()].filter(([k, n]) => k !== 'Other' && n > 0).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).slice(0, 3);
@@ -371,7 +373,18 @@ async function loadBuurten() {
   const medScore = median(matched.map((b) => b.score));
   const sumCrimes = matched.reduce((s, b) => s + b.crimes, 0), sumPop = matched.reduce((s, b) => s + b.pop, 0);
   const cityRate = Math.round((sumCrimes / sumPop) * 1000 * 10) / 10;
-  return { list, matched, unmatched, year, medScore, cityRate, sumCrimes, sumPop, skipped };
+  // category titles (soort) + per-category city totals over all listed buurten
+  const soort = await cachedJson('soort.json', () => getJson(`${ODATA}/SoortMisdrijf`));
+  const catTitles = {};
+  for (const v of soort.value) {
+    const k = v.Key.trim();
+    if (k !== '0.0.0') catTitles[k] = v.Title.trim().replace(/^[\d.]+\s+/, '');
+  }
+  const catCity = {};
+  for (const b of list) for (const [k, n] of Object.entries(crimeBy.get(b.code)?.raw || {})) catCity[k] = (catCity[k] || 0) + n;
+  const cats = {};
+  for (const k of Object.keys(catTitles).sort()) cats[k] = { title: catTitles[k], city: catCity[k] || 0 };
+  return { list, cats, matched, unmatched, year, medScore, cityRate, sumCrimes, sumPop, skipped };
 }
 
 function buurtFeatureGeometry(geom) {
@@ -411,7 +424,7 @@ const buurtFeatures = B.list.map((b, i) => {
   const [cx, cy] = labelPoint(b.geom);
   return {
     type: 'Feature', id: i,
-    properties: { code: b.code, name: b.name, wijk: b.wijk, pop: b.pop, areaKm2: Math.round(b.areaKm2 * 1000) / 1000, crimes: b.crimes, rate: b.rate, density: b.density, score: b.score, level: b.level, top: b.top, year: B.year, cx, cy },
+    properties: { code: b.code, name: b.name, wijk: b.wijk, pop: b.pop, areaKm2: Math.round(b.areaKm2 * 1000) / 1000, crimes: b.crimes, rate: b.rate, density: b.density, score: b.score, level: b.level, top: b.top, year: B.year, cx, cy, cat: b.cat || {} },
     geometry: buurtFeatureGeometry(b.geom),
   };
 });
@@ -666,6 +679,7 @@ const meta = {
   counts: { buurten: buurtFeatures.length, streets: streetFeatures.length },
   levelNames: LEVEL_NAMES,
   cityRate: B.cityRate,
+  cats: B.cats,
 };
 const fc = (features) => ({ type: 'FeatureCollection', features });
 const files = {

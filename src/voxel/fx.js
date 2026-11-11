@@ -167,8 +167,11 @@ export class Fx {
       const t = this.texts[i];
       t.t += dt;
       if (t.t > t.dur) { this._kill(i); continue; }
-      const pos = t.src.isVector3 ? t.src : t.src.g ? t.src.g.position : t.src.position;
-      _p.set(pos.x, pos.y + t.off + (t.t / t.dur) * t.rise, pos.z).project(this.camera);
+      if (t.src.isVector3) _p.copy(t.src);
+      else { const o = t.src.g || t.src; o.updateWorldMatrix(true, false); _p.setFromMatrixPosition(o.matrixWorld); }
+      _p.y += t.off + (t.t / t.dur) * t.rise;
+      _p.project(this.camera);
+      t.el.style.visibility = _p.z > 1 ? 'hidden' : '';
       t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px)`;
     }
   }

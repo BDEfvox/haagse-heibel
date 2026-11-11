@@ -74,13 +74,20 @@ const FACES = [
   [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, -1]],
 ];
 
-/** Collects coloured boxes and bakes them into one mesh. x/z = centre, y = bottom. */
+/**
+ * Collects coloured boxes and bakes them into one mesh. x/z = centre, y = bottom.
+ * `tags`: also record a per-vertex `aB` attribute (centre x, centre z, height, half-depth) used by the cutaway shader.
+ * `setT` places following boxes in a rotated/translated frame, so one mesh can hold things at any angle.
+ */
 export class Vox {
-  constructor(seed = 1) {
+  constructor(seed = 1, tags = false) {
     this.pos = [];
     this.nor = [];
     this.col = [];
     this.idx = [];
+    this.tag = tags ? [] : null;
+    this.B = null;
+    this.T = null;
     this.n = 0;
     this._s = seed >>> 0 || 1;
   }
@@ -88,19 +95,34 @@ export class Vox {
     this._s = (Math.imul(this._s, 1664525) + 1013904223) >>> 0;
     return this._s / 4294967296;
   }
+  /** Frame for following boxes: rotate by `angle` about Y, then move to (x, y, z). Pass nothing to reset. */
+  setT(angle, x = 0, z = 0, y = 0) {
+    this.T = angle === undefined ? null : { c: Math.cos(angle), s: Math.sin(angle), x, y, z };
+    return this;
+  }
+  /** Cutaway tag for following boxes: the owning building's centre and height. */
+  setB(cx, cz, h, r = 0) {
+    this.B = cx === undefined ? null : [cx, cz, h, r];
+    return this;
+  }
   /** vary: random lightness jitter (0..1) to give flat colours a hand-placed feel. */
   box(x, y, z, w, h, d, color, vary = 0) {
     _c.set(color);
     if (vary) _c.multiplyScalar(1 + (this._rand() * 2 - 1) * vary);
     const X = [x - w / 2, x + w / 2], Y = [y, y + h], Z = [z - d / 2, z + d / 2];
+    const T = this.T, B = this.B, pos = this.pos, nor = this.nor, col = this.col, tag = this.tag;
     for (const f of FACES) {
-      const nrm = f[4];
-      // gentle fake AO: undersides and lower verts a touch darker
+      let nx = f[4][0], nz = f[4][2];
+      const ny = f[4][1];
+      if (T) { const a = nx * T.c + nz * T.s; nz = -nx * T.s + nz * T.c; nx = a; }
       for (let k = 0; k < 4; k++) {
         const s = f[k];
-        this.pos.push(X[s[0]], Y[s[1]], Z[s[2]]);
-        this.nor.push(nrm[0], nrm[1], nrm[2]);
-        this.col.push(_c.r, _c.g, _c.b);
+        let px = X[s[0]], py = Y[s[1]], pz = Z[s[2]];
+        if (T) { const a = px * T.c + pz * T.s + T.x; pz = -px * T.s + pz * T.c + T.z; px = a; py += T.y; }
+        pos.push(px, py, pz);
+        nor.push(nx, ny, nz);
+        col.push(_c.r, _c.g, _c.b);
+        if (tag) { if (B) tag.push(B[0], B[1], B[2], B[3]); else tag.push(0, 0, 0, 0); }
       }
       const n = this.n;
       this.idx.push(n, n + 1, n + 2, n, n + 2, n + 3);
@@ -116,6 +138,7 @@ export class Vox {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    if (this.tag) g.setAttribute('aB', new THREE.Float32BufferAttribute(this.tag, 4));
     g.setIndex(this.idx);
     return g;
   }

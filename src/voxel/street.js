@@ -1,354 +1,296 @@
-// Generates a voxel street diorama from a street's real-world traits.
+// The street's cross-section (lanes, pavements, walking lines), its furniture, and the per-spot
+// layouts the gag scripts play on. Everything here is in street coords: s along the street, v across it
+// (negative v = the far side from the camera, where the house fronts are).
 import * as THREE from 'three';
-import { Vox, MAT, piece, makeSign, clamp } from './kit.js';
+import { Vox, MAT, clamp } from './kit.js';
 import * as P from './props.js';
-import { makeBird } from './cast.js';
 
-const X0 = -24, X1 = 24, LEN = X1 - X0;
-const SHOPS = ['BAKKER', 'KAAS', 'BLOEM', 'FIETS', 'SUPER', 'KAPPER', 'BOEK', 'TOKO', 'SLAGER', 'DROP', 'VIS', 'KIOSK'];
-const BARS = ['CAFE', 'KROEG', 'BAR', 'BIER'];
-const FOOD = ['FRIET', 'PIZZA', 'SNACK', 'KEBAB', 'ROTI', 'SUSHI'];
-
-export function buildStreet(st, rnd, night) {
-  const pieces = [];
-  const add = (obj, x = 0, kind = 'prop') => { pieces.push({ obj, x, kind }); return obj; };
-
+/** Lanes and pavements for this street, squeezed to fit between the real building fronts. */
+export function crossSection(st, clearB, clearF, night) {
   const cls = st.cls || 'residential';
-  const tram = !!st.tram;
-  let kind = cls === 'pedestrian' ? 'ped' : (['trunk', 'primary', 'secondary', 'tertiary'].includes(cls) || st.lanes >= 2) ? 'major' : 'minor';
-  if (tram && kind === 'minor') kind = 'major';
+  const kind = cls === 'pedestrian' ? 'ped' : (['trunk', 'primary', 'secondary', 'tertiary'].includes(cls) || st.lanes >= 2) ? 'major' : 'minor';
   let hw = kind === 'major' ? 3.3 : kind === 'minor' ? 2.6 : 3.6;
-  if (tram && kind === 'major') hw = 5.2;
-  const bw = kind !== 'ped' && (st.bike || kind === 'major') ? 1.2 : 0;
-  const sw = 3.6;
-  const zH = -hw - bw - sw; // house fronts
-  const s0 = hw + bw + sw;  // front strip starts
-  const per100 = (n) => (n || 0) / Math.max(0.6, (st.len || 200) / 100);
-  const busy = per100((st.shops || 0) + (st.food || 0) + (st.bars || 0));
-  const strip = st.beach ? 'beach' : st.water ? 'canal' : st.park ? 'park' : (kind === 'ped' || busy > 2.2 || per100(st.bars) > 0.6) ? 'plaza' : 'yard';
-  const stripW = { beach: 9.5, canal: 7, park: 6.5, plaza: 5.5, yard: 4.6 }[strip];
-  const zF = s0 + stripW, zB = zH - 6.2;
-  const depth = zF - zB, zc = (zF + zB) / 2;
-  const Y = 0.15;
-
+  let bw = kind !== 'ped' && (st.bike || kind === 'major') ? 1.2 : 0;
+  const tight = Math.min(clearB, clearF);
+  if (kind === 'ped') hw = clamp(tight - 2.0, 1.4, 3.6);
+  else {
+    if (tight < hw + bw + 1.6) bw = 0;
+    if (tight < hw + 1.6) hw = clamp(tight - 1.6, 1.7, hw);
+  }
+  const hb = hw + bw;
+  const swB = clamp(clearB - hb - 0.15, 1.3, 3.6), swF = clamp(clearF - hb - 0.15, 1.3, 3.6);
   const L = {
-    x0: X0, x1: X1, kind, hw, bw, zH, s0, zF, zB, zc, depth, strip, tram, night,
-    walkB: [zH + 1.7, zH + 2.3], walkF: [hw + bw + 1.6, hw + bw + 2.4],
+    kind, hw, bw, swB, swF, night, tram: false, strip: 'yard',
+    zH: -(hb + swB), s0: hb + swF, zB: -(hb + swB) - 7, zF: hb + swF + 7, zc: 0, depth: 2 * hb + swB + swF + 14,
+    walkB: [-(hb + swB * 0.62), -(hb + swB * 0.36)], walkF: [hb + swF * 0.42, hb + swF * 0.68],
     bikeB: bw ? -(hw + bw / 2) : -(hw - 0.55), bikeF: bw ? hw + bw / 2 : hw - 0.55,
-    laneB: null, laneF: null, tramB: tram ? -1.0 : null, tramF: tram ? 1.0 : null,
-    chaseZ: 0,
-    yAt: (z) => (Math.abs(z) > hw + bw - 0.05 ? Y : 0),
+    laneB: null, laneF: null, tramB: null, tramF: null, chaseZ: 0, canPark: false,
+    yAt: () => 0,
+    x0: -24, x1: 24,
     houses: [], shops: [], racks: [], benches: [], bins: [], parked: [], lamps: [], stalls: [], chimneys: [],
     atm: null, box: null, canal: null, sea: null,
   };
-  if (kind === 'major') { L.laneB = tram ? -3.6 : -hw / 2; L.laneF = tram ? 3.6 : hw / 2; L.chaseZ = tram ? 3.6 : 0; }
-  if (kind === 'minor') { L.laneB = L.laneF = -1.05; L.chaseZ = -1.05; L.bikeB = -2.25; L.bikeF = 0.35; }
-
-  // ------------------------------------------------------------ ground
-  const canal = strip === 'canal' ? { z0: s0 + 0.5, z1: zF - 1.6 } : null;
-  add(piece((v) => {
-    const slab = (z0, z1, top, col, h = 0.5) => v.box(0, top - h, (z0 + z1) / 2, LEN, h, z1 - z0, col);
-    // island body
-    const dirt = '#8a6642';
-    if (canal) {
-      slab(zB, canal.z0, -0.1, dirt, 1.3); slab(canal.z1, zF, -0.1, dirt, 1.3);
-      slab(canal.z0, canal.z1, -1.2, '#5d6b5a', 0.2);
-      v.box(0, -1.2, canal.z0 + 0.1, LEN, 1.3, 0.2, '#9a7b6b'); v.box(0, -1.2, canal.z1 - 0.1, LEN, 1.3, 0.2, '#9a7b6b');
-    } else slab(zB, zF, -0.1, dirt, 1.3);
-    v.box(0, -2.3, zc, LEN - 1.2, 0.9, depth - 1.2, '#75553a');
-    v.box(0, -3.2, zc, LEN - 3.4, 0.9, depth - 3.2, '#634833');
-    v.box(0, -3.9, zc, LEN - 8, 0.7, depth - 6.5, '#553e2c');
-    for (let i = 0; i < 9; i++) v.box(rnd.range(X0 + 3, X1 - 3), -4.2 - rnd.range(0, 0.8), zc + rnd.range(-depth / 3, depth / 3), rnd.range(1, 3), rnd.range(0.6, 1.4), rnd.range(1, 3), '#4b3728');
-
-    // backyard grass
-    v.box(0, -0.1, (zB + zH) / 2, LEN, 0.25, zH - zB, '#6fbf5f');
-    // road surface
-    if (kind === 'ped') {
-      const ts = 1.6, cols = Math.ceil(LEN / ts), rows = Math.ceil((2 * (hw + sw)) / ts);
-      const tw = (2 * (hw + sw)) / rows;
-      for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
-        v.box(X0 + ts * (i + 0.5), -0.1, zH + tw * (j + 0.5), ts, 0.25, tw, (i + j) % 2 ? '#e0c9a0' : '#d6bc8e', 0.03);
-      }
-    } else {
-      const road = kind === 'minor' ? '#a8776a' : '#4b4f58';
-      if (kind === 'minor') {
-        for (let i = 0; i < 24; i++) v.box(X0 + 1 + i * 2, -0.1, 0, 2, 0.1, 2 * hw, i % 2 ? '#a8776a' : '#a27064', 0.03);
-      } else v.box(0, -0.1, 0, LEN, 0.1, 2 * hw, road);
-      if (bw) for (const s of [-1, 1]) v.box(0, -0.1, s * (hw + bw / 2), LEN, 0.12, bw, '#c9573f', 0.02);
-      for (const s of [-1, 1]) {
-        // curb + sidewalk tiles
-        v.box(0, -0.1, s * (hw + bw + 0.1), LEN, 0.27, 0.2, '#cfc9bc');
-        const ts = 1.4, cols = Math.ceil(LEN / ts);
-        for (let i = 0; i < cols; i++) for (let j = 0; j < 2; j++) {
-          const zz = s * (hw + bw + 0.2 + (sw - 0.2) * (j + 0.5) / 2);
-          v.box(X0 + ts * (i + 0.5), -0.1, zz, ts, 0.25, (sw - 0.2) / 2, (i + j) % 2 ? '#b9bcc2' : '#aeb1b8', 0.03);
-        }
-      }
-      if (tram) {
-        v.box(0, 0, 0, LEN, 0.06, 4.0, '#77c66a', 0.02);
-        v.box(0, 0, -2.05, LEN, 0.14, 0.14, '#cfc9bc'); v.box(0, 0, 2.05, LEN, 0.14, 0.14, '#cfc9bc');
-      } else if (kind === 'major') {
-        for (let x = X0 + 1.2; x < X1; x += 2.6) v.box(x, 0, 0, 1.1, 0.02, 0.14, '#f1f1f1');
-      }
-      // zebra crossing
-      const zx = rnd.range(-9, 9);
-      L.zebra = zx;
-      for (let z = -hw + 0.45; z <= hw - 0.3; z += 0.9) {
-        if (tram && Math.abs(z) < 2.2) continue;
-        v.box(zx, 0, z, 2.2, 0.025, 0.45, '#f1f1f1');
-      }
-    }
-    if (tram) {
-      for (const tz of [-1, 1]) for (const r of [-0.45, 0.45]) v.box(0, kind === 'ped' ? 0.15 : 0.06, tz + r, LEN, 0.05, 0.1, '#c6ccd2');
-    }
-  }, rnd.int(1, 9999)), 0, 'ground');
-
-  // ------------------------------------------------------------ back row of buildings
-  const pShop = clamp(busy / 5, 0, 0.9) * (kind === 'ped' ? 1.25 : 1);
-  const barShare = (st.bars || 0) / Math.max(1, (st.bars || 0) + (st.food || 0) + (st.shops || 0));
-  const foodShare = (st.food || 0) / Math.max(1, (st.bars || 0) + (st.food || 0) + (st.shops || 0));
-  let x = X0 + 0.6, idx = 0, bankPlaced = false;
-  const wantBank = true;
-  const usedNames = new Set();
-  while (x < X1 - 0.6) {
-    const towerish = st.tall && rnd.chance(0.55);
-    let w = towerish ? rnd.range(7, 9) : rnd.range(4, 6);
-    const left = X1 - 0.6 - x;
-    if (left - w < 3.6) w = left;
-    if (w > 9.5) w = left / 2;
-    const cx = x + w / 2;
-    let info, group;
-    const yard = rnd.chance(0.5);
-    group = piece((v, gl) => {
-      if (towerish && w >= 6) {
-        info = P.tower(v, gl, { x: cx, z: zH, w, rnd, night, floors: rnd.int(6, 11), depth: 5.4 });
-      } else {
-        let shop = null, signBg = null;
-        const mid = Math.abs(cx) < 15;
-        if (wantBank && !bankPlaced && mid && (idx >= 2) && w >= 4.4) { shop = 'BANK'; signBg = '#005eb8'; bankPlaced = true; }
-        else if (rnd.chance(pShop)) {
-          const r = rnd();
-          const pool = r < barShare ? BARS : r < barShare + foodShare ? FOOD : SHOPS;
-          shop = rnd.pick(pool);
-          for (let k = 0; k < 6 && usedNames.has(shop); k++) shop = rnd.pick(pool);
-          usedNames.add(shop);
-        }
-        info = P.house(v, gl, { x: cx, z: zH, w, rnd, night, floors: st.tall ? rnd.int(3, 5) : rnd.int(2, 4), shop, signBg, depth: 5 });
-        if (shop === 'BANK') {
-          const ax = cx - w / 2 + 0.9;
-          P.atm(v, gl, ax, zH + 0.05, Y);
-          L.atm = { x: ax, z: zH + 1.2 };
-        }
-      }
-      // backyard bits
-      if (yard) P.tree(v, cx + rnd.range(-1, 1), zH - 5.6, rnd, Y);
-      else P.bush(v, cx + rnd.range(-1, 1), zH - 5.5, rnd, Y);
-    }, rnd.int(1, 9999));
-    if (info.sign) group.add(info.sign);
-    info.idx = idx++;
-    L.houses.push(info);
-    if (info.shop) L.shops.push(info);
-    if (info.chimney) L.chimneys.push(info.chimney);
-    add(group, cx, 'house');
-    x += w;
-  }
-
-  // ------------------------------------------------------------ sidewalks furniture
-  const zCurbB = zH + sw - 0.45, zCurbF = hw + bw + 0.5, zWallB = zH + 0.55, zEdgeF = s0 - 0.4;
-  // lamps
-  for (const lx of [-19, -7, 5, 17]) {
-    add(piece((v, gl) => { L.lamps.push(P.lamp(v, gl, lx, zCurbB, night, Y, 1)); }), lx);
-    add(piece((v, gl) => { L.lamps.push(P.lamp(v, gl, lx + 6, zCurbF, night, Y, -1)); }), lx + 6);
-  }
-  // trees along the curb
-  const nTrees = clamp(Math.round(per100(st.trees) * 1.3) + (st.park ? 2 : 0) + (kind === 'ped' ? 0 : 1), 0, 7);
-  const autumn = false;
-  for (let i = 0; i < nTrees; i++) {
-    const tx = X0 + 3 + ((i + 0.5) * (LEN - 6)) / nTrees + rnd.range(-1.2, 1.2);
-    const back = i % 2 === 0 && kind !== 'ped';
-    if (Math.abs(tx - (L.zebra ?? 99)) < 2.2) continue;
-    add(piece((v) => P.tree(v, tx, back ? zCurbB : zCurbF, rnd, Y, autumn), rnd.int(1, 999)), tx);
-  }
-  // bike rack(s) against the houses
-  const rackX = [rnd.range(-16, -6), rnd.range(6, 16)];
-  rackX.forEach((rx) => {
-    const h = L.houses.find((hh) => Math.abs(hh.door.x - rx) < 1.2);
-    if (h) rx += 2.2;
-    add(piece((v) => P.bikeRack(v, rx, zWallB + 0.15, rnd, 4, Y), rnd.int(1, 999)), rx);
-    L.racks.push({ x: rx, z: zWallB + 1.2 });
-  });
-  // bins, mailbox, benches
-  for (const bx of [rnd.range(-21, -12), rnd.range(-3, 3), rnd.range(12, 21)]) {
-    add(piece((v) => P.bin(v, bx, zCurbF + 0.1, Y)), bx);
-    L.bins.push({ x: bx, z: zCurbF + 0.1 });
-  }
-  const mx = rnd.range(-20, 20);
-  add(piece((v) => P.mailbox(v, mx, zCurbB + 0.1, Y)), mx);
-  // benches against the house fronts, facing the street (and the camera)
-  const clear = (bx) => !L.houses.some((hh) => Math.abs(hh.door.x - bx) < 1.7) && !L.racks.some((r) => Math.abs(r.x - bx) < 2.4) && !(L.atm && Math.abs(L.atm.x - bx) < 2);
-  for (const [lo, hi] of [[-15, -3], [3, 15]]) {
-    let bx = rnd.range(lo, hi);
-    for (let k = 0; k < 14 && !clear(bx); k++) bx = rnd.range(lo, hi);
-    add(piece((v) => P.bench(v, bx, zH + 0.45, Y)), bx);
-    L.benches.push({ x: bx, z: zH + 0.45 });
-  }
-  // real street-name sign
-  const signG = new THREE.Group();
-  add(piece((v) => P.streetSign(signG, v, X0 + 2.6, zEdgeF + 0.2, (st.name || 'STRAAT').toUpperCase().slice(0, 26), Y)), X0 + 2.6).add(signG);
-  // transformer box (graffiti magnet)
-  const tbx = rnd.range(-10, 10);
-  add(piece((v) => {
-    v.box(tbx, Y, zCurbF, 2.0, 1.5, 0.7, '#7f9a8a');
-    v.box(tbx, Y + 1.5, zCurbF, 2.1, 0.1, 0.8, '#647a6d');
-    v.box(tbx + 0.5, Y + 0.2, zCurbF - 0.36, 0.7, 1.1, 0.03, '#6c8576');
-  }), tbx);
-  L.box = { x: tbx, z: zCurbF + 0.35, y: Y, w: 2.0, h: 1.5 }; // z = the face the camera sees
-
-  // tram stop
-  if (tram) {
-    const sx = rnd.range(-12, 12);
-    add(piece((v, gl) => P.tramStop(v, gl, sx, zH + 3.3, night, Y)), sx);
-  }
-  // parked cars on small streets
+  if (kind === 'major') { L.laneB = -hw / 2; L.laneF = hw / 2; }
   if (kind === 'minor') {
-    let px = X0 + 3.5;
-    while (px < X1 - 4) {
-      if (rnd.chance(0.62) && Math.abs(px - L.zebra) > 3.2) {
-        const car = P.makeCar(rnd, 'car', false);
-        car.g.position.set(px, 0, hw - 0.95);
-        car.g.rotation.y = Math.PI / 2;
-        add(car.g, px);
-        L.parked.push({ x: px, z: hw - 0.95 });
+    const park = hw >= 2.5;
+    L.canPark = park;
+    L.laneB = L.laneF = L.chaseZ = park ? -1.05 : 0;
+    L.bikeB = -(hw - 0.35); L.bikeF = park ? 0.35 : hw - 0.4;
+  }
+  return L;
+}
+
+const STALLS = { HARING: ['#21468b', '#ffffff'], FRIET: ['#e63946', '#ffd166'], BLOEM: ['#ff70a6', '#ffffff'] };
+
+/** Street furniture at believable spots along the real street, and the anchors the gags use. */
+export function dress(W) {
+  const { path, grid: G, L, st, rnd, night, group, C } = W;
+  const A = W.anchors, hb = L.hw + L.bw;
+  const v = new Vox(rnd.int(1, 9999)), gl = new Vox(rnd.int(1, 9999));
+  const fr = {};
+  /** Point the builders at a spot on the street: local x runs along it, local z across it. */
+  const at = (s, off, flip = false) => {
+    path.at(s, fr);
+    const X = fr.x - fr.tz * off, Z = fr.z + fr.tx * off, th = Math.atan2(-fr.tz, fr.tx) + (flip ? Math.PI : 0);
+    v.setT(th, X, Z); gl.setT(th, X, Z);
+    return { X, Z, th };
+  };
+  const holder = (f) => { const g = new THREE.Group(); g.position.set(f.X, 0, f.Z); g.rotation.y = f.th; group.add(g); return g; };
+  const okT = new Uint8Array(256);
+  for (const c of [C.WALK, C.LAND, C.PLAZA, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.PARKING, C.CURB, C.FOOT, C.DIRT, C.PED]) okT[c] = 1;
+  const cls = (s, off) => { const p = path.xz(s, off); return G.get(p[0], p[1]); };
+  const free = (s, off) => okT[cls(s, off)] === 1;
+  const sA = path.sA, sB = path.sB, len = sB - sA;
+
+  // ---- house anchors
+  for (const h of W.heroes) {
+    if (h.side >= 0) continue;
+    const fp = path.project(h.front[0], h.front[1]), dp = path.project(h.door[0], h.door[1]), wp = path.project(h.win[0], h.win[1]);
+    if (fp.v > -hb - 0.5 || fp.s < sA - 2 || fp.s > sB + 2) continue;
+    const a = {
+      s: fp.s, w: h.w, top: h.info.top, z: fp.v, shop: h.info.shop || null, tower: !!h.info.tower,
+      door: { s: dp.s, z: Math.min(dp.v, -hb - 0.4) }, win: { s: wp.s, y: h.winY, z: wp.v },
+    };
+    A.houses.push(a);
+    if (h.atm) { const p = path.project(h.atm[0], h.atm[1]); A.atms.push({ s: p.s, z: p.v, zH: fp.v }); }
+    if (h.chimney && !h.info.tower) A.chimneys.push(h.chimney);
+  }
+  A.houses.sort((a, b) => a.s - b.s);
+  A.houses.forEach((h, i) => { h.idx = i; });
+  const doorNear = (s, r) => A.houses.some((h) => Math.abs(h.door.s - s) < r);
+  const houseAt = (s) => A.houses.find((h) => Math.abs(h.s - s) < h.w / 2);
+
+  // ---- lamps
+  const zCurbB = -(hb + 0.45), zCurbF = hb + 0.5;
+  for (let s = sA + 5; s < sB; s += 24) {
+    if (free(s, zCurbB)) { at(s, zCurbB); const lp = P.lamp(v, gl, 0, 0, night, 0, 1); const p = path.xz(s, zCurbB + 0.7); A.lamps.push({ s, z: zCurbB + 0.7, y: lp.y, X: p[0], Z: p[1] }); }
+    const s2 = s + 12;
+    if (s2 < sB && free(s2, zCurbF)) { at(s2, zCurbF); const lp = P.lamp(v, gl, 0, 0, night, 0, -1); const p = path.xz(s2, zCurbF - 0.7); A.lamps.push({ s: s2, z: zCurbF - 0.7, y: lp.y, X: p[0], Z: p[1] }); }
+  }
+
+  // ---- block by block: racks, benches, bins, a transformer box, a stall, the name sign
+  const busy = ((st.shops || 0) + (st.food || 0) + (st.bars || 0)) / Math.max(0.6, len / 100);
+  let block = 0;
+  for (let b0 = sA; b0 < sB; b0 += 48, block++) {
+    const b1 = Math.min(sB, b0 + 48);
+    if (b1 - b0 < 10) break;
+    const pickS = (pad = 3) => rnd.range(b0 + pad, Math.max(b0 + pad + 0.1, b1 - pad));
+    // bike rack against a house front (or the back of the pavement)
+    for (let k = 0; k < (W.builtAt((b0 + b1) / 2, -1) ? 2 : block % 3 === 0 ? 1 : 0); k++) {
+      let s = pickS(), off = L.zH + 0.7;
+      const h = houseAt(s);
+      if (h) { if (h.shop || h.w < 4) continue; s = h.s + (h.door.s > h.s ? -1 : 1) * Math.min(h.w / 2 - 1.3, 1.7); off = h.z + 0.7; }
+      if (doorNear(s, 1.4) || A.racks.some((r) => Math.abs(r.s - s) < 5) || !free(s, off) || !free(s, off + 1)) continue;
+      at(s, off);
+      P.bikeRack(v, 0, 0, rnd, 4, 0);
+      A.racks.push({ s, z: off + 1.05 });
+    }
+    // benches, backs to the houses, facing the street
+    for (let k = 0; k < (W.builtAt((b0 + b1) / 2, -1) ? 2 : block % 2); k++) {
+      for (let t = 0; t < 8; t++) {
+        const s = pickS(4), h = houseAt(s), off = (h ? h.z : L.zH) + 0.45;
+        if (off > -hb - 0.7) continue;
+        if (doorNear(s, 1.7) || A.racks.some((r) => Math.abs(r.s - s) < 2.6) || A.benches.some((r) => Math.abs(r.s - s) < 6) || A.atms.some((r) => Math.abs(r.s - s) < 2.2) || !free(s, off)) continue;
+        at(s, off);
+        P.bench(v, 0, 0, 0);
+        A.benches.push({ s, z: off });
+        break;
       }
-      px += rnd.range(4.4, 6);
     }
-  }
-  // pedestrian street dressing
-  if (kind === 'ped') {
-    for (let i = 0; i < 4; i++) {
-      const px = -18 + i * 12 + rnd.range(-1.5, 1.5), pz = tram ? rnd.pick([-2.6, 2.6]) : rnd.range(-1.2, 1.2);
-      add(piece((v) => {
-        v.box(px, Y, pz, 1.6, 0.5, 1.6, '#8d6e4c');
-        P.tulips(v, px, pz, rnd, Y + 0.5, 7, 0.6);
-        v.box(px, Y + 0.5, pz, 0.3, 0.9, 0.3, '#3f9a52');
-      }, rnd.int(1, 999)), px);
+    for (let k = 0; k < 3; k++) {
+      const s = b0 + ((k + 0.5) * (b1 - b0)) / 3 + rnd.range(-4, 4), off = zCurbF + 0.1;
+      if (!free(s, off) || L.zebras.some((z) => Math.abs(z - s) < 2.5)) continue;
+      at(s, off);
+      P.bin(v, 0, 0, 0);
+      A.bins.push({ s, z: off });
     }
-  }
-
-  // ------------------------------------------------------------ front strip
-  const zs = (t) => s0 + stripW * t;
-  if (strip === 'canal') {
-    L.canal = { z: (canal.z0 + canal.z1) / 2, y: -0.62, z0: canal.z0, z1: canal.z1 };
-    const water = new Vox(11);
-    water.box(0, -1.2, L.canal.z, LEN, 0.72, canal.z1 - canal.z0 - 0.3, '#3fa7d6');
-    for (let i = 0; i < 16; i++) water.box(rnd.range(X0 + 2, X1 - 2), -0.49, L.canal.z + rnd.range(-1.8, 1.8), rnd.range(0.8, 2), 0.02, 0.16, '#8fd8f2');
-    const wm = water.mesh(MAT.water, false, true);
-    add(wm, 0, 'ground');
-    add(piece((v) => {
-      v.box(0, -0.1, s0 + 0.25, LEN, 0.3, 0.5, '#d8d2c4');
-      v.box(0, -0.1, zF - 0.8, LEN, 0.25, 1.6, '#6fbf5f');
-      v.box(0, -0.1, canal.z1 + 0.1, LEN, 0.3, 0.3, '#d8d2c4');
-      for (let bx = X0 + 2; bx < X1; bx += 4) P.bollard(v, bx, s0 + 0.25, 0.2);
-    }), 0, 'ground');
-    for (let i = 0; i < 4; i++) { const tx = -18 + i * 12 + rnd.range(-2, 2); add(piece((v) => P.tree(v, tx, zF - 0.8, rnd, Y), rnd.int(1, 999)), tx); }
-    // houseboat
-    const hx = rnd.range(-14, 14);
-    add(piece((v, gl) => {
-      v.box(hx, -0.6, canal.z1 - 1.3, 5.2, 0.6, 1.8, '#3d405b');
-      v.box(hx, 0, canal.z1 - 1.3, 4.4, 1.3, 1.5, rnd.pick(['#e9c46a', '#e76f51', '#8ecae6', '#f1faee']));
-      v.box(hx, 1.3, canal.z1 - 1.3, 4.6, 0.12, 1.7, '#5c4033');
-      for (let i = -1; i <= 1; i++) (night ? gl : v).box(hx + i * 1.3, 0.4, canal.z1 - 2.06, 0.7, 0.6, 0.04, night ? '#ffe9a8' : '#8fc7e8');
-      P.tulips(v, hx, canal.z1 - 1.3, rnd, 1.42, 6, 1.6);
-    }, rnd.int(1, 999)), hx);
-  } else if (strip === 'beach') {
-    const sand0 = s0, sand1 = s0 + 5.2;
-    L.sea = { z0: sand1, z1: zF, y: 0.0 };
-    add(piece((v) => {
-      v.box(0, -0.1, (sand0 + sand1) / 2, LEN, 0.25, sand1 - sand0, '#f3dca4');
-      for (let i = 0; i < 26; i++) v.box(rnd.range(X0 + 1, X1 - 1), 0.15, rnd.range(sand0 + 0.4, sand1 - 0.4), rnd.range(0.6, 1.8), 0.05, rnd.range(0.5, 1.2), '#ecd091');
-      v.box(0, -0.1, sand1 + 0.3, LEN, 0.2, 0.7, '#e8cf93');
-    }, rnd.int(1, 999)), 0, 'ground');
-    const sea = new Vox(12);
-    sea.box(0, -0.1, (sand1 + 0.3 + zF) / 2, LEN, 0.16, zF - sand1 - 0.3, '#38b6d8');
-    for (let i = 0; i < 20; i++) sea.box(rnd.range(X0 + 2, X1 - 2), 0.06, rnd.range(sand1 + 1, zF - 0.5), rnd.range(1, 2.6), 0.03, 0.2, '#d9f5ff');
-    add(sea.mesh(MAT.water, false, true), 0, 'ground');
-    for (let i = 0; i < 5; i++) {
-      const bx = -19 + i * 9.5 + rnd.range(-1.5, 1.5), bz = rnd.range(sand0 + 1.4, sand1 - 1.2);
-      const c = rnd.pick(['#e63946', '#ffb703', '#3a86ff', '#ff70a6', '#06d6a0']);
-      add(piece((v) => {
-        v.box(bx, Y, bz, 0.08, 2.0, 0.08, '#eee');
-        for (let s = 0; s < 4; s++) v.box(bx - 0.9 + s * 0.6, Y + 2.0, bz, 0.6, 0.12, 2.2, s % 2 ? c : '#ffffff');
-        v.box(bx, Y + 2.12, bz, 1.2, 0.12, 1.2, c);
-        // striped strandstoel
-        v.box(bx + 1.3, Y, bz, 0.8, 0.3, 0.9, '#f1faee'); v.box(bx + 1.3, Y + 0.3, bz - 0.35, 0.8, 0.8, 0.2, c);
-        v.box(bx - 1.2, Y, bz + 0.3, 1.5, 0.05, 0.8, rnd.pick(['#ff70a6', '#8ecae6', '#ffd166'])); // towel
-      }, rnd.int(1, 999)), bx);
+    if (block % 2 === 0) { const s = pickS(), off = zCurbB + 0.1; if (free(s, off)) { at(s, off); P.mailbox(v, 0, 0, 0); } }
+    // transformer box (graffiti magnet) on the camera-side pavement
+    if (L.swF >= 2 && (block % 2 === 0 || len < 60)) {
+      for (let t = 0; t < 6; t++) {
+        const s = pickS(5), off = hb + Math.min(0.5, L.swF - 1.5);
+        if (!free(s - 1, off) || !free(s + 1, off) || !free(s, off + 1) || A.bins.some((r) => Math.abs(r.s - s) < 2) || L.zebras.some((z) => Math.abs(z - s) < 3)) continue;
+        at(s, off);
+        v.box(0, 0, 0, 2.0, 1.5, 0.7, '#7f9a8a');
+        v.box(0, 1.5, 0, 2.1, 0.1, 0.8, '#647a6d');
+        v.box(0.5, 0.2, -0.36, 0.7, 1.1, 0.03, '#6c8576');
+        A.boxes.push({ s, z: off + 0.35, y: 0, w: 2.0, h: 1.5 });
+        break;
+      }
     }
-    // sandcastle + Dutch flag
-    const fx = rnd.range(-6, 6);
-    add(piece((v) => {
-      v.box(fx, Y, sand1 - 0.9, 1.2, 0.4, 1.2, '#e2c27c'); v.box(fx, Y + 0.4, sand1 - 0.9, 0.7, 0.4, 0.7, '#e2c27c'); v.box(fx, Y + 0.8, sand1 - 0.9, 0.3, 0.3, 0.3, '#e2c27c');
-      v.box(fx + 3, Y, sand1 - 0.6, 0.1, 3.4, 0.1, '#eee');
-      v.box(fx + 3.65, Y + 3.0, sand1 - 0.6, 1.2, 0.24, 0.05, '#ae1c28'); v.box(fx + 3.65, Y + 2.76, sand1 - 0.6, 1.2, 0.24, 0.05, '#ffffff'); v.box(fx + 3.65, Y + 2.52, sand1 - 0.6, 1.2, 0.24, 0.05, '#21468b');
-    }), fx);
-    // buoy
-    add(piece((v) => { v.box(14, 0, zF - 1.6, 0.6, 0.5, 0.6, '#e63946'); v.box(14, 0.5, zF - 1.6, 0.3, 0.4, 0.3, '#ffffff'); }), 14);
-    const g2s = new THREE.Group();
-    add(piece((v) => P.stall(g2s, v, -13, sand0 + 1.3, 'HARING', ['#21468b', '#ffffff'], Y, -1)), -13).add(g2s);
-    L.stalls.push({ x: -13, z: sand0 + 1.3 - 1.3, label: 'HARING' });
-  } else if (strip === 'park') {
-    add(piece((v) => {
-      v.box(0, -0.1, zs(0.5), LEN, 0.25, stripW, '#6fbf5f');
-      for (let i = 0; i < 30; i++) v.box(rnd.range(X0 + 1, X1 - 1), 0.15, rnd.range(s0 + 0.4, zF - 0.4), rnd.range(0.5, 1.6), 0.04, rnd.range(0.5, 1.2), '#62b354');
-      v.box(0, 0.15, zs(0.42), LEN, 0.03, 1.0, '#e6d5a8'); // gravel path
-      const px = rnd.range(-10, 10);
-      v.box(px, 0.15, zs(0.78), 5, 0.04, 1.8, '#49b3dd'); v.box(px + 0.8, 0.15, zs(0.78), 3, 0.05, 2.4, '#49b3dd');
-    }, rnd.int(1, 999)), 0, 'ground');
-    for (let i = 0; i < 7; i++) { const tx = -21 + i * 7 + rnd.range(-2, 2), tz = rnd.chance(0.5) ? zs(0.16) : zs(0.75); add(piece((v) => P.tree(v, tx, tz, rnd, Y), rnd.int(1, 999)), tx); }
-    for (let i = 0; i < 5; i++) { const bx = rnd.range(-22, 22); add(piece((v) => { P.bush(v, bx, zs(0.9), rnd, Y); P.tulips(v, bx + 1.5, zs(0.6), rnd, Y, 8, 1.2); }, rnd.int(1, 999)), bx); }
-  } else if (strip === 'plaza') {
-    add(piece((v) => {
-      const ts = 1.6, cols = Math.ceil(LEN / ts), rows = 3, tw = stripW / rows;
-      for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) v.box(X0 + ts * (i + 0.5), -0.1, s0 + tw * (j + 0.5), ts, 0.25, tw, (i + j) % 2 ? '#dcc59d' : '#d2b98b', 0.03);
-    }, rnd.int(1, 999)), 0, 'ground');
-    const g2s = new THREE.Group();
-    add(piece((v) => P.stall(g2s, v, -15, zs(0.55), 'HARING', ['#21468b', '#ffffff'], Y, -1)), -15).add(g2s);
-    L.stalls.push({ x: -15, z: zs(0.55) - 1.3, label: 'HARING' });
-    const g3s = new THREE.Group();
-    add(piece((v) => P.stall(g3s, v, 15.5, zs(0.55), 'FRIET', ['#e63946', '#ffd166'], Y, -1)), 15.5).add(g3s);
-    L.stalls.push({ x: 15.5, z: zs(0.55) - 1.3, label: 'FRIET' });
-    for (let i = 0; i < 4; i++) { const tx = -8 + i * 5.2; add(piece((v) => P.terrace(v, tx, zs(0.55) + rnd.range(-0.4, 0.4), rnd, Y), rnd.int(1, 999)), tx); }
-    for (const px of [-21, 21]) add(piece((v) => { v.box(px, Y, zs(0.8), 1.4, 0.5, 1.4, '#8d6e4c'); P.tulips(v, px, zs(0.8), rnd, Y + 0.5, 8, 0.5); }, rnd.int(1, 999)), px);
-  } else {
-    add(piece((v) => {
-      v.box(0, -0.1, zs(0.5), LEN, 0.25, stripW, '#6fbf5f');
-      for (let i = 0; i < 22; i++) v.box(rnd.range(X0 + 1, X1 - 1), 0.15, rnd.range(s0 + 0.4, zF - 0.4), rnd.range(0.5, 1.6), 0.04, rnd.range(0.5, 1.2), '#62b354');
-    }, rnd.int(1, 999)), 0, 'ground');
-    for (let i = 0; i < 4; i++) { const hx = -18 + i * 12; add(piece((v) => P.hedge(v, hx, zF - 0.7, 6, Y), rnd.int(1, 999)), hx); }
-    for (let i = 0; i < 5; i++) { const tx = -20 + i * 10 + rnd.range(-2.5, 2.5); add(piece((v) => { P.tree(v, tx, zs(0.5), rnd, Y); P.tulips(v, tx + 2, zs(0.45), rnd, Y, 5, 0.9); }, rnd.int(1, 999)), tx); }
-    // glasbak (recycling) + little slide
-    const gx = rnd.range(-20, -12);
-    add(piece((v) => { v.box(gx, Y, zs(0.35), 1.4, 1.4, 1.2, '#3a9d6a'); v.box(gx, Y + 1.4, zs(0.35), 1.0, 0.2, 0.9, '#2f7d55'); v.box(gx, Y + 0.9, zs(0.35) - 0.61, 0.4, 0.3, 0.02, '#111'); }), gx);
-    if (per100(st.food) + per100(st.shops) > 0.4 || rnd.chance(0.4)) {
-      const g2s = new THREE.Group();
-      const lab = rnd.pick(['HARING', 'FRIET', 'BLOEM']);
-      const cols = { HARING: ['#21468b', '#ffffff'], FRIET: ['#e63946', '#ffd166'], BLOEM: ['#ff70a6', '#ffffff'] }[lab];
-      add(piece((v) => P.stall(g2s, v, 14, zs(0.42), lab, cols, Y, -1)), 14).add(g2s);
-      L.stalls.push({ x: 14, z: zs(0.42) - 1.3, label: lab });
+    // a herring / chips / flower stall where there is room on the camera side
+    if (L.kind === 'ped' || busy > 1.4 || st.beach || rnd.chance(0.3)) {
+      for (let t = 0; t < 6; t++) {
+        const s = pickS(6), off = L.kind === 'ped' ? hb + L.swF - 1.1 : L.s0 + 1.7;
+        const c0 = cls(s, off);
+        if (!okT[c0] || !free(s - 1.4, off) || !free(s + 1.4, off) || !free(s, off + 0.9) || A.stalls.some((r) => Math.abs(r.s - s) < 30)) continue;
+        const f = at(s, off), g = holder(f), lab = st.beach || c0 === C.SAND ? 'HARING' : rnd.pick(['HARING', 'FRIET', 'BLOEM']);
+        P.stall(g, v, 0, 0, lab, STALLS[lab], 0, -1);
+        A.stalls.push({ s, z: off - 1.3, label: lab });
+        break;
+      }
+    }
+    // the real street name, on a real Dutch blue sign
+    if (block % 3 === 0) {
+      for (let t = 0; t < 5; t++) {
+        const s = b0 + 2.6 + t * 3, off = L.s0 - 0.25;
+        if (!free(s, off)) continue;
+        const f = at(s, off), g = holder(f);
+        P.streetSign(g, v, 0, 0, (st.name || 'STRAAT').toUpperCase().slice(0, 26), 0);
+        break;
+      }
     }
   }
 
-  // stork on a chimney — The Hague's mascot
-  if (L.chimneys.length) {
-    const c = rnd.pick(L.chimneys);
-    const stork = makeBird(rnd, 'stork');
-    stork.g.position.set(c.x, c.y + 0.3, c.z);
-    stork.g.rotation.y = rnd.range(-0.6, 0.6);
-    const nest = piece((v) => { v.box(c.x, c.y, c.z, 1.1, 0.3, 1.1, '#9b7653', 0.1); v.box(c.x, c.y + 0.2, c.z, 0.8, 0.14, 0.8, '#7a5a3c'); });
-    nest.add(stork.g);
-    add(nest, c.x);
-    L.stork = stork;
+  // ---- side streets get their real names on the corner
+  {
+    const seen = new Set([st.name]);
+    let count = 0;
+    for (const r of W.roads) {
+      if (count >= 16) break;
+      if (!r.name || r.cls > 8 || seen.has(r.name)) continue;
+      const a = r.a, n = a.length >> 1;
+      for (let i = 0; i < n; i++) {
+        const pr = path.project(a[i * 2], a[i * 2 + 1]);
+        if (pr.d > 5 || pr.s < sA + 2 || pr.s > sB - 2) continue;
+        // which way does it leave? look at its far end
+        const j = i < n / 2 ? n - 1 : 0, far = path.project(a[j * 2], a[j * 2 + 1]);
+        const side = far.v < 0 ? -1 : 1, off = side * (hb + 0.95);
+        for (const ds of [r.w / 2 + 1.5, -(r.w / 2 + 1.5)]) {
+          const s2 = pr.s + ds;
+          if (s2 < sA + 1 || s2 > sB - 1 || !free(s2, off)) continue;
+          const f = at(s2, off), g = holder(f);
+          P.streetSign(g, v, 0, 0, r.name.toUpperCase().slice(0, 24), 0);
+          count++;
+          break;
+        }
+        seen.add(r.name);
+        break;
+      }
+    }
   }
 
-  return { pieces, L };
+  // ---- parked cars along the kerb on small streets
+  if (L.canPark) {
+    const road = cls(sA + len / 2, 0);
+    const pz = L.hw - 0.95, dens = Math.min(0.62, 30 / Math.max(1, len / 5.2));
+    for (let s = sA + 3.5; s < sB - 4; s += rnd.range(4.4, 6)) {
+      if (!rnd.chance(dens) || L.zebras.some((z) => Math.abs(z - s) < 3.2)) continue;
+      if (cls(s, pz) !== road || cls(s, L.hw + 0.6) !== C.CURB && cls(s, hb + 0.8) !== C.WALK) continue;
+      const car = P.makeCar(rnd, 'car', false), f = at(s, pz);
+      car.g.position.set(f.X, 0, f.Z);
+      car.g.rotation.y = f.th + Math.PI / 2;
+      group.add(car.g);
+      A.parked.push({ s, z: pz });
+    }
+  }
+
+  // ---- stops and terraces from real points of interest
+  const stops = [];
+  for (const p of W.pois) {
+    const pr = path.project(p.x, p.z);
+    if (pr.s < sA + 3 || pr.s > sB - 3) continue;
+    if (p.kind === 9 && pr.d < 16 && !stops.some((q) => Math.abs(q - pr.s) < 30)) {
+      const back = pr.v < 0, off = back ? -(hb + Math.min(L.swB - 0.3, 1.9)) : hb + Math.min(L.swF - 0.3, 1.9);
+      if (!free(pr.s, off) || doorNear(pr.s, 2)) continue;
+      at(pr.s, off, !back);
+      P.tramStop(v, gl, 0, 0, night, 0);
+      stops.push(pr.s);
+    }
+  }
+  for (const h of A.houses) {
+    if (!h.shop || !['CAFE', 'KROEG', 'BAR', 'BIER', 'PIZZA', 'SUSHI', 'ROTI'].includes(h.shop) || h.z > -hb - 3.2) continue;
+    for (const dx of [-1.3, 1.3]) {
+      const s = h.s + dx, off = h.z + 1.9;
+      if (Math.abs(h.door.s - s) < 1.1 || !free(s, off) || A.benches.some((r) => Math.abs(r.s - s) < 1.5) || A.racks.some((r) => Math.abs(r.s - s) < 1.8)) continue;
+      at(s, off);
+      P.terrace(v, 0, 0, rnd, 0);
+    }
+  }
+
+  // ---- beach life on any sand near the street
+  v.setT(); gl.setT();
+  let par = 0;
+  for (let t = 0; t < 400 && par < 34; t++) {
+    const s = rnd.range(sA, sB), off = rnd.range(-70, 70), p = path.xz(s, off);
+    if (G.get(p[0], p[1]) !== C.SAND || G.get(p[0] + 2, p[1]) !== C.SAND || G.get(p[0] - 2, p[1] + 2) !== C.SAND) continue;
+    const c = rnd.pick(['#e63946', '#ffb703', '#3a86ff', '#ff70a6', '#06d6a0']), [x, z] = p;
+    v.box(x, 0, z, 0.08, 2.0, 0.08, '#eee');
+    for (let k = 0; k < 4; k++) v.box(x - 0.9 + k * 0.6, 2.0, z, 0.6, 0.12, 2.2, k % 2 ? c : '#ffffff');
+    v.box(x, 2.12, z, 1.2, 0.12, 1.2, c);
+    v.box(x + 1.3, 0, z, 0.8, 0.3, 0.9, '#f1faee'); v.box(x + 1.3, 0.3, z - 0.35, 0.8, 0.8, 0.2, c);
+    v.box(x - 1.2, 0, z + 0.3, 1.5, 0.05, 0.8, rnd.pick(['#ff70a6', '#8ecae6', '#ffd166']));
+    par++;
+  }
+  if (par > 4) L.beach = true;
+
+  if (!v.empty) group.add(v.mesh());
+  if (!gl.empty) group.add(gl.mesh(MAT.glow));
+}
+
+/** The layout a gag sees at one spot: the cross-section plus the anchors within 24 m, with x measured from the spot. */
+export function localeL(W, sc, half = 24) {
+  const A = W.anchors, { path, grid: G, C } = W, L = Object.create(W.L);
+  const sh = (a) => Object.assign(Object.create(a), { x: a.s - sc });
+  const inWin = (a, r = half - 2) => Math.abs(a.s - sc) < r;
+  L.sc = sc; L.x0 = -half; L.x1 = half;
+  L.houses = A.houses.filter((h) => Math.abs(h.s - sc) < half - 1).map((h) => Object.assign(sh(h), {
+    door: { x: h.door.s - sc, z: h.door.z }, win: { x: h.win.s - sc, y: h.win.y, z: h.win.z },
+  }));
+  L.shops = L.houses.filter((h) => h.shop);
+  L.racks = A.racks.filter((a) => inWin(a)).map(sh);
+  L.benches = A.benches.filter((a) => inWin(a, half - 4)).map(sh);
+  L.bins = A.bins.filter((a) => inWin(a, half - 5)).map(sh);
+  L.parked = A.parked.filter((a) => inWin(a, half - 4)).map(sh);
+  L.lamps = A.lamps.filter((a) => inWin(a)).map(sh);
+  L.stalls = A.stalls.filter((a) => inWin(a, half - 5)).map(sh);
+  const atm = A.atms.filter((a) => inWin(a, 16)).sort((a, b) => Math.abs(a.s - sc) - Math.abs(b.s - sc))[0];
+  L.atm = atm ? (atm.local ||= sh(atm)) : null;
+  if (L.atm) L.atm.x = atm.s - sc;
+  const box = A.boxes.filter((a) => inWin(a, 15)).sort((a, b) => Math.abs(a.s - sc) - Math.abs(b.s - sc))[0];
+  L.box = box ? sh(box) : null;
+  // water running alongside? then boats can pass
+  const frac = (off, c) => { let n = 0, k = 0; for (let x = -22; x <= 22; x += 4, k++) { const p = path.xz(sc + x, off); if (G.get(p[0], p[1]) === c) n++; } return n / k; };
+  for (const sgn of [1, -1]) {
+    if (L.canal) break;
+    let a = null;
+    for (let off = 5; off <= 40; off += 1) {
+      const wet = frac(sgn * off, C.WATER) >= 0.85;
+      if (wet && a === null) a = off;
+      if (!wet && a !== null) { if (off - a >= 5) L.canal = { z: sgn * (a + off - 1) / 2, y: 0.02, z0: sgn * a, z1: sgn * (off - 1) }; a = null; if (L.canal) break; }
+    }
+    if (!L.canal && a !== null && 40 - a >= 5) L.canal = { z: sgn * (a + 40) / 2, y: 0.02, z0: sgn * a, z1: sgn * 40 };
+  }
+  let sand = 0;
+  for (const off of [12, 22, 32, -12, -22]) sand = Math.max(sand, frac(off, C.SAND));
+  L.strip = sand > 0.4 ? 'beach' : L.canal ? 'canal' : 'yard';
+  return L;
+}
+
+/** Layout for the street-long background life (walkers, bikes, cars). */
+export function ambientL(W) {
+  const L = Object.create(W.L), half = W.path.len / 2;
+  L.sc = half; L.x0 = -half + 0.5; L.x1 = half - 0.5;
+  for (const k of ['houses', 'shops', 'racks', 'benches', 'bins', 'parked', 'lamps', 'stalls']) L[k] = [];
+  return L;
 }

@@ -147,6 +147,20 @@ button { font-family: inherit; cursor: pointer; }
 #ticker .count b.bump { animation: bump 0.3s; }
 @keyframes bump { 40% { transform: scale(1.7); color: var(--yellow); } }
 #hud-btns { position: absolute; right: 16px; bottom: 66px; display: flex; gap: 8px; }
+#drag-hint:empty { display: none; }
+#roam { position: absolute; left: 50%; top: 34%; transform: translate(-50%, -50%) scale(0); font: 400 26px var(--pix); color: #ffe066; text-align: center; pointer-events: none; text-shadow: 3px 0 0 #101935, -3px 0 0 #101935, 0 3px 0 #101935, 0 -3px 0 #101935, 3px 3px 0 #101935, -3px -3px 0 #101935, 3px -3px 0 #101935, -3px 3px 0 #101935, 6px 8px 0 rgba(8, 12, 30, 0.5); opacity: 0; }
+#roam small { display: block; margin-top: 10px; font: 600 15px var(--body); color: #fff; text-shadow: 0 2px 0 #101935, 0 0 6px #101935; letter-spacing: 0.3px; }
+#roam.in { animation: roam 2.8s cubic-bezier(0.2, 1.5, 0.4, 1) both; }
+@keyframes roam { 0% { transform: translate(-50%, -50%) scale(0) rotate(-8deg); opacity: 0; } 12% { transform: translate(-50%, -50%) scale(1.1) rotate(-3deg); opacity: 1; } 20%, 78% { transform: translate(-50%, -50%) scale(1) rotate(-3deg); opacity: 1; } 100% { transform: translate(-50%, -80%) scale(0.9) rotate(-3deg); opacity: 0; } }
+.gag-pin { position: absolute; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; padding: 0; border-radius: 50%; border: 3px solid var(--ink); background: var(--hot); color: #fff; font: 400 15px var(--pix); cursor: pointer; pointer-events: auto; box-shadow: 0 4px 0 rgba(8, 12, 30, 0.5); will-change: transform; }
+.gag-pin span { display: block; animation: pin 0.7s ease-in-out infinite alternate; }
+.gag-pin.edge { background: #ffd60a; color: var(--ink); }
+.gag-pin[hidden] { display: none; }
+@keyframes pin { from { transform: translateY(1px) scale(0.92); } to { transform: translateY(-2px) scale(1.12); } }
+#file .row em { font-style: normal; font-size: 10px; }
+#file .row em.up { color: #e5383b; }
+#file .row em.down { color: #2a9d5c; }
+#cutscene.swap canvas { filter: brightness(2.2) saturate(0.4); transition: filter 0.2s; }
 #drag-hint { position: absolute; left: 16px; bottom: 66px; font: 500 12px var(--body); color: #fff; background: rgba(16, 25, 53, 0.6); padding: 4px 10px; border-radius: 99px; pointer-events: none; }
 
 /* ------------------------------------------------ about + loading */
