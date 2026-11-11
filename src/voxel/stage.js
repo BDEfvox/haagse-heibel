@@ -2,28 +2,58 @@
 // contexts handed to gag scripts. Gag scripts think in "street space" (x along the street, z across it);
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
-import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT } from './kit.js';
-import { buildWorld, preload, U, cutWeight, CUT, setMaxTexture, trimTiles } from './world.js';
+import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT, wait } from './kit.js';
+import { buildWorld, preload, U, cutWeight, CUT, setMaxTexture, trimTiles, tileOf } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
-import { makeBird } from './cast.js';
-import { makeTram } from './props.js';
-import { Crowd } from './crowd.js';
+import { makeBird, makePerson, PERSON_K } from './cast.js';
+import { Crowd, PED, SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
 import { sfx } from '../audio.js';
 
-const SKY = {
-  1: { top: '#6ec3ff', bot: '#d9f2ff', sun: '#fff6e0', sunI: 2.15, hs: '#e6f5ff', hg: '#b7c690', hI: 1.5, pos: [-16, 30, 22] },
-  2: { top: '#5bb8ff', bot: '#eaf7ff', sun: '#fff1cc', sunI: 2.2, hs: '#e6f5ff', hg: '#c0c090', hI: 1.45, pos: [-20, 26, 20] },
-  3: { top: '#ffab66', bot: '#ffecc9', sun: '#ffe6c2', sunI: 2.25, hs: '#fff1df', hg: '#bfa27e', hI: 1.45, pos: [-28, 18, 17] },
-  4: { top: '#3d2a7a', bot: '#ff8a66', sun: '#ffa573', sunI: 1.8, hs: '#b79cf0', hg: '#6e5378', hI: 1.5, pos: [-26, 13, 20], night: true, fog: '#b0688a' },
-  5: { top: '#060a22', bot: '#2c1b5c', sun: '#a9bdff', sunI: 1.3, hs: '#6f83e6', hg: '#2c2752', hI: 1.3, pos: [-14, 30, 18], night: true, stars: true, fog: '#1b1444' },
-};
+// Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open.
+// Keyframes by the sun's height above the horizon, in degrees; colours are blended between them.
+const SKY = [
+  { alt: -12, top: '#060a22', bot: '#2c1b5c', sun: '#a9bdff', sunI: 1.3, hs: '#6f83e6', hg: '#2c2752', hI: 1.3, fog: '#1b1444' },
+  { alt: -4, top: '#3d2a7a', bot: '#ff8a66', sun: '#ffa573', sunI: 1.7, hs: '#b79cf0', hg: '#6e5378', hI: 1.5, fog: '#b0688a' },
+  { alt: 3, top: '#ffab66', bot: '#ffecc9', sun: '#ffe6c2', sunI: 2.2, hs: '#fff1df', hg: '#bfa27e', hI: 1.45, fog: '#ffecc9' },
+  { alt: 12, top: '#5bb8ff', bot: '#eaf7ff', sun: '#fff1cc', sunI: 2.2, hs: '#e6f5ff', hg: '#c0c090', hI: 1.45, fog: '#eaf7ff' },
+  { alt: 35, top: '#6ec3ff', bot: '#d9f2ff', sun: '#fff6e0', sunI: 2.15, hs: '#e6f5ff', hg: '#b7c690', hI: 1.5, fog: '#d9f2ff' },
+];
+/** Where the sun stands over The Hague at a moment in time: height and compass direction, in radians. */
+function sunAt(date, lat = 52.08, lon = 4.31) {
+  const R = Math.PI / 180, d = date.getTime() / 86400000 - 10957.5; // days since 1 January 2000, noon UTC
+  const g = (357.529 + 0.98560028 * d) * R, L = (280.459 + 0.98564736 * d + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * R, e = (23.439 - 0.00000036 * d) * R;
+  const ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)), dec = Math.asin(Math.sin(e) * Math.sin(L));
+  const ha = (((18.697374558 + 24.06570982441908 * d) % 24) * 15 + lon) * R - ra;
+  return {
+    alt: Math.asin(Math.sin(lat * R) * Math.sin(dec) + Math.cos(lat * R) * Math.cos(dec) * Math.cos(ha)),
+    az: Math.atan2(-Math.sin(ha), Math.tan(dec) * Math.cos(lat * R) - Math.sin(lat * R) * Math.cos(ha)), // from north, clockwise
+  };
+}
+const _ca = new THREE.Color(), _cb = new THREE.Color();
+const mixHex = (a, b, t) => '#' + _ca.set(a).lerp(_cb.set(b), t).getHexString();
+/** The look of the sky and the light at a moment in time. */
+export function skyAt(date) {
+  const sun = sunAt(date), deg = (sun.alt * 180) / Math.PI;
+  let k = 0;
+  while (k < SKY.length - 2 && deg > SKY[k + 1].alt) k++;
+  const a = SKY[k], b = SKY[k + 1], t = clamp((deg - a.alt) / (b.alt - a.alt));
+  const sky = { deg, night: deg < -1.5, stars: deg < -7 };
+  for (const key of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) sky[key] = mixHex(a[key], b[key], t);
+  for (const key of ['sunI', 'hI']) sky[key] = lerp(a[key], b[key], t);
+  // the light comes from the sun by day (never so low that shadows run the length of the street) and from a high moon at night
+  sky.lightAz = deg > 1 ? sun.az : sun.az + Math.PI;
+  sky.lightAlt = deg > 1 ? Math.max(sun.alt, 0.3) : 0.8;
+  return sky;
+}
 const AZ0 = 0.4, EL0 = 0.7, FOV = 30, TAN = Math.tan((FOV / 2) * (Math.PI / 180));
 /** Half the vertical field of view, as a tangent: lets the page match a map zoom to a camera height. */
 export const VIEW_TAN = TAN;
 // straight down (as near as the camera maths allows), and the height at which zooming out hands over to the map
 const TOP = 1.5608, EXIT = 2900;
+/** Camera height at which zooming out hands over to the map (and zooming in on the map hands back). */
+export const EXIT_DIST = EXIT;
 const DMIN = 20, DMAX = 3100;
 const sm = (x) => x * x * (3 - 2 * x);
 const angDiff = (a, b) => { const d = b - a; return Math.atan2(Math.sin(d), Math.cos(d)); };
@@ -118,7 +148,8 @@ export class Stage {
     return true;
   }
   _pan(dx, dy) {
-    const g = this.goal, mpp = (2 * g.dist * TAN) / (this.canvas.clientHeight || 1), kf = (dy * mpp) / Math.max(0.35, Math.sin(g.el)), kr = dx * mpp;
+    // by the elevation that is on screen (high up the camera tilts towards straight down by itself), so the ground follows the pointer
+    const g = this.goal, mpp = (2 * g.dist * TAN) / (this.canvas.clientHeight || 1), kf = (dy * mpp) / Math.max(0.35, Math.sin(this.viewEl ?? g.el)), kr = dx * mpp;
     g.tx += -kr * Math.cos(g.az) - kf * Math.sin(g.az);
     g.tz += kr * Math.sin(g.az) - kf * Math.cos(g.az);
     const q = this.W.inCity(g.tx, g.tz); // roam anywhere in the city
@@ -251,7 +282,11 @@ export class Stage {
     return new Promise((resolve) => {
       const W = this.W, r = this.rig;
       if (!W) return resolve(null);
-      const here = () => ({ lngLat: W.toLngLat(r.tx, r.tz), dist: r.dist });
+      // where the camera is, how high, and which compass direction is up on screen (so the map can take over turned the same way)
+      const here = () => {
+        const F = W.frame, ux = -Math.sin(r.az), uz = -Math.cos(r.az);
+        return { lngLat: W.toLngLat(r.tx, r.tz), dist: r.dist, bearing: (Math.atan2(ux * F.dx + uz * F.dy, ux * F.dy - uz * F.dx) * 180) / Math.PI };
+      };
       if (r.dist >= dist * 0.9 || CALM) return resolve(here());
       if (this.cine) this._cineEnd();
       this.mode = 'leave';
@@ -292,11 +327,34 @@ export class Stage {
     W.path.at(c.ctx.sc, _f);
     const tx = _f.tx, tz = _f.tz, base = Math.atan2(-tz, tx);
     let az = sp.az ?? 0.35, dist = sp.dist ?? 14;
-    if (sp.face && first && typeof first.heading === 'number') az = Math.atan2(Math.sin(first.heading), Math.cos(first.heading));
+    const facing = first && first.head && typeof first.heading === 'number' ? Math.atan2(Math.sin(first.heading), Math.cos(first.heading)) : null;
+    let near = dist < 20 ? 0.78 : 0.88; // shots were framed for taller figures: stand closer now that people are life-size
+    if (sp.face && facing !== null) {
+      // in front of the face. Someone facing the houses cannot be filmed from inside them: take them in profile, with what they look at
+      az = Math.abs(facing) <= 1.25 ? facing : Math.sign(facing || 1) * 1.25;
+      if (Math.abs(facing) > 1.25) { X += (tx * Math.sin(facing) - tz * Math.cos(facing)) * 0.5; Z += (tz * Math.sin(facing) + tx * Math.cos(facing)) * 0.5; }
+    } else if (!sp.from && facing !== null && subs.length === 1 && dist < 22 && !sp.back) {
+      // a chosen angle that would show the back of someone's head swings round to the nearer side of their face (decided once per shot)
+      if (c.swing === undefined) {
+        c.swing = 0;
+        if (Math.sin(az) * Math.sin(facing) + Math.cos(az) * Math.cos(facing) < -0.3) {
+          let best = null;
+          for (const cand of [facing - 1.2, facing + 1.2]) { const a2 = Math.atan2(Math.sin(cand), Math.cos(cand)); if (Math.abs(a2) <= 1.7 && (best === null || Math.abs(a2 - az) < Math.abs(best - az))) best = a2; }
+          if (best !== null) c.swing = best - az;
+        }
+      }
+      az += c.swing;
+    }
     if (sp.from) {
-      // over the shoulder: stand behind `from`, look past them at the subject
+      // two people facing each other (this used to be an over-the-shoulder shot, which mostly showed the back of a head):
+      // stand to the side of the line between them, on the camera's side of the street, so both faces are seen in profile
       const q = this._wpos(c.ctx, sp.from, _v2);
-      if (q) { const dx = q.x - X, dz = q.z - Z; az = Math.atan2(dx * tx + dz * tz, -dx * tz + dz * tx); dist = Math.hypot(dx, dz) + 3.4 + (sp.dist || 0); X += dx * 0.3; Z += dz * 0.3; }
+      if (q) {
+        const dx = q.x - X, dz = q.z - Z, sep = Math.hypot(dx, dz) || 1, al = (dx * tx + dz * tz) / sep, ac = (-dx * tz + dz * tx) / sep; // the line, along and across the street
+        let pa = -ac, pc = al; // at right angles to it
+        if (pc < 0) { pa = -pa; pc = -pc; }
+        az = Math.atan2(pa, pc); dist = Math.max(6.5, sep * 1.4 + 4.5) + (sp.dist || 0); X += dx * 0.5; Z += dz * 0.5; near = 1;
+      }
     }
     if (sp.fit) dist = Math.max(dist === 14 ? 0 : dist, spread * 2.6 + 7);
     if (sp.lead && first && typeof first.heading === 'number' && first.moving) { const sh = Math.sin(first.heading), ch = Math.cos(first.heading); X += (tx * sh - tz * ch) * sp.lead; Z += (tz * sh + tx * ch) * sp.lead; }
@@ -304,7 +362,7 @@ export class Stage {
     return {
       // shots were framed for taller figures: aim lower and stand closer now that people are life-size
       tx: X, tz: Z, ty: Y + (sp.y ?? 1.3) * 0.76, az: base + az, el: clamp((sp.el ?? 0.3) + (d.el || 0) * age, -0.2, 1.45),
-      dist: Math.max(4, (dist + (d.dist || 0) * age) * (dist < 20 ? 0.78 : 0.88)), fov: sp.fov || FOV, roll: clamp(sp.roll || 0, -0.2, 0.2),
+      dist: Math.max(4, (dist + (d.dist || 0) * age) * near), fov: sp.fov || FOV, roll: clamp(sp.roll || 0, -0.2, 0.2),
     };
   }
   /** Is the line from a shot's subject to its camera free of buildings (as drawn, with their heights)? */
@@ -316,6 +374,16 @@ export class Stage {
       // skimming a roof is as bad as hitting a wall: near the camera the roof must be well below it
       if (g.ty + se * t < S.y0 + h * 0.5 + (t > g.dist - 8 ? 3 : 0.5)) return false;
     }
+    // a parked car right in front of a low camera fills the picture: treat it like a wall
+    if (se < 0.45 && this.crowd) {
+      if (!this._parkAt || Math.hypot(this._parkAt[0] - g.tx, this._parkAt[1] - g.tz) > 12) { this._parkAt = [g.tx, g.tz]; this._park = this.crowd.parkedNear(g.tx, g.tz, 45); }
+      const P = this._park, gy = this.W.landY(g.tx, g.tz);
+      for (let i = 0; i < P.length; i += 2) {
+        const dx = P[i] - g.tx, dz = P[i + 1] - g.tz, t = clamp(dx * sx + dz * sz, 0, g.dist);
+        if (t < 2.5) continue; // a car the subject is standing at belongs in the shot
+        if (Math.hypot(dx - sx * t, dz - sz * t) < 2.1 && g.ty + se * t < gy + 2.0) return false;
+      }
+    }
     return true;
   }
   _cam(ctx, name) {
@@ -325,7 +393,7 @@ export class Stage {
     const shot = (spec) => {
       if (!spec || !spec.on || !can()) return;
       if (!mine()) { stage.cine = { ctx, name }; stage.hooks.onCine?.(true); }
-      Object.assign(stage.cine, { spec, t0: stage.time, until: stage.time + (spec.hold ?? 4), fresh: true });
+      Object.assign(stage.cine, { spec, t0: stage.time, until: stage.time + (spec.hold ?? 4), fresh: true, swing: undefined });
     };
     const P = (on, base, o) => shot({ on, ...base, ...(o || {}) });
     return {
@@ -353,7 +421,7 @@ export class Stage {
     const keep = !!opts.keep && !!this.W && this.running;
     if (keep) this._tok++; else this.hide();
     const token = this._tok;
-    const level = clamp(Math.round(+st.level) || 1, 1, 5), sky = SKY[level];
+    const level = clamp(Math.round(+st.level) || 1, 1, 5), sky = skyAt(opts.clock || new Date());
     const dress = () => {
       this.hooks = hooks;
       this.root.style.setProperty('--sky-top', sky.top);
@@ -376,7 +444,10 @@ export class Stage {
       // the camera, in map terms, so it can be put back in the new street's frame
       const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
       view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
-      if (this.sky !== sky) hooks.onSwap?.();
+      if (!!this.sky.night !== !!sky.night) hooks.onSwap?.();
+      // the city's street life carries on: it is handed to the next street instead of being torn down
+      view.crowd = this.crowd; this.crowd = null;
+      if (o.stream) o.stream.onTile = null;
       this._teardown(true);
       dress();
     }
@@ -398,14 +469,23 @@ export class Stage {
     this.sun.color.set(sky.sun); this.sun.intensity = sky.sunI;
     this.hemi.color.set(sky.hs); this.hemi.groundColor.set(sky.hg); this.hemi.intensity = sky.hI;
     this.scene.fog.color.set(sky.fog || sky.bot);
-    this.sunDir = new THREE.Vector3(...sky.pos).normalize();
+    {
+      // the light's compass direction, in this street's frame
+      const F = W.frame, e = Math.sin(sky.lightAz) * Math.cos(sky.lightAlt), n = Math.cos(sky.lightAz) * Math.cos(sky.lightAlt);
+      this.sunDir = new THREE.Vector3(e * F.dx + n * F.dy, Math.sin(sky.lightAlt), e * F.dy - n * F.dx).normalize();
+    }
     W.activate();
     this.scene.add(W.group);
     // background life on every other street: the detailed area's roads now, each tile's roads as it streams in
-    this.crowd = new Crowd(W, { lite: this.lite });
+    // the city's street life: walkers, bikes, cars and trams on every street, this one included. It is one system
+    // for the whole city and outlives the street: when the focus moves it is carried over as it is
+    const old = opts.view && opts.view.crowd;
+    if (old && old.night === W.night) { this.crowd = old; old.rebase(W); }
+    else { if (old) old.dispose(); this.crowd = new Crowd(W, { lite: this.lite }); }
     this.scene.add(this.crowd.group);
-    this.crowd.addRegion();
-    W.stream.onTile = (c, on) => { if (!this.crowd) return; if (on) this.crowd.addTile(c); else this.crowd.remove(c.key); };
+    W.stream.onTile = (c, on) => { if (!this.crowd) return; if (on) this.crowd.addTile(c); }; // (tiles that leave are pruned a little later)
+    for (const key of W.corridor) { const c = tileOf(key); if (c) this.crowd.addTile(c); } // this street's own tiles now: its lamp posts and parked cars are needed below
+    this.pruneT = 2;
     this.dyn = new THREE.Group();
     this.scene.add(this.dyn);
 
@@ -417,8 +497,6 @@ export class Stage {
     this.runner = new Runner();
     this.actors = [];
     this.extras = [];
-    this.life = [];
-    this.lifeT = { tram: rnd.range(2, 6), car: 1 };
     this.gags = new Set();
     this.time = 0;
     this.timeScale = 1;
@@ -431,6 +509,16 @@ export class Stage {
 
     // ---- where the gags play: the spot that was clicked, plus more along the street
     const A = W.anchors, edge = Math.min(22, len / 2), lo = path.sA + edge, hi = path.sB - edge;
+    {
+      // lamp posts and parked cars stand where the city put them (the same whether or not this street is open): the gags use them as they are
+      const hb = W.L.hw + W.L.bw, own = this.crowd.props((x, z) => { const q = path.project(x, z); return q.d < hb + 4.5 && q.s > path.sA + 1 && q.s < path.sB - 1; });
+      for (const l of own.lamps) { const q = path.project(l.x, l.z); A.lamps.push({ s: q.s, z: q.v, y: 4.44, X: l.x, Z: l.z }); }
+      for (const c of own.parked) { const q = path.project(c.x, c.z); if (Math.abs(q.v) < hb) A.parked.push({ s: q.s, z: q.v }); }
+      A.lamps.sort((a, b) => a.s - b.s); A.parked.sort((a, b) => a.s - b.s);
+    }
+    // how readily walkers step into the road here: rougher streets, and streets where reckless driving is a big part of the crime, more
+    this.crowd.jay = 0.004 * (0.5 + 0.3 * level) * clamp(this.mix.factor?.carChase ?? 1, 0.6, 2.2);
+    this.crowd.onBonk = (x, y, z, bike) => this._bonk(x, y, z, bike);
     let want = (path.sA + path.sB) / 2;
     if (opts.lngLat) { const p = W.toScene(opts.lngLat[0], opts.lngLat[1]), pr = path.project(p[0], p[1]); if (pr.d < 120) want = pr.s; }
     want = clamp(want, lo, hi);
@@ -515,11 +603,34 @@ export class Stage {
           if (this.cineSkip === name) this.cineSkip = null;
         },
         /** Everyone and everything on stage, and where the trams are: traffic looks ahead with these. */
-        all: () => stage.actors,
-        trams: () => stage.life,
-        now: () => stage.time,
-        toStreet: (X, Z) => path.project(X, Z),
-        tangent: (s) => path.at(s, _f),
+        /** Walkers of the city's crowd near x (this spot's street space), nearest first. */
+        crowdNear: (x, r) => {
+          const c = path.xz(sc + x, 0), reach = W.L.hw + W.L.bw + Math.max(W.L.swB, W.L.swF) + 3, out = [];
+          for (const ag of stage.crowd.near(c[0], c[1], r + reach, PED)) { const q = path.project(ag.x, ag.z); if (Math.abs(q.s - sc - x) < r && q.d < reach) out.push([Math.abs(q.s - sc - x), ag]); }
+          return out.sort((a, b) => a[0] - b[0]).map((q) => q[1]);
+        },
+        /** Turn a crowd walker into an actor of this spot: same clothes, same place, same way of walking. */
+        promote: (ag) => {
+          if (!ag || ag.dead) return null;
+          const k = stage.crowd.take(ag), q = path.project(k.x, k.z), t = path.at(q.s, _f), wx = Math.sin(k.hd), wz = Math.cos(k.hd), along = wx * t.tx + wz * t.tz;
+          const a = makePerson(crnd, { kind: k.look.kid ? 'kid' : 'civ', scale: k.scale / PERSON_K, shirt: SHIRTS[k.look.shirt], pants: PANTS[k.look.pants], skin: SKINS[k.look.skin], hair: HAIRS[k.look.hair], hat: 'none' });
+          a.look = k.look; a.walkSpeed = k.speed; a.dir = along >= 0 ? 1 : -1;
+          a.exitX = a.dir > 0 ? L.x1 - 0.5 : L.x0 + 0.5;
+          a.side = q.v >= 0 ? 1 : -1; a.wf = 0.5; a.lineZ = q.v; a.fixedZ = true;
+          ctx.spawn(a, q.s - sc, q.v);
+          a.face(Math.atan2(along, wx * -t.tz + wz * t.tx));
+          return a;
+        },
+        /** Hand an actor back to the crowd where they stand. False if there is no pavement there (the caller lets them walk off). */
+        demote: (a) => {
+          if (!a.alive || !a.look || !stage.crowd) return false;
+          const s = a.ctx.sc + a.g.position.x, c = path.xz(s, a.g.position.z), t = path.at(s, _f), h = a.heading;
+          if (!stage.crowd.adopt(a.look, c[0], c[1], Math.atan2(t.tx * Math.sin(h) - t.tz * Math.cos(h), t.tz * Math.sin(h) + t.tx * Math.cos(h)))) return false;
+          a.ctx.despawn(a);
+          return true;
+        },
+        /** How much traffic is still on the road at this spot (gags wait for it to clear after closing the road). */
+        trafficNear: () => { const c = path.xz(sc, 0); return stage.crowd ? stage.crowd.traffic(c[0], c[1], 24) : 0; },
         /** The director's camera for one gag (see _cam). */
         cam: (name) => this._cam(ctx, name),
         cineBusy: () => !!this.cine && this.cine.ctx === ctx,
@@ -536,9 +647,14 @@ export class Stage {
     const from = typeof opts.from === 'function' ? opts.from() : opts.from;
     const mid = path.xz((path.sA + path.sB) / 2, 0);
     const d0 = clamp(from?.dist || 2600, 300, 60000), c0 = from?.lngLat ? W.toScene(from.lngLat[0], from.lngLat[1]) : mid;
-    const V = opts.view || null;
+    let V = opts.view || null;
+    if (!V && opts.enter) {
+      // taking over from the map while zooming in: same spot, same height, looking straight down with north up
+      const p = W.toScene(opts.enter.lngLat[0], opts.enter.lngLat[1]), m = W.frame.M(p[0], p[1]);
+      V = { m, gm: m, d: [0, -1], gd: [0, -1], el: TOP, gel: EL0, dist: opts.enter.dist, gdist: opts.enter.dist, ty: W.landY(p[0], p[1]) };
+    }
     const dur = V ? 0 : CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
-    this.cutK = undefined; this.roamT = 0;
+    this.cutK = undefined; this.roamT = 0; this._parkAt = null;
     if (V) {
       // the focus moved here from another street: the camera carries on from exactly where it was
       const F = W.frame, az = (d) => Math.atan2(d[0] * F.dx + d[1] * F.dy, d[0] * F.dy - d[1] * F.dx);
@@ -628,7 +744,6 @@ export class Stage {
     if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; if (!swap) clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
     this.actors = [];
-    this.life = [];
     this.gags = new Set();
   }
 
@@ -643,35 +758,42 @@ export class Stage {
     this.focusReq = { X, Z, zoom, until: this.time + hold, prio };
   }
 
-  // ------------------------------------------------------------ passing trams and traffic on other streets
-  _life(dt) {
-    const W = this.W, T = this.lifeT, rnd = Math.random;
-    T.tram -= dt; T.car -= dt;
-    if (T.tram < 0 && W.tramLines.length) {
-      T.tram = 7 + rnd() * 9;
-      if (this.life.filter((l) => l.tram).length < 3) {
-        const path = W.tramLines[Math.floor(rnd() * W.tramLines.length)], dir = rnd() < 0.5 ? 1 : -1;
-        this._addLife(makeTram(W.night), path, dir, 9, 0, true);
-      }
+  // ------------------------------------------------------------ what the stage tells the city's crowd
+  /** Someone in the crowd was knocked over by a car or a bike: the words, the sounds, and a line in the news if it was on this street. */
+  _bonk(x, y, z, bike) {
+    const W = this.W, q = W.path.project(x, z), here = q.d < 14 && q.s > W.path.sA && q.s < W.path.sB;
+    const at = new THREE.Vector3(x, y + 2.2, z), close = Math.hypot(x - this.rig.tx, z - this.rig.tz) < Math.max(70, this.rig.dist);
+    if (close) {
+      this.fx.text(bike ? 'BOINK!' : 'BONK!', at, { size: 20, color: '#ffd166' });
+      if (!document.hidden) sfx.bonk?.();
+      if (!CALM) this.fx.shake(bike ? 0.15 : 0.3);
+      this.runner.run((function* () {
+        yield* wait(0.85);
+        this.fx?.text('★ ★ ★', at, { size: 13, color: '#ffe066', dur: 1.5 });
+        yield* wait(1.6);
+        this.fx?.text(['HÉ!', 'KIJK UIT!', 'ASO!', 'MIJN BROEK!', 'ZAG JE ME NIET?!'][Math.floor(Math.random() * 5)], at, { size: 13, color: '#ff6b6b' });
+        if (!document.hidden) sfx.hey?.();
+      }).call(this));
     }
-    for (let i = this.life.length - 1; i >= 0; i--) {
-      const l = this.life[i];
-      l.s += l.dir * l.speed * dt;
-      if (l.s < 0 || l.s > l.path.len) { this.dyn.remove(l.a.g); disposeTree(l.a.g); this.life.splice(i, 1); continue; }
-      l.path.at(l.s, _f);
-      { const X = _f.x - _f.tz * l.lane, Z = _f.z + _f.tx * l.lane; l.a.g.position.set(X, W.hAt(X, Z), Z); }
-      l.a.heading = Math.atan2(_f.tx * l.dir, _f.tz * l.dir);
-      l.a.moving = l.speed;
-      l.a.update(dt);
+    if (here) {
+      const name = W.st.name, lines = bike
+        ? [`Cyclist and jaywalker meet on ${name}. Both blame the other`, `Bell rung too late on ${name}. Dignity lightly dented`]
+        : [`Jaywalker bonked on ${name}. Walks it off`, `Driver on ${name}: "came out of nowhere". Pedestrian: "came out of a shop"`, `Bumper meets trousers on ${name}. Trousers lodge complaint`];
+      this.hooks.onIncident?.(1);
+      this.hooks.onNews?.(lines[Math.floor(Math.random() * lines.length)]);
     }
   }
-  _addLife(a, path, dir, speed, lane, tram) {
-    const l = { a, path, dir, speed, lane, tram, s: dir > 0 ? 0.5 : path.len - 0.5 };
-    path.at(l.s, _f);
-    { const X = _f.x - _f.tz * lane, Z = _f.z + _f.tx * lane; a.g.position.set(X, this.W.hAt(X, Z), Z); }
-    a.g.rotation.y = a.heading = Math.atan2(_f.tx * dir, _f.tz * dir);
-    this.dyn.add(a.g);
-    this.life.push(l);
+  /** Every frame: who is on stage (the crowd walks and drives round them) and which stretches of road a gag has closed. */
+  _brief() {
+    const C = this.crowd, B = C.blockers, Z = C.zones, path = this.W.path;
+    B.length = 0; Z.length = 0;
+    for (const a of this.actors) {
+      if (!a.alive || a.air || a.fly) continue;
+      const e = a.g.matrixWorld.elements; // where it was drawn last frame
+      B.push({ x: e[12], z: e[14], r: a.vehicle ? Math.max(1, (a.len || 2) / 2) : 0.35 });
+    }
+    for (const c of this.locales) if (c.road && c.road.closed > 0) { const p = path.xz(c.sc, 0); Z.push({ x: p[0], z: p[1], r: 26 }); }
+    if ((this.pruneT -= 0.016) <= 0) { this.pruneT = 2; C.prune(this.W.stream.live); }
   }
 
   // ------------------------------------------------------------ "something is happening over there" pins
@@ -720,7 +842,6 @@ export class Stage {
     this.runner.update(dt);
     for (let i = this.actors.length - 1; i >= 0; i--) this.actors[i].update(dt);
     for (const e of this.extras) e.update(dt);
-    this._life(dt);
     this.fx.update(dt);
     for (const c of this.clouds) c.position.x += c.userData.v * dt;
 
@@ -807,7 +928,8 @@ export class Stage {
       }
       // high up, the free camera turns to look straight down with north up: the same view as the map it hands over to
       let gel = g.el, gaz = g.az;
-      if (this.mode === 'free') { const kk = sm(clamp((r.dist - 1200) / 1300)); gel = lerp(g.el, TOP, kk); gaz = g.az + angDiff(g.az, W.northAz) * kk; }
+      if (this.mode === 'free') gel = lerp(g.el, TOP, sm(clamp((r.dist - 1500) / 1100)));
+      this.viewEl = gel;
       if (snap) { r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.az = gaz; r.el = gel; r.dist = g.dist; r.fov = g.fov; r.roll = g.roll; }
       else {
         const k = 1 - Math.exp(-real * rate), kt = 1 - Math.exp(-real * rateT);
@@ -833,7 +955,10 @@ export class Stage {
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(tx, ty, tz);
     if (r.roll) this.camera.rotateZ(r.roll);
-    this.camera.fov = r.fov;
+    // during a cutscene the letterbox bars hide the top and bottom ninth of the picture: widen the view so that
+    // the shot as it was framed fits between them
+    this.cineK = (this.cineK || 0) + ((this.cine ? 1 : 0) - (this.cineK || 0)) * Math.min(1, real * 7);
+    this.camera.fov = (2 * Math.atan(Math.tan((r.fov * Math.PI) / 360) / (1 - 0.22 * this.cineK)) * 180) / Math.PI;
     this.camera.near = clamp(r.dist * 0.04, 0.6, 80);
     this.camera.far = r.dist * 7 + 9000;
     this.camera.updateProjectionMatrix();
@@ -842,6 +967,7 @@ export class Stage {
     this.scene.fog.far = r.dist * 7 + 2400;
     this.fx.zoom = r.dist;
     W.lod(r.tx, r.tz, r.dist, this.mode !== 'drop' && this.mode !== 'leave', r.az);
+    this._brief();
     this.crowd.update(dt, r.tx, r.tz, r.dist);
 
     // ---- things in the way duck; shadows follow the camera

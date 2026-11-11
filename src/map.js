@@ -113,8 +113,10 @@ export function createMap(el, { buurten, streets, context }, on) {
   });
 
   // ---------------------------------------------------------------- zooming in far enough drops you into the street
-  const ENTER = 17.25, CUE = 16.5;
-  let lastZ = 0, lastPt = null, lastAt = 0;
+  // the zoom at which the 3D city takes over: the page works it out from the camera height at which 3D hands back to the map,
+  // so zooming in and out cross over at the same place
+  const enterZ = () => on.enterZoom?.() ?? 17.25;
+  let lastZ = 0, lastPt = null, lastAt = 0, quietUntil = 0;
   const gesturePoint = (ev) => {
     const r = el.getBoundingClientRect(), t = ev && ev.touches && ev.touches.length ? ev.touches : null;
     if (t) { let x = 0, y = 0; for (const q of t) { x += q.clientX; y += q.clientY; } return { x: x / t.length - r.left, y: y / t.length - r.top }; }
@@ -128,8 +130,9 @@ export function createMap(el, { buurten, streets, context }, on) {
     if (e.originalEvent) { lastPt = gesturePoint(e.originalEvent); lastAt = performance.now(); }
     // the spot being zoomed in on: under the pointer or fingers, otherwise the middle of the map
     const pt = lastPt && performance.now() - lastAt < 1500 ? lastPt : { x: el.clientWidth / 2, y: el.clientHeight / 2 };
-    on.zoom?.(z, z >= CUE ? pt : null);
-    if (up && z >= ENTER) on.deep?.(pt);
+    const E = enterZ();
+    on.zoom?.(z, z >= E - 0.5 ? pt : null);
+    if (up && z >= E && performance.now() > quietUntil) on.deep?.(pt); // only the viewer's own zooming, not a programmed fly-to
   });
   /** The street closest to a screen point, within `maxPx` pixels. */
   const nearestStreet = (pt, maxPx = 110) => {
@@ -170,9 +173,12 @@ export function createMap(el, { buurten, streets, context }, on) {
       const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
       for (const poly of polys) for (const [x, y] of poly[0]) { a = Math.min(a, x); c = Math.max(c, x); b = Math.min(b, y); d = Math.max(d, y); }
       on.buurt?.(f.properties, click);
+      quietUntil = performance.now() + 1200;
       map.fitBounds([[a, b], [c, d]], { padding: pad(), duration: 900, maxZoom: 16, minZoom: 14, easing: (t) => 1 - Math.pow(1 - t, 3) });
     },
-    home() { map.fitBounds(home, { padding: pad(), duration: 900 }); },
+    home() { quietUntil = performance.now() + 1200; map.fitBounds(home, { padding: pad(), duration: 900 }); },
+    /** Zoom changes in the next `ms` are the page's own doing, not the viewer zooming in. */
+    quiet(ms) { quietUntil = performance.now() + ms; },
     streetPoint(p) { return map.project([p.cx, p.cy]); },
   };
   return api;

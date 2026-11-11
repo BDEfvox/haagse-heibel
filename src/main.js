@@ -5,7 +5,7 @@ import '@fontsource/fredoka/600.css';
 import '@fontsource/fredoka/700.css';
 import './style.css';
 import { createMap, LV, LV_NAMES } from './map.js';
-import { Stage, preload, VIEW_TAN } from './voxel/stage.js';
+import { Stage, preload, VIEW_TAN, EXIT_DIST } from './voxel/stage.js';
 import { mixFor, THEMES, GAG_NAMES } from './voxel/gags.js';
 import { sfx, startMusic, stopMusic, isMuted, setMuted, unlock } from './audio.js';
 
@@ -64,9 +64,9 @@ async function boot() {
   });
   /** The street whose centre line passes within `max` metres of a point; `skip` is a street to ignore. */
   const streetAt = (lngLat, max, skip = -1) => {
-    const x = (lngLat[0] - LON0) * KX, y = (lngLat[1] - LAT0) * KY, cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
+    const x = (lngLat[0] - LON0) * KX, y = (lngLat[1] - LAT0) * KY, cx = Math.floor(x / CELL), cy = Math.floor(y / CELL), n = Math.ceil(max / CELL);
     let best = -1, bd = max;
-    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -n; dx <= n; dx++) for (let dy = -n; dy <= n; dy++) {
       const bin = segs.get((cx + dx) * 4096 + cy + dy);
       if (!bin) continue;
       for (let i = 0; i < bin.length; i += 5) {
@@ -93,7 +93,7 @@ async function boot() {
     const cue = $('#zoomcue'), h = $('#hint');
     cue.classList.toggle('on', !!pt);
     if (pt) { cue.style.left = pt.x + 'px'; cue.style.top = pt.y + 'px'; }
-    if (pt && !h.dataset.was) { h.dataset.was = h.textContent; h.textContent = 'Keep zooming in to drop into the street'; }
+    if (pt && !h.dataset.was) { h.dataset.was = h.textContent; h.textContent = 'Keep zooming in to fly into the 3D city'; }
     else if (!pt && h.dataset.was) { h.textContent = h.dataset.was; delete h.dataset.was; }
   };
   const badge = (l) => `<span class="lv" style="background:${LV[l]}">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= l ? 'on' : ''}"></i>`).join('')}<b>${LV_NAMES[l].toUpperCase()}</b></span>`;
@@ -119,9 +119,12 @@ async function boot() {
     buurt: () => play('click'),
     // zooming in far enough on a street drops you into it
     zoom: (z, pt) => zoomCue(pt),
+    // zooming in past the height at which the 3D city hands over to the map hands back: same spot, same height, no drop
+    enterZoom: () => zoomFor(EXIT_DIST * 0.93, api.map.getCenter().lat),
     deep(pt) {
-      const f = pt && api.nearestStreet(pt);
-      if (f) openStreet(S[f.id] || f.properties, pt);
+      const ll = pt ? api.map.unproject([pt.x, pt.y]) : api.map.getCenter();
+      const id = streetAt([ll.lng, ll.lat], 900);
+      if (id >= 0) openStreet(S[id], null, mapView());
     },
   });
 
@@ -167,7 +170,7 @@ async function boot() {
       <li><b>Neighbourhood level</b> is real: registered crimes in ${num(meta.year)} per neighbourhood (buurt), published by the Dutch police via CBS. Citywide average: <b>${num(meta.cityRate)}</b> per 1,000 residents.</li>
       <li><b>Street level</b> is an estimate. Street-by-street crime figures are not public in the Netherlands, so every street starts with its neighbourhood's score and gets nudged by what is on it.</li>
       <li><b>What happens on the street</b> follows the neighbourhood's crime mix: the more a kind of crime is registered there, and the more it stands out from the city average, the more often its cartoon plays. Categories that are no laughing matter count towards the level but have no cartoon.</li>
-      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water and parks (OpenStreetMap), ground heights (AHN, stretched a little so slopes and quays show) and street trees (the municipal tree register). Shop signs are generic, not real businesses.</li>
+      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water, parks, building types, walls and landmark shapes (OpenStreetMap), ground heights (AHN, stretched a little so slopes and quays show) and street trees (the municipal tree register). Light and darkness follow the real time of day in The Hague. Shop signs are generic, not real businesses.</li>
       <li>Registered crime depends on reporting and on how many visitors an area gets — a busy centre always looks worse than a sleepy suburb. The cartoon scenes are jokes, not a safety guide and not a verdict on anyone who lives there.</li>
     </ul>
     <p>Sources and licences: ${CREDITS.map((c) => `<a href="${c[1]}" target="_blank" rel="noopener noreferrer">${c[0]}</a> (${c[2]})`).join(' · ')}. The map data has been simplified, combined and redrawn for this site.</p>`;
@@ -232,7 +235,7 @@ async function boot() {
     $('#news').textContent = `Our reporter has arrived on ${p.name}…`;
   }
   const stageOpts = (p, lngLat) => ({
-    only: onlyParam, seed: DEV ? (params.get('seed') || '').slice(0, 40) : '', geometry: geomOf(p), lngLat,
+    only: onlyParam, seed: DEV ? (params.get('seed') || '').slice(0, 40) : '', geometry: geomOf(p), lngLat, clock: clockParam,
     crime: { cat: byCode.get(p.buurt)?.properties.cat, cats: meta.cats },
   });
   const touch = matchMedia('(hover: none)').matches;
@@ -258,8 +261,10 @@ async function boot() {
   // roaming onto another street moves the whole show there: its name, its figures, its shenanigans
   let cand = -1, candN = 0;
   hooks.onRoam = ({ lngLat, dist, off }) => {
-    if (busy || !current || dist > 240 || off < 15) { cand = -1; return; }
-    const id = streetAt(lngLat, 13, current.id);
+    // from higher up the aim is coarser, so the street may be a little further from the centre of the view
+    const slack = dist * 0.035;
+    if (busy || !current || dist > 2200 || off < 15 + slack) { cand = -1; return; }
+    const id = streetAt(lngLat, 13 + slack, current.id);
     if (id < 0 || !S[id] || S[id].len < 25) { cand = -1; return; }
     if (id !== cand) { cand = id; candN = 0; return; }
     if (++candN >= 3) { cand = -1; shiftFocus(S[id], lngLat); } // the camera has rested on it for most of a second
@@ -288,6 +293,9 @@ async function boot() {
   const lvlParam = DEV && /^[1-5]$/.test(params.get('lvl') || '') ? +params.get('lvl') : null;
   const onlyParam = DEV && GAG_NAMES.includes(params.get('only')) ? params.get('only') : null;
   const withLevel = (p) => (lvlParam ? { ...p, level: lvlParam } : p);
+  // &t=HH:MM pretends it is that time in The Hague (winter time), to look at dusk and night during the day
+  const tm = DEV ? /^(\d\d?):(\d\d)$/.exec(params.get('t') || '') : null;
+  const clockParam = tm ? (() => { const d = new Date(); d.setUTCHours(+tm[1] - 1, +tm[2], 0, 0); return d; })() : null;
 
   // while a street is open, the map and its panel are out of reach of the keyboard and screen readers
   const behind = (on) => { for (const el of [$('#panel'), mapEl]) el.inert = on; };
@@ -317,11 +325,11 @@ async function boot() {
   const mapView = () => { const c = api.map.getCenter(); return { lngLat: [c.lng, c.lat], dist: distFor(api.map.getZoom(), c.lat) }; };
   let entry = null; // the map view we dropped in from: going back rises to that height again
 
-  async function openStreet(p0, pt) {
+  async function openStreet(p0, pt, enter = null) {
     if (busy || !p0) return;
     busy = true;
     try {
-      await doOpen(p0, pt);
+      await doOpen(p0, pt, enter);
     } catch (e) {
       console.error(e);
       recover('That street would not load. Try another one.');
@@ -329,7 +337,7 @@ async function boot() {
       busy = false;
     }
   }
-  async function doOpen(p0, pt) {
+  async function doOpen(p0, pt, enter) {
     const p = withLevel(p0);
     opening = true;
     audioOk = true;
@@ -349,10 +357,12 @@ async function boot() {
     $('#cine-card').classList.remove('in');
     $('#btn-follow').hidden = true;
     $('#drag-hint').textContent = '';
-    if (!swap) entry = mapView();
+    if (!swap) entry = enter || mapView();
     // the world around the street is built while the map waits; the camera then starts from exactly the map's view
-    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat), from: swap ? null : entry });
-    stage.hold = true;
+    // (and stays there, when the viewer zoomed in rather than picked a street)
+    if (enter) lngLat = enter.lngLat;
+    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat), from: swap ? null : entry, enter: enter || null });
+    stage.hold = !enter;
     if (swap) {
       play('whoosh');
       cut.classList.remove('titled');
@@ -376,7 +386,7 @@ async function boot() {
     fillHud(p);
     cut.classList.remove('close', 'swap');
     cut.classList.add('open');
-    if (!swap) await sleep(240); // the voxel city fades in over the map before the camera starts to fall
+    if (!swap && !enter) await sleep(240); // the voxel city fades in over the map before the camera starts to fall
     play('whoosh');
     stage.hold = false;
     history.replaceState(null, '', `#s=${p.id}`);
@@ -432,7 +442,12 @@ async function boot() {
     delete cut.dataset.cine;
     // rise to the height we came from (zooming out has already done that), then let the map take over at the same view
     const to = await stage.leave(viaZoom ? 0 : Math.min(9000, Math.max(750, entry ? entry.dist : 2600)));
-    if (to) api.map.jumpTo({ center: to.lngLat, zoom: Math.min(16.7, Math.max(9.6, zoomFor(to.dist, to.lngLat[1]))), pitch: 0, bearing: 0 });
+    // the map takes over turned the way the camera was, then swings back to north-up
+    api.quiet(1200);
+    if (to) {
+      api.map.jumpTo({ center: to.lngLat, zoom: Math.min(16.7, Math.max(9.6, zoomFor(to.dist, to.lngLat[1]))), pitch: 0, bearing: to.bearing || 0 });
+      if (Math.abs(to.bearing || 0) > 1) api.map.easeTo({ bearing: 0, duration: 900 });
+    }
     cut.classList.remove('open');
     cut.classList.add('close');
     history.replaceState(null, '', location.pathname + location.search);

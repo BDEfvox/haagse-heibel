@@ -6,11 +6,13 @@ import { Vox, MAT, clamp } from './kit.js';
 import * as P from './props.js';
 
 /** Lanes and pavements for this street, squeezed to fit between the real building fronts. */
-export function crossSection(st, clearB, clearF, night) {
+export function crossSection(st, clearB, clearF, night, road = null) {
   const cls = st.cls || 'residential';
   const kind = cls === 'pedestrian' ? 'ped' : (['trunk', 'primary', 'secondary', 'tertiary'].includes(cls) || st.lanes >= 2) ? 'major' : 'minor';
   let hw = kind === 'major' ? 3.3 : kind === 'minor' ? 2.6 : 3.6;
   let bw = kind !== 'ped' && (st.bike || kind === 'major') ? 1.2 : 0;
+  // the road is painted the same for every street, from the map's own width and cycle lanes: fit the lanes to that
+  if (road && kind !== 'ped') { bw = road.bike && road.w >= 6 ? 1.2 : 0; hw = clamp(road.w / 2 - bw, kind === 'major' ? 2.8 : 1.9, 5.5); }
   const tight = Math.min(clearB, clearF);
   if (kind === 'ped') hw = clamp(tight - 2.0, 1.4, 3.6);
   else {
@@ -44,7 +46,7 @@ const STALLS = { HARING: ['#21468b', '#ffffff'], FRIET: ['#e63946', '#ffd166'], 
 
 /** Street furniture at believable spots along the real street, and the anchors the gags use. */
 export function dress(W) {
-  const { path, grid: G, L, st, rnd, night, group, C } = W;
+  const { path, L, st, rnd, night, group, C } = W, G = { get: W.clsAt };
   const A = W.anchors, hb = L.hw + L.bw;
   const v = new Vox(rnd.int(1, 9999)), gl = new Vox(rnd.int(1, 9999));
   const fr = {};
@@ -129,13 +131,8 @@ export function dress(W) {
   const doorNear = (s, r) => A.houses.some((h) => Math.abs(h.door.s - s) < r);
   const houseAt = (s) => A.houses.find((h) => Math.abs(h.s - s) < h.w / 2);
 
-  // ---- lamps
+  // (lamp posts and parked cars are the city's: see crowd.js. The stage lists the ones along this street in A.lamps and A.parked.)
   const zCurbB = -(hb + 0.45), zCurbF = hb + 0.5;
-  for (let s = sA + 5; s < sB; s += 24) {
-    if (free(s, zCurbB)) { at(s, zCurbB); const lp = P.lamp(v, gl, 0, 0, night, 0, 1); const p = path.xz(s, zCurbB + 0.7); A.lamps.push({ s, z: zCurbB + 0.7, y: lp.y, X: p[0], Z: p[1] }); }
-    const s2 = s + 12;
-    if (s2 < sB && free(s2, zCurbF)) { at(s2, zCurbF); const lp = P.lamp(v, gl, 0, 0, night, 0, -1); const p = path.xz(s2, zCurbF - 0.7); A.lamps.push({ s: s2, z: zCurbF - 0.7, y: lp.y, X: p[0], Z: p[1] }); }
-  }
 
   // ---- block by block: racks, benches, bins, a transformer box, a stall, the name sign
   const busy = ((st.shops || 0) + (st.food || 0) + (st.bars || 0)) / Math.max(0.6, len / 100);
@@ -239,21 +236,6 @@ export function dress(W) {
     }
   }
 
-  // ---- parked cars along the kerb on small streets
-  if (L.canPark) {
-    const road = cls(sA + len / 2, 0);
-    const pz = L.hw - 1.0, dens = Math.min(0.62, 30 / Math.max(1, len / 6.4)); // 1.85 m car: kerb side at hw - 0.075
-    for (let s = sA + 3.5; s < sB - 4; s += rnd.range(5.5, 7.2)) { // 4.4 m cars, at least 1.1 m between
-      if (!rnd.chance(dens) || L.zebras.some((z) => Math.abs(z - s) < 3.2)) continue;
-      if (cls(s, pz) !== road || cls(s, L.hw + 0.6) !== C.CURB && cls(s, hb + 0.8) !== C.WALK) continue;
-      const car = P.makeCar(rnd, 'car', false), f = at(s, pz);
-      car.g.position.set(f.X, f.y, f.Z);
-      car.g.rotation.y = f.th + Math.PI / 2;
-      group.add(car.g);
-      A.parked.push({ s, z: pz });
-    }
-  }
-
   // ---- stops and terraces from real points of interest
   const stops = [];
   for (const p of W.pois) {
@@ -300,7 +282,7 @@ export function dress(W) {
 
 /** The layout a gag sees at one spot: the cross-section plus the anchors within 24 m, with x measured from the spot. */
 export function localeL(W, sc, half = 24) {
-  const A = W.anchors, { path, grid: G, C } = W, L = Object.create(W.L);
+  const A = W.anchors, { path, C } = W, G = { get: W.clsAt }, L = Object.create(W.L);
   const sh = (a) => Object.assign(Object.create(a), { x: a.s - sc });
   const inWin = (a, r = half - 2) => Math.abs(a.s - sc) < r;
   L.sc = sc; L.x0 = -half; L.x1 = half;

@@ -5,6 +5,7 @@ import { Vox, clamp, makeRng, hashStr } from './kit.js';
 import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
+import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED } from './landmarks.js';
 
 const ROOT = './data/world/';
 const TILE = 256;
@@ -16,32 +17,34 @@ export const C = {
   ASPHALT: 20, KLINKER: 21, SERVICE: 22, CYCLE: 23, FOOT: 24, PED: 25, DIRT: 26, RAILBED: 27, RAIL: 28,
   WALK: 30, CURB: 31, MARK: 32, BIKELANE: 34, BUILDING: 40,
 };
+// Dutch street materials: grey concrete paving tiles, red-brown clinker streets, red asphalt cycle paths,
+// dark asphalt main roads, murky green canal water and a grey-green North Sea.
 const PAL = {
-  0: { c: '#c6cdb2', alt: '#bbc5a5', speck: 0.14 },
-  1: { c: '#3fa7d6', alt: '#86d3ef', speck: 0.03 },
-  2: { c: '#6fbf5f', alt: '#62b354', speck: 0.16 },
-  3: { c: '#4f9c4c', alt: '#438b42', speck: 0.3 },
-  4: { c: '#f3dca4', alt: '#ecd091', speck: 0.16 },
-  5: { c: '#cfd596', alt: '#a8c47c', speck: 0.3 },
-  6: { c: '#5bc66c', alt: '#51b962', stripe: 4 },
-  7: { c: '#a9cf7a', alt: '#9cc46c', stripe: 3 },
-  8: { c: '#e0c9a0', alt: '#d6bc8e', check: 1.5 },
-  9: { c: '#868a92', alt: '#7c8088', speck: 0.12 },
-  10: { c: '#38b6d8', alt: '#c9f0fb', speck: 0.012 },
+  0: { c: '#b9bba9', alt: '#aeb19e', speck: 0.14 },
+  1: { c: '#5d8a8c', alt: '#77a3a2', speck: 0.03 },
+  2: { c: '#7aa95b', alt: '#6e9d52', speck: 0.16 },
+  3: { c: '#5c8f4b', alt: '#507f43', speck: 0.3 },
+  4: { c: '#e6d5a6', alt: '#dcc894', speck: 0.16 },
+  5: { c: '#c8cb97', alt: '#a7b87b', speck: 0.3 },
+  6: { c: '#62ad63', alt: '#58a15a', stripe: 4 },
+  7: { c: '#a4bf76', alt: '#98b56a', stripe: 3 },
+  8: { c: '#c7bdab', alt: '#bcb19e', check: 1.5 },
+  9: { c: '#7e828a', alt: '#757981', speck: 0.12 },
+  10: { c: '#6f9aa2', alt: '#dcebea', speck: 0.012 },
   11: { c: '#5f636c' }, 12: { c: '#b79a90' }, 13: { c: '#8d8577' },
-  20: { c: '#4b4f58', alt: '#454952', speck: 0.2 },
-  21: { c: '#a8776a', alt: '#a06e62', check: 1 },
+  20: { c: '#4e5259', alt: '#484c53', speck: 0.2 },
+  21: { c: '#9b6b5d', alt: '#906153', check: 1 },
   22: { c: '#6c7078', alt: '#666a72', speck: 0.2 },
-  23: { c: '#c9573f', alt: '#c0503a', speck: 0.15 },
-  24: { c: '#cfc6b2', alt: '#c5bba6', check: 1 },
-  25: { c: '#e0c9a0', alt: '#d6bc8e', check: 1.5 },
-  26: { c: '#d9c79a', alt: '#cdb98a', speck: 0.25 },
+  23: { c: '#b25040', alt: '#a8493a', speck: 0.15 },
+  24: { c: '#c6bfae', alt: '#bcb4a2', check: 1 },
+  25: { c: '#c3b59d', alt: '#b8a98f', check: 1.5 },
+  26: { c: '#cbb98e', alt: '#bfac80', speck: 0.25 },
   27: { c: '#8d8577', alt: '#837b6e', speck: 0.3 },
   28: { c: '#8f959c' },
-  30: { c: '#b9bcc2', alt: '#aeb1b8', check: 1 },
-  31: { c: '#d6d0c2' },
-  32: { c: '#f1f1f1' },
-  34: { c: '#c9573f', alt: '#c0503a', speck: 0.15 },
+  30: { c: '#b4b4ae', alt: '#a9a9a3', check: 1 },
+  31: { c: '#cdcabf' },
+  32: { c: '#ecece6' },
+  34: { c: '#b25040', alt: '#a8493a', speck: 0.15 },
   40: { c: '#9a958a' },
 };
 const LUT = (() => {
@@ -166,7 +169,7 @@ function loadTile(ix, key) {
   if (!ix.set.has(key)) return Promise.resolve(null);
   if (_tiles.has(key)) { const hit = _tiles.get(key); _tiles.delete(key); _tiles.set(key, hit); return hit; } // recently used tiles are kept longest
   if (!_tiles.has(key)) {
-    if (_tiles.size > 160) _tiles.delete(_tiles.keys().next().value);
+    if (_tiles.size > 420) _tiles.delete(_tiles.keys().next().value);
     const req = getJson(`${ROOT}tiles/${key}.json`);
     _tiles.set(key, req);
     // a failed download is not remembered: the next street that needs this tile asks again
@@ -287,7 +290,7 @@ function cutPatch(mat, tint = true, tile = false) {
             transformed.y += terrAt(bXZ) + 0.1; // it stands on the ground under its centre
             vCut = 1.0 - cutS;
           }
-          ${tile ? 'if (bXZ.x > uClip.x && bXZ.y > uClip.y && bXZ.x < uClip.z && bXZ.y < uClip.w) transformed = vec3(0.0);' : ''}
+          ${tile ? 'if (aB.w >= 0.0 && bXZ.x > uClip.x && bXZ.y > uClip.y && bXZ.x < uClip.z && bXZ.y < uClip.w) transformed = vec3(0.0);' : ''}
         }`);
     if (tint) sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;\nuniform float uNight;\nfloat wHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }')
@@ -315,7 +318,7 @@ function cutPatch(mat, tint = true, tile = false) {
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6, 0.62, 0.58), smoothstep(0.2, 0.85, vCut) * 0.93);`)
       .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, wLit, wGlow);\n\t#include <opaque_fragment>');
   };
-  mat.customProgramCacheKey = () => 'cut10' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
+  mat.customProgramCacheKey = () => 'cut11' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
   return mat;
 }
 /** Ground pieces outside the detailed area leave a hole where that area is. */
@@ -373,12 +376,16 @@ export function cutWeight(x, z, r = 5) {
 }
 
 // ---------------------------------------------------------------- building looks
+// The Hague by building age: white and cream stucco among dark brick before 1905, red-brown brick with orange
+// tiled roofs up to the war, the yellow-brown brick of the Haagse School in the thirties, yellow and grey
+// brick flats after 1945, and white, grey and anthracite since 2000.
 const ERA = [
-  { to: 1925, wall: ['#b5523b', '#a8472f', '#8f4a3a', '#c7714f', '#74504a', '#b86b4b'], roofs: ['#8a3b2e', '#c8553d', '#4a4e57'] },
-  { to: 1946, wall: ['#c98b5e', '#b86b4b', '#c7714f', '#a8472f', '#d8b07a'], roofs: ['#c8553d', '#a44a3f', '#d9693f'] },
-  { to: 1976, wall: ['#d8b07a', '#e9e2d3', '#c7714f', '#cbb894', '#d9c2a0'], roofs: ['#4a4e57', '#a44a3f', '#6b7078'] },
-  { to: 2001, wall: ['#c98b5e', '#b86b4b', '#e9e2d3', '#d8b07a', '#b9a58a'], roofs: ['#4a4e57', '#c8553d', '#5d646d'] },
-  { to: 9999, wall: ['#e3e6e8', '#74504a', '#cfd8dc', '#b0553c', '#3f4650', '#d7c9b8'], roofs: ['#4a4e57', '#3d434c'] },
+  { to: 1905, wall: ['#ece6d8', '#e3d8be', '#d5d2c8', '#8f4a3a', '#7a4638', '#b08a5a', '#ece6d8'], roofs: ['#4a4e57', '#8a3b2e', '#6b7078'] },
+  { to: 1930, wall: ['#9a4f3c', '#a8553e', '#7f4f3f', '#b5694a', '#94523f', '#e6dfcf'], roofs: ['#c1583b', '#a44a3f', '#4a4e57'] },
+  { to: 1946, wall: ['#c09a62', '#b88b58', '#96543f', '#a86a48', '#c9a56c'], roofs: ['#c1583b', '#a44a3f', '#5d646d'] },
+  { to: 1976, wall: ['#cdb07c', '#d6c095', '#bfb6a3', '#c9c5bb', '#9c5a44', '#c4a66e'], roofs: ['#5d646d', '#6b7078', '#a44a3f'] },
+  { to: 2001, wall: ['#9e5b45', '#c9a873', '#85543f', '#e3e1da', '#b3785a'], roofs: ['#4a4e57', '#b0553c', '#5d646d'] },
+  { to: 9999, wall: ['#e9e9e4', '#cfd3d6', '#4a4f57', '#a05540', '#d7c9b8', '#9fb4c2'], roofs: ['#3d434c', '#5a6068'] },
 ];
 const eraOf = (year) => ERA.find((e) => (year || 1950) < e.to) || ERA[2];
 const TOWER = ['#cfd8dc', '#b8c4cc', '#e3ded3', '#9fb0ba', '#d7c9b8', '#8fa3ad', '#5f6f7d', '#e8eef1'];
@@ -386,13 +393,22 @@ const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
 /** May a footprint be drawn as its bounding box? Only if the box hardly sticks out beyond the real outline: a big L-shaped block must not spill over the street. */
 const boxy = (o) => o.fill >= 0.72 && (1 - o.fill) * o.w * o.d < 45;
-function drawGeneric(v, gl, b, rnd, night) {
-  const o = b.o, th = Math.atan2(-o.uz, o.ux), h = b.h, era = eraOf(b.year);
+/**
+ * How a building looks: its own dice (seeded by where it sits in the map data) and its wall and roof colours.
+ * The same building comes out the same in every tile, at every level of detail and whichever street is open.
+ */
+function lookOf(key, bi, b) {
+  const rnd = makeRng(hashStr('b|' + key + '|' + bi)), era = eraOf(b.year);
+  return { rnd, wall: b.h > 24 ? rnd.pick(TOWER) : rnd.pick(era.wall), roof: rnd.pick(era.roofs) };
+}
+/** A plain building: walls with painted windows, its roof, and what stands on it. `simple` leaves the trimmings out (far away). */
+function drawGeneric(v, gl, b, look, night, simple = false) {
+  const o = b.o, th = Math.atan2(-o.uz, o.ux), h = b.h, rnd = look.rnd;
   const tall = h > 24;
   v.setT(th, o.cx, o.cz); gl.setT(th, o.cx, o.cz);
   const rad = Math.min(o.w, o.d) / 2;
   v.setB(o.cx, o.cz, h + 2, rad); gl.setB(o.cx, o.cz, h + 2, rad);
-  const wall = tall ? rnd.pick(TOWER) : rnd.pick(era.wall), roofCol = rnd.pick(era.roofs);
+  const wall = look.wall, roofCol = look.roof;
   const small = b.area < 22;
   for (const r of b.rects) {
     // the windows are painted on by the shader (see cutPatch): a grid on houses, ribbons of glass on towers
@@ -407,12 +423,12 @@ function drawGeneric(v, gl, b, rnd, night) {
         v.box(r.x, h + (i * rise) / n, r.z, alongX ? r.w + 0.1 : r.w * k + 0.1, rise / n, alongX ? r.d * k + 0.1 : r.d + 0.1, roofCol, 0.05);
       }
       // a chimney breaks the roof line
-      if (!small && rnd.chance(0.5)) v.box(r.x + (alongX ? rnd.range(-0.3, 0.3) * r.w : 0), h + rise * 0.3, r.z + (alongX ? 0 : rnd.range(-0.3, 0.3) * r.d), 0.6, rise * 0.7 + 0.7, 0.6, '#8a5a48', 0.08);
+      if (!small && !simple && rnd.chance(0.5)) v.box(r.x + (alongX ? rnd.range(-0.3, 0.3) * r.w : 0), h + rise * 0.3, r.z + (alongX ? 0 : rnd.range(-0.3, 0.3) * r.d), 0.6, rise * 0.7 + 0.7, 0.6, '#8a5a48', 0.08);
     } else {
       v.box(r.x, h, r.z, r.w + 0.15, 0.3, r.d + 0.15, tall ? P.shade(wall, 0.8) : '#efe9dc');
-      if (span > 2) v.box(r.x, h + 0.3, r.z, r.w - 0.5, 0.08, r.d - 0.5, '#4a4e57');
+      if (span > 2 && !simple) v.box(r.x, h + 0.3, r.z, r.w - 0.5, 0.08, r.d - 0.5, '#4a4e57');
       // flat roofs carry things: a stair house, air handling units
-      if (span > 7 && !small) {
+      if (span > 7 && !small && !simple) {
         if (rnd.chance(0.55)) v.box(r.x + rnd.range(-0.25, 0.25) * r.w, h + 0.3, r.z + rnd.range(-0.25, 0.25) * r.d, rnd.range(2, 3.4), rnd.range(1.4, 2.4), rnd.range(2, 3.4), P.shade(wall, 0.86), 0.04);
         const n = rnd.int(0, span > 14 ? 3 : 1);
         for (let i = 0; i < n; i++) v.box(r.x + rnd.range(-0.36, 0.36) * r.w, h + 0.3, r.z + rnd.range(-0.36, 0.36) * r.d, 1.5, 0.9, 1.1, '#aeb4ba', 0.06);
@@ -429,6 +445,7 @@ const POI_SHOP = { 1: BARS, 2: FOOD, 3: SHOPS, 4: ['SUPER'], 5: ['BANK'], 6: ['K
 
 /** A street-facing house front drawn with the full kit (doors, windows, gables, shop fronts). Returns anchors in scene coords. */
 function drawHero(v, gl, u, rnd, night) {
+  // rnd: this front's own dice, so it comes out the same every time the street is opened
   const th = Math.atan2(u.nx, u.nz), c = Math.cos(th), s = Math.sin(th);
   v.setT(th, u.cx, u.cz); gl.setT(th, u.cx, u.cz);
   v.setB(u.cx, u.cz, u.h + 3, u.d / 2); gl.setB(u.cx, u.cz, u.h + 3, u.d / 2);
@@ -441,7 +458,7 @@ function drawHero(v, gl, u, rnd, night) {
     const old = (u.year || 1950) < 1935;
     const roof = u.roof ? (old && w < 9 ? rnd.pick(['step', 'bell', 'pitch']) : 'pitch') : 'flat';
     info = P.house(v, gl, {
-      x: 0, z: depth / 2, w, rnd, night, depth, y: 0, roof, wall: u.wall || rnd.pick(era.wall),
+      x: 0, z: depth / 2, w, rnd, night, depth, y: 0, roof, wall: u.wall || rnd.pick(era.wall), roofCol: u.roofCol,
       floors: clamp(Math.round((u.h - (u.roof ? 3.4 : 2.6)) / 2.2) + 1, 1, 9),
       shop: u.shop || null, signBg: u.shop === 'BANK' ? '#005eb8' : undefined,
     });
@@ -587,9 +604,49 @@ function paintBase(city, grid, mt, gnd, roads) {
   for (const g of gnd) if (g.cls === 1) grid.fill(g.rings, C.WATER);
   for (const r of roads) if (r.cls === 20) grid.stroke(r.a, r.w, C.WATER);
   for (const r of roads) if (r.cls >= 2 && r.cls <= 7 && !(r.flags & 4)) grid.stroke(r.a, r.w + 4.4, C.WALK, URBAN);
+  // close up (half-metre cells) every street gets its kerbs and road markings; from further away they are too fine to show
+  const fine = cell <= 0.5;
+  if (fine) for (const r of roads) if (r.cls >= 2 && r.cls <= 7 && !(r.flags & 4)) grid.stroke(r.a, r.w + 0.8, C.CURB, KERBED);
   for (const cls of ROAD_ORDER) for (const r of roads) {
     if (r.cls !== cls || r.flags & 4) continue;
     grid.stroke(r.a, cls === 11 ? Math.max(1.5, r.w) : r.w, cls === 11 && r.flags & 16 ? C.DIRT : SURF[cls]);
+  }
+  // red cycle lanes along the edges of roads that have them
+  for (const r of roads) {
+    if (r.cls < 2 || r.cls > 7 || r.flags & 4 || !(r.flags & 8) || r.w < 6) continue;
+    grid.stroke(r.a, 1.15, C.BIKELANE, ROADWAY, r.w / 2 - 0.6);
+    grid.stroke(r.a, 1.15, C.BIKELANE, ROADWAY, -(r.w / 2 - 0.6));
+  }
+  if (fine) for (const r of roads) if (r.cls >= 2 && r.cls <= 7 && !(r.flags & 4)) paintMarks(grid, r);
+}
+const KERBED = mask(C.WALK, C.LAND, C.PLAZA), ROADWAY = mask(C.ASPHALT, C.KLINKER), MARKABLE = mask(C.ASPHALT, C.KLINKER, C.BIKELANE);
+/** Where the zebra crossings are along one piece of road: every 80 m from 20 m in. Returns distances along it. */
+export function zebrasOn(len) {
+  const out = [];
+  if (len >= 45) for (let s = 20; s < len - 12; s += 80) out.push(s);
+  return out;
+}
+/** Centre-line dashes and zebra crossings for one piece of road. */
+function paintMarks(grid, r) {
+  const a = r.a, n = a.length >> 1, step = grid.cell * 0.5, hw = r.w / 2, dash = r.cls <= 5 && !(r.flags & 1) && r.w >= 6.4;
+  let len = 0;
+  for (let i = 1; i < n; i++) len += Math.hypot(a[i * 2] - a[i * 2 - 2], a[i * 2 + 1] - a[i * 2 - 1]);
+  const zeb = zebrasOn(len);
+  if (!dash && !zeb.length) return;
+  let s = 0;
+  for (let i = 0; i + 1 < n; i++) {
+    const ax = a[i * 2], az = a[i * 2 + 1], ex = a[i * 2 + 2] - ax, ez = a[i * 2 + 3] - az, l = Math.hypot(ex, ez);
+    if (l < 1e-6) continue;
+    const dx = ex / l, dz = ez / l;
+    for (let t = 0; t < l; t += step) {
+      const ss = s + t, x = ax + dx * t, z = az + dz * t;
+      if (dash && ss % 2.6 < 1.1) grid.set(x, z, C.MARK, MARKABLE);
+      for (const zs of zeb) {
+        if (Math.abs(ss - zs) > 1.1) continue;
+        for (let v = -(hw - 0.3); v <= hw - 0.3; v += step) if ((v + hw) % 0.9 < 0.45) grid.set(x - dz * v, z + dx * v, C.MARK, MARKABLE);
+      }
+    }
+    s += l;
   }
 }
 /** Rails and building footprints go on last. */
@@ -674,6 +731,7 @@ class Buf {
  * every shore. `mt` turns grid coords into map metres. Leaves `grid.off` (height of every cell above the terrain).
  */
 function buildGround(city, grid, { mt, gs = 4, clip = false }) {
+  // (clip is no longer used: streets do not bring their own ground any more)
   const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell, tex = groundTexture(grid), meshes = [];
   const n = Math.max(1, Math.round(gs / cell)), nbx = Math.ceil(w / n), nbz = Math.ceil(h / n), lw = nbx + 1;
   // terrain heights on the block lattice; inside a block the ground is interpolated, so pieces meet without cracks
@@ -880,15 +938,17 @@ const TREES = [
   (v) => { v.box(0, 0, 0, 0.36, 1.5, 0.36, '#6d4a30'); v.box(0, 1.5, 0, 1.3, 1.2, 1.3, '#3b8f4d'); v.box(0, 2.7, 0, 1.6, 1.5, 1.6, '#43a054'); v.box(0, 4.2, 0, 1.2, 1.2, 1.2, '#4fb060'); v.box(0, 5.4, 0, 0.7, 0.8, 0.7, '#5dbb69'); },
   (v) => { v.box(0, 0, 0, 0.5, 1.3, 0.5, '#7a5234'); v.box(0, 1.3, 0, 2.6, 0.7, 2.6, '#55a548'); v.box(0, 2.0, 0, 3.1, 1.1, 3.1, '#63b552'); v.box(-0.1, 3.1, 0.1, 2.2, 0.7, 2.2, '#72c25c'); },
 ];
-const TREE_H = [4.8, 6.2, 3.8];
+const TREE_H = [4.8, 6.2, 3.8, 4.6];
+// from far away a tree is a trunk and one block of green
+TREES.push((v) => { v.box(0, 0, 0, 0.5, 1.6, 0.5, '#7a5234'); v.box(0, 1.6, 0, 2.6, 3.0, 2.6, '#4f9f4c'); });
 let _treeGeo = null;
 /** A stand of trees: one instanced mesh per kind of tree, in a group. pts: flat [x, z, size, ...]. */
-function treeMesh(pts, rnd, cap, yAt, mat = CUT.solid, depth = CUT.depth) {
+function treeMesh(pts, rnd, cap, yAt, mat = CUT.solid, depth = CUT.depth, far = false) {
   const n = Math.min(pts.length / 3, cap);
   if (n <= 0) return null;
   _treeGeo ||= TREES.map((draw, i) => { const tv = new Vox(5 + i); draw(tv); return tv.geometry(); });
-  const stride = pts.length / 3 / n, picks = [[], [], []];
-  for (let i = 0; i < n; i++) { const k = Math.floor(i * stride) * 3, h = hash2(Math.round(pts[k] * 7), Math.round(pts[k + 1] * 7)); picks[h < 0.6 ? 0 : h < 0.8 ? 1 : 2].push(k); }
+  const stride = pts.length / 3 / n, picks = [[], [], [], []];
+  for (let i = 0; i < n; i++) { const k = Math.floor(i * stride) * 3, h = hash2(Math.round(pts[k] * 7), Math.round(pts[k + 1] * 7)); picks[far ? 3 : h < 0.6 ? 0 : h < 0.8 ? 1 : 2].push(k); }
   const group = new THREE.Group();
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), p = new THREE.Vector3(), s = new THREE.Vector3(), col = new THREE.Color();
   picks.forEach((list, kind) => {
@@ -925,7 +985,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + seed));
   const f = frameFor(ix, geometry);
   const streetLen = polyLen(f.spine);
-  const margin = lite ? 110 : streetLen > 900 ? 130 : 160;
+  const margin = lite ? 50 : 60; // the detailed area only holds this street's buildings: the ground comes from the tiles, the same for every street
   const tiles = await Promise.all(tileKeys(f, margin).map(async (k) => [k, await loadTile(ix, k)]));
   const t1 = performance.now();
 
@@ -935,11 +995,11 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     for (const [key, t] of tiles) {
       if (!t || !t.b) continue;
       const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
-      for (const e of t.b) {
+      t.b.forEach((e, bi) => {
         const ring = [];
         for (let i = 3; i + 1 < e.length; i += 2) ring.push(f.S(ox + e[i] / 10, oy + e[i + 1] / 10));
-        if (ring.length >= 3) out.push({ ring, h: e[0], roof: e[1], year: e[2] });
-      }
+        if (ring.length >= 3) out.push({ ring, h: e[0], roof: e[1], year: e[2], key, bi, t });
+      });
     }
     return out;
   };
@@ -962,17 +1022,15 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   }
   const R = regionOf(f, margin);
   const inR = (x, z, pad = 0) => x > R.x0 - pad && x < R.x1 + pad && z > R.z0 - pad && z < R.z1 + pad;
-  // the detailed area is exactly the ground raster; streamed tiles hide whatever falls inside it
-  const span = Math.max(R.x1 - R.x0, R.z1 - R.z0);
-  const cell = lite ? (span > 1400 ? 2 : 1) : span > 2600 ? 2 : span > 1300 ? 1 : 0.5;
-  const clip = { x0: R.x0, z0: R.z0, x1: R.x0 + Math.ceil((R.x1 - R.x0) / cell) * cell, z1: R.z0 + Math.ceil((R.z1 - R.z0) / cell) * cell };
+  // streamed tiles leave the buildings inside this rectangle to the street's own, more detailed ones
+  const clip = { x0: R.x0, z0: R.z0, x1: R.x1, z1: R.z1 };
   const inC = (x, z) => x > clip.x0 && x < clip.x1 && z > clip.z0 && z < clip.z1;
   for (const b of bld) b.o = obbOf(b.ring);
   bld = bld.filter((b) => inC(b.o.cx, b.o.cz)); // a building belongs to whoever has its centre
   await breathe();
 
   // ---- decode the rest
-  const gnd = [], roads = [], rails = [], trees = [], pois = [];
+  const roads = [], rails = [], pois = [];
   for (const [key, t] of tiles) {
     if (!t) continue;
     const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
@@ -986,11 +1044,6 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       }
       return any ? a : null;
     };
-    for (const e of t.g || []) {
-      const rings = [];
-      for (let i = 2; i < e.length; i++) { const r = flat(e[i], 0); if (r) rings.push(r); else if (i === 2) break; }
-      if (rings.length) gnd.push({ cls: e[0], area: e[1], rings });
-    }
     for (const e of t.r || []) {
       const a = flat(e, 4);
       if (a) roads.push({ cls: e[0], w: e[1] / 10, name: e[2] >= 0 ? t.n[e[2]] : '', flags: e[3], a });
@@ -999,7 +1052,6 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       const a = flat(e, 2);
       if (a) rails.push({ kind: e[0], flags: e[1], a });
     }
-    if (t.t) for (let i = 0; i + 1 < t.t.length; i += 2) { const p = f.S(ox + t.t[i] / 10, oy + t.t[i + 1] / 10); if (inR(p[0], p[1])) trees.push(p); }
     for (const e of t.p || []) { const p = f.S(ox + e[1] / 10, oy + e[2] / 10); if (inR(p[0], p[1])) pois.push({ kind: e[0], x: p[0], z: p[1] }); }
   }
 
@@ -1054,10 +1106,13 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   const units = [];
   for (const b of bld) {
     b.area = ringArea(b.ring);
+    b.look = lookOf(b.key, b.bi, b);
+    // a church stays a church: buildings with a type or a landmark's own parts are drawn by the tiles, not as house fronts here
+    b.ext = !!((b.t.bp && b.t.bp[b.bi]) || (b.t.bt && TYPED.has(b.t.bt[b.bi])));
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(b.ring, b.o);
     const o = b.o, pr = path.project(o.cx, o.cz);
     b.s = pr.s; b.v = pr.v; b.dist = pr.d;
-    if (pr.d > 70 || pr.d < 0.5 || b.h < 3.2 || b.area < 18 || pr.s < path.sA - 8 || pr.s > path.sB + 8) continue;
+    if (b.ext || pr.d > 70 || pr.d < 0.5 || b.h < 3.2 || b.area < 18 || pr.s < path.sA - 8 || pr.s > path.sB + 8) continue;
     // which side of its bounding box looks at the street?
     const fp = path.xz(pr.s, 0), nx = (fp[0] - o.cx) / pr.d, nz = (fp[1] - o.cz) / pr.d;
     const dU = o.ux * nx + o.uz * nz, dP = -o.uz * nx + o.ux * nz;
@@ -1071,7 +1126,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     if (gp.d > 22 || gp.d < 0.8 || Math.abs(fnx * tg.tx + fnz * tg.tz) > 0.6 || fw < 2.8) continue;
     const tower = b.h >= 22;
     const n = fw > (tower ? 34 : 11) ? Math.round(fw / (tower ? 22 : 6.5)) : 1, uw = fw / n;
-    const depth = clamp(b.area / fw, 3.4, fd), wall = n > 1 && !tower && rnd.chance(0.5) ? rnd.pick(eraOf(b.year).wall) : null;
+    const depth = clamp(b.area / fw, 3.4, fd), wall = tower ? null : b.look.wall;
     const mine = [];
     for (let i = 0; i < n; i++) {
       const off = (i + 0.5 - n / 2) * uw, ux0 = fcx + ax * off, uz0 = fcz + az * off;
@@ -1081,7 +1136,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       if (hit < 2) continue;
       const up = path.project(ux0, uz0);
       if (up.d < 0.8 || up.d > 22) continue;
-      mine.push({ b, cx: ux0 - fnx * depth / 2, cz: uz0 - fnz * depth / 2, nx: fnx, nz: fnz, w: uw, d: depth, h: b.h, roof: b.roof, year: b.year, tower, wall, s: up.s, gap: up.d, side: up.v < 0 ? -1 : 1 });
+      mine.push({ b, i, roofCol: b.look.roof, cx: ux0 - fnx * depth / 2, cz: uz0 - fnz * depth / 2, nx: fnx, nz: fnz, w: uw, d: depth, h: b.h, roof: b.roof, year: b.year, tower, wall, s: up.s, gap: up.d, side: up.v < 0 ? -1 : 1 });
     }
     if (mine.length >= Math.max(1, n * 0.6)) { b.units = mine; units.push(...mine); }
   }
@@ -1115,14 +1170,16 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   };
   const clearB = clearOf(-1), clearF = clearOf(1);
   const builtAt = (s, sgn) => { const a = built[sgn], i = clamp(Math.round((s - path.sA) / 3), 0, a.length - 1); return a[i] || a[Math.max(0, i - 1)] || a[Math.min(a.length - 1, i + 1)]; };
-  const L = crossSection(st, clearB, clearF, night);
+  // the road as it is painted for everyone (see paintBase): its width, and whether it carries cycle lanes
+  const own = roads.filter((r) => r.name === st.name && r.cls <= 9 && !(r.flags & 4)), widths = own.map((r) => r.w).sort((a, b) => a - b);
+  const L = crossSection(st, clearB, clearF, night, own.length ? { w: widths[widths.length >> 1], bike: own.filter((r) => r.flags & 8).length * 2 > own.length } : null);
 
   // shops: real points of interest claim the nearest street-facing front
   for (const p of pois) {
     if (!POI_SHOP[p.kind]) continue;
     let best = null, bd = 16;
     for (const u of heroUnits) { if (u.shop || u.tower) continue; const d = Math.hypot(u.cx - p.x, u.cz - p.z) - u.d / 2; if (d < bd) { bd = d; best = u; } }
-    if (best) best.shop = rnd.pick(POI_SHOP[p.kind]);
+    if (best) { const list = POI_SHOP[p.kind]; best.shop = list[Math.floor(best.b.look.rnd() * list.length) % list.length]; }
   }
   // cash machines: on the bank if there is one, otherwise on a wall every so often
   {
@@ -1136,36 +1193,38 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     }
   }
 
-  // ---- ground raster
+  // ---- the ground comes from the tiles, painted the same way for every street. The tiles along this street are
+  // built now, at the finest level, because the street's furniture and walking lines are fitted to the painted ground
   await breathe();
-  const grid = new Grid(R.x0, R.z0, Math.ceil((R.x1 - R.x0) / cell), Math.ceil((R.z1 - R.z0) / cell), cell);
-  const can = (...cls) => { const t = new Uint8Array(256); for (const c of cls) t[c] = 1; return t; };
-  const toM = (x, z) => f.M(x, z), same = (x, z) => [x, z];
-  paintBase(city, grid, toM, gnd, roads);
-  // the street itself, with its own lanes, bike lanes, kerbs and pavements
+  const corridor = []; // the tiles this street runs through
   {
-    const q = cell * 0.5, hb = L.hw + L.bw, fr = {};
-    const canWalk = can(C.LAND, C.PLAZA, C.PARKING, C.WALK, C.FOOT, C.DIRT, C.SERVICE);
-    const road = L.kind === 'ped' ? C.PED : L.kind === 'minor' ? C.KLINKER : C.ASPHALT;
-    L.zebras = [];
-    const dashes = L.kind === 'major' && !rails.some((r) => { if (r.kind === 2 || r.flags & 4) return false; for (let i = 0; i + 1 < r.a.length; i += 6) { const pr = path.project(r.a[i], r.a[i + 1]); if (pr.d < 4 && pr.s > path.sA && pr.s < path.sB) return true; } return false; });
-    if (L.kind !== 'ped') for (let z = path.sA + 18 + rnd.range(0, 10); z < path.sB - 8; z += rnd.range(60, 90)) L.zebras.push(z);
-    for (let s = path.sA; s <= path.sB; s += q) {
-      path.at(s, fr);
-      const zeb = L.zebras.some((z) => Math.abs(z - s) < 1.1), urbB = builtAt(s, -1), urbF = builtAt(s, 1);
-      for (let v = -(hb + L.swB); v <= hb + L.swF; v += q) {
-        const x = fr.x - fr.tz * v, z = fr.z + fr.tx * v, av = Math.abs(v);
-        if (av <= L.hw) {
-          let c = road;
-          if (dashes && av < 0.13 && (s - path.sA) % 2.6 < 1.1) c = C.MARK;
-          if (zeb && av < L.hw - 0.25 && ((v + L.hw) % 0.9) < 0.45) c = C.MARK;
-          grid.set(x, z, c);
-        } else if (L.kind === 'ped') grid.set(x, z, C.PED, canWalk);
-        else if (av <= hb) grid.set(x, z, C.BIKELANE);
-        else if (!(v < 0 ? urbB : urbF)) continue;
-        else if (av <= hb + 0.3) grid.set(x, z, C.CURB, canWalk);
-        else grid.set(x, z, C.WALK, canWalk);
-      }
+    let mx0 = Infinity, mx1 = -Infinity, my0 = Infinity, my1 = -Infinity;
+    for (const q of path.p) { const m = f.M(q[0], q[1]); if (m[0] < mx0) mx0 = m[0]; if (m[0] > mx1) mx1 = m[0]; if (m[1] < my0) my0 = m[1]; if (m[1] > my1) my1 = m[1]; }
+    syncNight(night);
+    for (const [key, t] of tiles) {
+      if (!t) continue;
+      const [tx, ty] = key.split('_').map(Number);
+      if ((tx + 1) * TILE < mx0 - 45 || tx * TILE > mx1 + 45 || (ty + 1) * TILE < my0 - 45 || ty * TILE > my1 + 45) continue;
+      corridor.push(key);
+      const had = _built.get(key);
+      if (had && had.lod === 0) continue;
+      ensureTile(city, key, t, 0, night, lite);
+      await breathe();
+    }
+  }
+  const toM = (x, z) => f.M(x, z);
+  /** Ground class at a scene position (255 where no tile is built). */
+  const clsAt = (x, z) => classAt(f.ox + x * f.dx + z * f.dy, f.oy + x * f.dy - z * f.dx);
+  // zebra crossings: where the shared painter put them on this street's own pieces of road
+  L.zebras = [];
+  for (const r of own) {
+    const a = r.a, n = a.length >> 1, cum = [0];
+    for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(a[i * 2] - a[i * 2 - 2], a[i * 2 + 1] - a[i * 2 - 1]));
+    for (const zs of zebrasOn(cum[n - 1])) {
+      let i = 1;
+      while (i < n - 1 && cum[i] < zs) i++;
+      const t = (zs - cum[i - 1]) / (cum[i] - cum[i - 1] || 1), pr = path.project(a[i * 2 - 2] + (a[i * 2] - a[i * 2 - 2]) * t, a[i * 2 - 1] + (a[i * 2 + 1] - a[i * 2 - 1]) * t);
+      if (pr.d < 3 && pr.s > path.sA + 4 && pr.s < path.sB - 4) L.zebras.push(pr.s);
     }
   }
   let tramOnStreet = 0;
@@ -1174,16 +1233,8 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     for (let i = 0; i + 1 < r.a.length; i += 8) { const pr = path.project(r.a[i], r.a[i + 1]); if (pr.d < 6 && pr.s > path.sA && pr.s < path.sB) tramOnStreet++; }
   }
   L.tramNear = tramOnStreet > 2;
-  paintTop(grid, rails, bld.map((b) => b.flat));
   /** Height of whatever you would stand or float on at a scene position (kerbs and rough ground included). */
-  const gw = grid.w, gh = grid.h;
-  const hAt = (x, z) => {
-    const mx = f.ox + x * f.dx + z * f.dy, my = f.oy + x * f.dy - z * f.dx;
-    const i = Math.floor((x - R.x0) / cell), j = Math.floor((z - R.z0) / cell);
-    if (i < 0 || j < 0 || i >= gw || j >= gh) return surfaceAt(city, mx, my); // beyond the detailed area: ask the tile that is there
-    const q = j * gw + i;
-    return WET[grid.a[q]] ? city.waterAt(mx, my) : city.landAt(mx, my) + (grid.off ? grid.off[q] : 0.14);
-  };
+  const hAt = (x, z) => surfaceAt(city, f.ox + x * f.dx + z * f.dy, f.oy + x * f.dy - z * f.dx);
   const landY = (x, z) => city.landAt(f.ox + x * f.dx + z * f.dy, f.oy + x * f.dy - z * f.dx);
 
   // what is actually built near the street, and where its roof is (1 m cells, half-metre steps above `solid.y0`):
@@ -1211,13 +1262,6 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   await breathe();
   const group = new THREE.Group();
   const disposables = [];
-  {
-    const G = buildGround(city, grid, { mt: toM, gs: lite ? 6 : 4 });
-    disposables.push(G.tex);
-    for (const m of G.meshes) m.frustumCulled = false;
-    group.add(...G.meshes);
-  }
-  await breathe();
 
   // buildings, merged into chunks
   const chunks = new Map(), CH = 110;
@@ -1229,15 +1273,16 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   };
   const heroInfo = [], signs = [];
   for (const b of bld) {
+    if (b.ext) continue;
     if (b.hero) {
       for (const u of b.units) {
-        const c = chunkOf(u.cx, u.cz), hi = drawHero(c.v, c.gl, u, rnd, night);
+        const c = chunkOf(u.cx, u.cz), hi = drawHero(c.v, c.gl, u, makeRng(hashStr('u|' + b.key + '|' + b.bi + '|' + u.i)), night);
         const gy = landY(u.cx, u.cz);
         heroInfo.push(hi);
         if (hi.chimney) hi.chimney.y += gy;
         if (hi.sign) { hi.sign.position.y += gy; group.add(hi.sign); signs.push({ m: hi.sign, x: u.cx, z: u.cz }); }
       }
-    } else { const c = chunkOf(b.o.cx, b.o.cz); drawGeneric(c.v, c.gl, b, rnd, night); }
+    } else { const c = chunkOf(b.o.cx, b.o.cz); drawGeneric(c.v, c.gl, b, b.look, night); }
   }
   // the shader lifts buildings onto the terrain, so their chunks are a little bigger than their geometry says
   const roomy = (m) => { m.geometry.computeBoundingSphere(); m.geometry.boundingSphere.radius += 45; return m; };
@@ -1248,36 +1293,13 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   }
   await breathe();
 
-  // trees
-  {
-    const pts = [], hb = L.hw + L.bw + 0.4;
-    const okCls = can(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
-    const push = (x, z, sc) => {
-      if (!inC(x, z) || !okCls[grid.get(x, z)]) return;
-      const pr = path.project(x, z);
-      if (Math.abs(pr.v) < hb && pr.s > path.sA - 2 && pr.s < path.sB + 2) return;
-      if (pr.d > 150 && rnd() < 0.35) return;
-      pts.push(x, z, sc * (pr.d > 150 ? 1.2 : 1));
-    };
-    for (const p of trees) push(p[0], p[1], rnd.range(1.35, 1.95));
-    const step = lite ? 9 : 6.5;
-    for (let z = R.z0 + 2; z < R.z1; z += step) for (let x = R.x0 + 2; x < R.x1; x += step) {
-      const jx = x + rnd.range(-2.6, 2.6), jz = z + rnd.range(-2.6, 2.6), cl = grid.get(jx, jz);
-      if (cl === C.FOREST) { if (rnd() < 0.92) push(jx, jz, rnd.range(1.7, 2.6)); }
-      else if (cl === C.GRASS) { if (rnd() < 0.07) push(jx, jz, rnd.range(1.3, 2.0)); }
-      else if (cl === C.DUNE) { if (rnd() < 0.06) push(jx, jz, rnd.range(0.5, 0.9)); }
-    }
-    const inst = treeMesh(pts, rnd, lite ? 6000 : 16000, hAt);
-    if (inst) { for (const t of inst.children) t.frustumCulled = false; group.add(inst); }
-  }
-
   // rails and big roads as paths for trams and passing traffic
   const flatToPts = (a) => { const o = []; for (let i = 0; i + 1 < a.length; i += 2) o.push([a[i], a[i + 1]]); return o; };
   const tramLines = chain(rails.filter((r) => r.kind !== 2 && !(r.flags & 4)).map((r) => flatToPts(r.a)), 5, 0.6).filter((p) => polyLen(p) > 140).map((p) => new Path(p));
   const sideRoads = chain(roads.filter((r) => r.cls >= 2 && r.cls <= 4 && !(r.flags & 4) && r.name !== st.name).map((r) => flatToPts(r.a)), 5, 0.7).filter((p) => polyLen(p) > 160).map((p) => new Path(p));
 
   const W = {
-    group, path, grid, solid, frame: f, region: R, clip, L, st, rnd, night, lite, hAt, landY,
+    group, path, clsAt, corridor, solid, frame: f, region: R, clip, L, st, rnd, night, lite, hAt, landY,
     heroes: heroInfo, signs, pois, roads, rails, tramLines, sideRoads, builtAt, city, inClip: inC, classAt,
     anchors: { houses: [], shops: [], racks: [], benches: [], bins: [], parked: [], lamps: [], stalls: [], chimneys: [], atms: [], boxes: [] },
     northAz: Math.atan2(-f.dy, f.dx),
@@ -1334,6 +1356,8 @@ function dropTile(key) {
   _byNum.delete(c.num);
   c.dispose();
 }
+/** A built tile by its key, if it is in memory. */
+export const tileOf = (key) => _built.get(key) || null;
 /** Let go of all but the `keep` most recently used tiles (called when the street view closes: the map page needs the memory). */
 export function trimTiles(keep) {
   for (const key of [..._built.keys()]) { if (_built.size <= keep) break; dropTile(key); }
@@ -1354,11 +1378,15 @@ export function classAt(mx, my) {
   const g = c.grid, i = Math.floor((mx - c.ox) / g.cell), j = Math.floor((c.oy + TILE - my) / g.cell);
   return i >= 0 && j >= 0 && i < g.w && j < g.h ? g.a[j * g.w + i] : 255;
 }
-function buildTile(city, key, t, night, lite) {
+/**
+ * One 256 m tile, in its own coordinates. Three levels of detail, all painted and coloured by the same rules:
+ * 0 close (half-metre ground with kerbs and road markings), 1 normal (1 m), 2 far (2 m, plain roofs, simple trees).
+ */
+function buildTile(city, key, t, night, lite, lod = 1) {
   const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
   const rnd = makeRng(hashStr('tile|' + key));
   const g = new THREE.Group();
-  const c = lite ? 2 : 1, grid = new Grid(0, 0, TILE / c, TILE / c, c);
+  const c = [0.5, 1, 2][lod] * (lite ? 2 : 1), n = Math.round(TILE / c), grid = new Grid(0, 0, n, n, c);
   // tile data is in decimetres from the tile's south-west corner; the tile's own coordinates run east and south from its north-west corner
   const loc = (e, from) => { const a = new Float32Array(e.length - from); for (let i = from; i + 1 < e.length; i += 2) { a[i - from] = e[i] / 10; a[i - from + 1] = TILE - e[i + 1] / 10; } return a; };
   const mt = (gx, gz) => [ox + gx, oy + TILE - gz];
@@ -1367,44 +1395,88 @@ function buildTile(city, key, t, night, lite) {
   const rails = (t.l || []).map((e) => ({ kind: e[0], flags: e[1], a: loc(e, 2) }));
   paintBase(city, grid, mt, gnd, roads);
   const v = new Vox(rnd.int(1, 9999), true), gl = new Vox(rnd.int(1, 9999), true), flats = [];
-  for (const e of t.b || []) {
+  // buildings that are something in particular (a church, a fuel station, a landmark with its own shape) and the things
+  // that stand between buildings (walls, masts, fountains) go into a mesh of their own: they are never handed over to a
+  // street's detailed area, so they look the same whether or not their street is open
+  const vx = new Vox(rnd.int(1, 9999), true), glx = new Vox(rnd.int(1, 9999), true);
+  (t.b || []).forEach((e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
     for (let i = 0; i + 1 < flat.length; i += 2) ring.push([flat[i], flat[i + 1]]);
-    if (ring.length < 3) continue;
+    if (ring.length < 3) return;
+    if (t.bp && t.bp[bi]) return; // drawn from its parts, below
     const b = { ring, h: e[0], roof: e[1], year: e[2] };
     b.o = obbOf(ring);
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
-    drawGeneric(v, gl, b, rnd, night);
+    const look = lookOf(key, bi, b), type = t.bt ? t.bt[bi] : 0;
+    if (type && TYPED.has(type)) {
+      const n0 = vx.n, g0 = glx.n;
+      let done = false;
+      try { done = drawTyped(vx, glx, b, type, { wall: look.wall, roof: look.roof }, look.rnd, night); } catch (err) { vx.n = n0; glx.n = g0; }
+      vx.setT(); glx.setT(); vx.setW(0);
+      if (done) return;
+      vx.n = n0; glx.n = g0; // it declined: a plain block after all (drawn here too, so it never changes with the focus)
+      drawGeneric(vx, glx, b, look, night, lod === 2);
+      return;
+    }
+    drawGeneric(v, gl, b, look, night, lod === 2);
+  });
+  const xr = makeRng(hashStr('extras|' + key));
+  for (const e of t.q || []) {
+    // a landmark's own shape, part by part (towers, wings, domes), from the map's 3D building parts
+    const ring = [];
+    let cx = 0, cz = 0;
+    for (let i = 6; i + 1 < e.length; i += 2) { const x = e[i] / 10, z = TILE - e[i + 1] / 10; ring.push([x, z]); cx += x; cz += z; }
+    if (ring.length < 3) continue;
+    cx /= ring.length; cz /= ring.length;
+    const n0 = vx.n, g0 = glx.n;
+    try { drawParts(vx, glx, [{ ring, h: e[0] / 10, min: e[1] / 10, roof: e[2], roofH: e[3] / 10, wall: e[4], roofCol: e[5] }], { wall: '#b9a58f', roof: '#5d646d' }, cx, cz, e[0] / 10, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
+    vx.setT(); glx.setT(); vx.setW(0);
+  }
+  for (const e of t.f || []) {
+    // free-standing things: fuel station canopies, windmills, masts, statues, fountains, shelters
+    if (lod === 2 && !(e[0] >= 2 && e[0] <= 7)) continue; // from far away only the tall ones matter
+    const n0 = vx.n, g0 = glx.n;
+    // a compass direction (degrees clockwise from north) as a turn of the builder's frame, in the tile's east/south axes
+    try { drawFeature(vx, glx, { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180 }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
+    vx.setT(); glx.setT(); vx.setW(0);
+  }
+  if (lod < 2 && t.x && t.x.length) {
+    const n0 = vx.n;
+    try { drawBarriers(vx, t.x.map((e) => ({ kind: e[0], h: e[1] / 10, a: loc(e, 2) })), xr); } catch (err) { vx.n = n0; }
+    vx.setT(); vx.setW(0);
   }
   paintTop(grid, rails, flats);
-  const G = buildGround(city, grid, { mt, gs: 8, clip: true });
+  const G = buildGround(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1) });
   g.add(...G.meshes);
   v.setT(); gl.setT();
   // buildings are lifted onto the terrain by the shader and may stick out of the tile: give them a generous bounding sphere
   const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(TILE / 2, 30, TILE / 2), 240); return m; };
   if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add(m); }
   if (!gl.empty) g.add(roomy(new THREE.Mesh(gl.geometry(), CUTT.glow)));
-  // trees: the mapped ones, plus woods and a sprinkle on grass
-  const pts = [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH);
+  vx.setB(); glx.setB();
+  if (!vx.empty) { const m = roomy(vx.mesh(CUT.solid)); m.customDepthMaterial = CUT.depth; g.add(m); }
+  if (!glx.empty) g.add(roomy(new THREE.Mesh(glx.geometry(), CUT.glow)));
+  // trees: the mapped ones, plus woods and a sprinkle on grass. Their own dice, so they stand the same at every level of detail
+  const tr = makeRng(hashStr('trees|' + key));
+  const pts = [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
   const push = (gx, gz, size) => { if (ok[grid.get(gx, gz)]) pts.push(gx, gz, size); };
-  if (t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, rnd.range(1.35, 1.95));
-  const step = lite ? 10 : 7;
-  for (let z = 2; z < TILE; z += step) for (let x = 2; x < TILE; x += step) {
-    const jx = x + rnd.range(-2.6, 2.6), jz = z + rnd.range(-2.6, 2.6), cl = grid.get(jx, jz);
-    if (cl === C.FOREST) { if (rnd() < 0.9) push(jx, jz, rnd.range(1.7, 2.6)); }
-    else if (cl === C.GRASS) { if (rnd() < 0.07) push(jx, jz, rnd.range(1.3, 2.0)); }
-    else if (cl === C.DUNE) { if (rnd() < 0.06) push(jx, jz, rnd.range(0.5, 0.9)); }
+  if (t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, tr.range(1.35, 1.95));
+  for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
+    const jx = x + tr.range(-2.6, 2.6), jz = z + tr.range(-2.6, 2.6), cl = grid.get(jx, jz), r1 = tr(), size = tr();
+    if (cl === C.FOREST) { if (r1 < 0.9) push(jx, jz, 1.7 + size * 0.9); }
+    else if (cl === C.GRASS) { if (r1 < 0.07) push(jx, jz, 1.3 + size * 0.7); }
+    else if (cl === C.DUNE) { if (r1 < 0.06) push(jx, jz, 0.5 + size * 0.4); }
   }
   const yAt = (gx, gz) => {
     const i = Math.min(grid.w - 1, Math.max(0, Math.floor(gx / c))), j = Math.min(grid.h - 1, Math.max(0, Math.floor(gz / c)));
     return city.landAt(ox + gx, oy + TILE - gz) + grid.off[j * grid.w + i];
   };
-  const trees = treeMesh(pts, rnd, lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth);
+  const trees = treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
   if (trees) g.add(trees);
   return {
-    key, num: tileNum(tx, ty), g, grid, ox, oy, roads, rails, pois: t.p || [],
+    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [],
     dispose() {
       g.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
@@ -1422,20 +1494,43 @@ function placeTile(c, f) {
   c.g.rotation.y = Math.atan2(-f.dy, f.dx);
   c.g.updateMatrixWorld(true);
 }
+let _stream = null; // the streamer of the world on screen
+/** Tiles carry a few things that differ by night (lanterns): when night falls or lifts, start afresh. */
+function syncNight(night) {
+  if (_builtNight === night) return;
+  if (_stream) for (const key of [..._stream.live.keys()]) _stream._detach(key);
+  for (const k of [..._built.keys()]) dropTile(k);
+  _builtNight = night;
+}
+/** Make sure a tile exists at `lod` or finer; a coarser one is replaced on the spot, also if it is on screen. */
+function ensureTile(city, key, t, lod, night, lite) {
+  const old = _built.get(key);
+  if (old && old.lod <= lod) return old;
+  const c = buildTile(city, key, t, night, lite, lod);
+  if (old) {
+    const on = _stream && !_stream.dead && _stream.live.get(key) === old;
+    _built.delete(key);
+    if (on) { placeTile(c, _stream.W.frame); _stream.group.add(c.g); _stream.group.remove(old.g); _stream.live.set(key, c); }
+    old.dispose();
+  }
+  _built.set(key, c); _byNum.set(c.num, c);
+  return c;
+}
+const WEIGHT = [4, 2, 0.5]; // what a tile of each level costs in memory, roughly
 
 class Streamer {
   constructor(W, city) {
     this.W = W; this.city = city; this.M = cityModel(city);
     this.group = new THREE.Group();
     W.group.add(this.group);
-    // tiles carry their lit windows and lamps: day tiles are no use at night
-    if (_builtNight !== W.night) { for (const k of [..._built.keys()]) dropTile(k); _builtNight = W.night; }
-    this.live = new Map(); this.pending = new Set(); this.ready = []; this.queued = new Set(); this.failed = new Map();
-    this.want = []; this.wantSet = new Set(); this.sig = '';
-    this.cap = W.lite ? 16 : 72; this.rmax = W.lite ? 380 : 820; this.off = 1500;
-    this.on = true; this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
-    /** Called with (tile, true) when a tile comes on screen and (tile, false) when it leaves. */
+    syncNight(W.night);
+    this.live = new Map(); this.pending = new Set(); this.ready = new Map(); this.failed = new Map();
+    this.want = []; this.lodOf = new Map(); this.sig = '';
+    this.budget = W.lite ? 44 : 230; this.rmax = W.lite ? 380 : 820; this.far = W.lite ? 900 : 2100;
+    this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
+    /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves. */
     this.onTile = null;
+    _stream = this;
   }
   _mask(key, v) {
     const [tx, ty] = key.split('_').map(Number), e = this.city.ix.extent, M = this.M, i = tx - Math.round(e[0] / TILE), j = ty - Math.round(e[1] / TILE);
@@ -1443,101 +1538,91 @@ class Streamer {
     M.mask[j * M.tw + i] = v;
     M.maskTex.needsUpdate = true;
   }
-  /** Is this tile entirely inside the detailed area? Then there is nothing for it to draw. */
-  _covered(tx, ty) {
-    const f = this.W.frame, c = this.W.clip;
-    for (const [dx, dy] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
-      const p = f.S((tx + dx) * TILE, (ty + dy) * TILE);
-      if (p[0] < c.x0 || p[0] > c.x1 || p[1] < c.z0 || p[1] > c.z1) return false;
-    }
-    return true;
-  }
   _attach(key, c) {
     this.live.set(key, c);
-    if (!c.g) return;
     _built.delete(key); _built.set(key, c); // most recently used
     placeTile(c, this.W.frame);
     this.group.add(c.g);
-    this._mask(key, this.on ? 255 : 0);
+    this._mask(key, 255);
     if (this.onTile) this.onTile(c, true);
   }
   _detach(key) {
     const c = this.live.get(key);
     this.live.delete(key);
-    if (c && c.g) { this.group.remove(c.g); this._mask(key, 0); if (this.onTile) this.onTile(c, false); }
+    if (c) { this.group.remove(c.g); this._mask(key, 0); if (this.onTile) this.onTile(c, false); }
   }
   /** x, z: what the camera looks at; dist: how far away it is; az: the side it stands on. */
   update(x, z, dist, az = 0) {
     if (this.dead) return;
-    const on = dist < this.off;
-    if (on !== this.on) {
-      // high up the plain blocks do the job: the detailed tiles step aside (and stay in memory for the way back down)
-      this.on = on;
-      this.group.visible = on;
-      for (const [k, c] of this.live) if (c.g) this._mask(k, on ? 255 : 0);
-    }
-    if (!on) return;
     const f = this.W.frame, ix = this.city.ix, now = performance.now();
-    const rad = clamp(dist * 0.9 + 320, 440, this.rmax);
+    // three rings: the finest ground under a low camera, full tiles around it, plain far tiles out to the edge of the view
+    const r1 = clamp(dist * 0.9 + 320, 440, this.rmax), r0 = dist < 700 ? 280 : -1e9, r2 = Math.max(r1, Math.min(dist * 0.62 + 260, this.far));
     // the camera looks across what it is aimed at: there is more to see beyond the target than in front of it
-    const lead = Math.min(rad * 0.3, dist * 0.8), m = f.M(x - Math.sin(az) * lead, z - Math.cos(az) * lead), cx = Math.floor(m[0] / TILE), cy = Math.floor(m[1] / TILE);
-    const sig = cx + ',' + cy + ',' + Math.round(rad / 40) + ',' + Math.round(m[0] / 64) + ',' + Math.round(m[1] / 64);
+    const lead = Math.min(r1 * 0.3, dist * 0.8), m = f.M(x - Math.sin(az) * lead, z - Math.cos(az) * lead), cx = Math.floor(m[0] / TILE), cy = Math.floor(m[1] / TILE);
+    const sig = cx + ',' + cy + ',' + Math.round(r2 / 60) + ',' + Math.round(r1 / 40) + ',' + (r0 > 0) + ',' + Math.round(m[0] / 64) + ',' + Math.round(m[1] / 64);
     if (sig !== this.sig) {
       this.sig = sig;
-      const n = Math.ceil(rad / TILE) + 1, want = [];
+      const n = Math.ceil(r2 / TILE) + 1, want = [];
+      this.lodOf.clear();
       for (let dy = -n; dy <= n; dy++) for (let dx = -n; dx <= n; dx++) {
         const tx = cx + dx, ty = cy + dy, key = `${tx}_${ty}`;
         if (!ix.set.has(key)) continue;
         const d = Math.hypot((tx + 0.5) * TILE - m[0], (ty + 0.5) * TILE - m[1]);
-        if (d > rad + TILE * 0.5 || this._covered(tx, ty)) continue;
+        if (d > r2 + TILE * 0.5) continue;
         want.push([d, key]);
+        this.lodOf.set(key, d < r0 ? 0 : d <= r1 + TILE * 0.5 ? 1 : 2);
       }
       want.sort((a, b) => a[0] - b[0]);
       this.want = want.map((q) => q[1]);
-      this.wantSet = new Set(this.want);
     }
-    // tiles built for an earlier street come straight back, a few per frame so a street swap does not stutter
+    // tiles that are already built come straight back, a few per frame so a street swap does not stutter
     let back = 0;
     for (const key of this.want) {
-      if (back >= 5) break;
+      if (back >= 6) break;
       if (!this.live.has(key) && _built.has(key)) { this._attach(key, _built.get(key)); back++; }
     }
+    // fetch what is missing, or too coarse for where the camera is now
+    const needs = (key) => { const c = _built.get(key); return !c || c.lod > this.lodOf.get(key); };
     let flying = this.pending.size;
     for (const key of this.want) {
-      if (flying >= 3) break;
-      if (this.live.has(key) || this.pending.has(key) || this.queued.has(key) || now - (this.failed.get(key) || -1e9) < 6000) continue;
+      if (flying >= 4) break;
+      if (!needs(key) || this.pending.has(key) || this.ready.has(key) || now - (this.failed.get(key) || -1e9) < 6000) continue;
       this.pending.add(key);
       flying++;
       loadTile(ix, key).then((t) => {
         this.pending.delete(key);
         if (this.dead) return;
-        if (t) { this.ready.push([key, t]); this.queued.add(key); } else this.failed.set(key, performance.now());
+        if (t) this.ready.set(key, t); else this.failed.set(key, performance.now());
       });
     }
-    // one tile per frame at most, with a breather after each, so the camera keeps moving smoothly
-    if (this.ready.length && now - this.last > 50) {
-      // nearest wanted tile first; tiles the camera has already left behind are not built at all
-      this.ready = this.ready.filter((q) => this.wantSet.has(q[0]) || (this.queued.delete(q[0]), false));
-      let bi = 0;
-      for (let i = 1; i < this.ready.length; i++) if (this.want.indexOf(this.ready[i][0]) < this.want.indexOf(this.ready[bi][0])) bi = i;
-      const [key, t] = this.ready.length ? this.ready.splice(bi, 1)[0] : [null, null];
-      if (key) this.queued.delete(key);
-      if (key && !this.live.has(key)) {
-        let chunk = _built.get(key);
-        if (!chunk) {
-          try { chunk = buildTile(this.city, key, t, this.W.night, this.W.lite); _built.set(key, chunk); _byNum.set(chunk.num, chunk); } catch (e) { console.error('tile failed', key, e); chunk = { g: null, dispose() {} }; }
-        }
-        this._attach(key, chunk);
-        this.built++;
+    // build: nearest first, a few milliseconds per frame, with a breather between frames
+    if (this.ready.size && now - this.last > 30) {
+      let did = false;
+      for (const key of this.want) {
+        const t = this.ready.get(key);
+        if (!t) continue;
+        this.ready.delete(key);
+        if (!needs(key)) continue;
+        const was = _built.get(key);
+        try {
+          const c = ensureTile(this.city, key, t, this.lodOf.get(key), this.W.night, this.W.lite);
+          if (!was) this._attach(key, c);
+          this.built++;
+        } catch (e) { console.error('tile failed', key, e); this.failed.set(key, performance.now() + 1e7); }
+        did = true;
+        if (performance.now() - now > 7) break;
       }
+      if (!did) this.ready.clear(); // none of it is wanted any more
       this.last = performance.now();
       this.ms = this.last - now;
     }
-    if (_built.size > this.cap) {
-      // too many in memory: let go of the farthest one that is not wanted right now
+    // too much in memory: let go of the farthest tiles that are not wanted right now
+    let load = 0;
+    for (const c of _built.values()) load += WEIGHT[c.lod];
+    if (load > this.budget) {
       let worst = null, wd = -1;
       for (const key of _built.keys()) {
-        if (this.wantSet.has(key)) continue;
+        if (this.lodOf.has(key)) continue;
         const [tx, ty] = key.split('_').map(Number), d = Math.hypot((tx + 0.5) * TILE - m[0], (ty + 0.5) * TILE - m[1]);
         if (d > wd) { wd = d; worst = key; }
       }
@@ -1548,7 +1633,7 @@ class Streamer {
   dispose() {
     this.dead = true;
     for (const key of [...this.live.keys()]) this._detach(key);
-    this.ready = [];
-    this.queued.clear();
+    this.ready.clear();
+    if (_stream === this) _stream = null;
   }
 }

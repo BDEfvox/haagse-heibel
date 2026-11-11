@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from './cast.js';
 import { makeCar, makeBike, makeScooter, makeHeli, makeBoat } from './props.js';
+import { SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
 
 const X0 = -24, X1 = 24, EX0 = X0 + 0.5, EX1 = X1 - 0.5;
 const E = Math.PI / 2, W = -Math.PI / 2; // headings: +x, −x
@@ -101,7 +102,8 @@ function takePed(ctx, xr = 13, filter = null, cx = 0) {
     const q = ctx.amb.peds.find((a) => !a.busy && a.alive && Math.abs(a.g.position.x + off - cx) < xr && (!filter || filter(a)));
     if (q) { rehome(q, ctx); p = q; }
   }
-  if (p) p.busy = true;
+  if (!p) p = fromCrowd(ctx, cx, xr, ok);
+  if (p) { p.busy = true; p.keep = true; }
   return p || null;
 }
 
@@ -323,13 +325,35 @@ function rehome(a, to) {
 }
 /** Where the pavement is for this walker at x (their side of the street, their place across its width). */
 const paveZ = (ctx, a, x) => (ctx.L.walkAt ? ctx.L.walkAt(a.side, a.wf ?? 0.5, ctx.sc + x) : a.side * (ctx.L.hw + ctx.L.bw + 1.2));
+/**
+ * Take a passer-by out of the city's crowd near x (in this spot's street space) who passes the test. The crowd
+ * figure becomes a full actor on the spot, looking the same; those who fail the test go straight back.
+ */
+function fromCrowd(ctx, cx, xr, ok) {
+  if (!ctx.crowdNear) return null;
+  let tries = 0;
+  for (const ag of ctx.crowdNear(cx, xr)) {
+    if (tries++ >= 5) break;
+    const p = ctx.promote(ag);
+    if (!p) continue;
+    ctx.peds.push(p);
+    if (!ok || ok(p)) return p;
+    unped(ctx, p);
+    if (!ctx.demote(p)) ctx.despawn(p);
+  }
+  return null;
+}
+/** A new passer-by walking in from the edge of the spot (used when nobody suitable is around). */
 function spawnPed(ctx, atX = null, opts = {}) {
   const { L, rnd } = ctx, ex0 = L.x0 + 0.5, ex1 = L.x1 - 0.5;
   const dir = opts.dir ?? rnd.sign();
-  const r = rnd();
-  const a = makePerson(rnd, { kind: opts.kind || (r < 0.12 ? 'kid' : r < 0.22 ? 'granny' : 'civ') });
+  const kind = opts.kind || (rnd() < 0.12 ? 'kid' : 'civ'), ix = (l) => Math.floor(rnd() * l.length);
+  // dressed from the crowd's wardrobe, so they can melt into the crowd afterwards looking the same
+  const look = { shirt: ix(SHIRTS), pants: ix(PANTS), skin: ix(SKINS), hair: ix(HAIRS), kid: kind === 'kid' };
+  const a = makePerson(rnd, { kind, shirt: SHIRTS[look.shirt], pants: PANTS[look.pants], skin: SKINS[look.skin], hair: HAIRS[look.hair], hat: 'none' });
+  a.look = look; a.keep = !!opts.keep;
   a.dir = dir; a.exitX = dir > 0 ? ex1 : ex0;
-  a.walkSpeed = a.kind === 'granny' ? rnd.range(1.0, 1.3) : rnd.range(1.35, 2.0); // a stroll, at life size
+  a.walkSpeed = rnd.range(1.35, 2.0); // a stroll, at life size
   const x = atX ?? (dir > 0 ? ex0 : ex1);
   if (opts.z != null) { a.lineZ = opts.z + rnd.range(-0.15, 0.15); a.fixedZ = true; a.side = a.lineZ >= 0 ? 1 : -1; }
   else { a.side = rnd.sign(); a.wf = rnd.range(0.15, 0.85); a.lineZ = paveZ(ctx, a, x); }
@@ -347,81 +371,36 @@ function unped(ctx, a) {
   const list = (a.ctx || ctx).peds, i = list.indexOf(a);
   if (i >= 0) list.splice(i, 1);
 }
-/** Is something driving or riding towards the spot at arc length s? (People look before they cross. Some of them.) */
-function traffic(ctx, s, reach) {
-  const hb = ctx.L.hw + ctx.L.bw;
-  for (const a of ctx.all()) {
-    if (!a.vehicle || !a.alive || !a.vNow) continue;
-    const q = a.g.position, ds = a.ctx.sc + q.x - s;
-    if (Math.abs(q.z) < hb && Math.abs(ds) < reach && ds * a.vNow < 0) return true;
-  }
-  return false;
-}
-/** Is a vehicle standing or passing right where a walker is about to step (s along, z across)? Nobody walks through a car. */
-function carAt(ctx, s, z) {
-  for (const a of ctx.all()) {
-    if (!a.vehicle || !a.alive || !a.ctx || a.air) continue;
-    const q = a.g.position;
-    if (Math.abs(a.ctx.sc + q.x - s) < (a.len || 1.8) / 2 + 0.45 && Math.abs(q.z - z) < (a.wid || 0.6) / 2 + 0.4) return true;
-  }
-  return false;
-}
-/** How often a walker steps into the road without looking, per look (twice a second): rougher streets, more of it. */
-const jayRate = (ctx) => 0.0016 * (0.5 + 0.3 * ctx.level) * clamp(ctx.mix?.factor?.carChase ?? 1, 0.6, 2.2);
 /**
- * Walk along the pavement to the end of the street. The line follows the real pavement, crosses side streets,
- * and now and then the walker crosses over on purpose: at a zebra after looking, or anywhere without.
+ * A passer-by the gags are done with (or have not picked yet) walks on along the pavement. Unless a gag has asked
+ * for them to be kept, they join the city's crowd again as soon as there is pavement under their feet.
  */
 function* stroll(a, keepSide = false) {
   if (!keepSide) { a.side = a.g.position.z >= 0 ? 1 : -1; a.wf ??= 0.5; }
-  a.cross = null;
-  let look = 0.5 + Math.random();
+  let tryT = 0.4;
   while (!a.busy && a.alive) {
-    const c = a.ctx, L = c.L, p = a.g.position, dx = a.exitX - p.x;
-    if (Math.abs(dx) < 0.12) { unped(c, a); yield* popOut(c, a); return; }
+    const c = a.ctx, p = a.g.position, dx = a.exitX - p.x;
+    if (Math.abs(dx) < 0.12) { unped(c, a); if (!c.demote || !c.demote(a)) yield* popOut(c, a); return; }
     const dt = yield;
     if (a.busy || !a.alive) return;
-    const sp = a.walkSpeed, s = c.sc + p.x, fwd = Math.sign(dx);
-    let lat = sp * 0.7, along = 1;
-    if (a.cross) {
-      const X = a.cross;
-      if (X.wait > 0) {
-        // at the kerb, waiting for a gap
-        X.wait -= dt;
-        if (X.wait > 0 && traffic(c, s, 15)) { a.heading = Math.atan2(0, -a.side); continue; }
-        X.wait = 0;
-      }
-      a.lineZ = c.L.walkAt ? c.L.walkAt(X.to, a.wf, s) : -a.lineZ;
-      lat = sp; along = 0.12;
-      // a car in the way (queueing, or just passing): let it go first
-      if (carAt(c, s, p.z + Math.sign(a.lineZ - p.z) * 0.7) && !carAt(c, s, p.z)) { a.heading = Math.atan2(0, Math.sign(a.lineZ - p.z)); continue; }
-      if (Math.abs(a.lineZ - p.z) < 0.2) { a.side = X.to; a.cross = null; }
-    } else {
-      if (!a.fixedZ) a.lineZ = paveZ(c, a, p.x);
-      if ((look -= dt) <= 0) {
-        look = 0.5;
-        if (L.kind !== 'ped' && !a.fixedZ && L.walkAt && s > L.sA + 5 && s < L.sB - 5) {
-          const zebra = L.zebras && L.zebras.some((z) => Math.abs(z - s) < 1.3);
-          if (zebra ? Math.random() < 0.25 : Math.random() < jayRate(c)) a.cross = { to: -a.side, wait: zebra || Math.random() < 0.35 ? 3.5 : 0 };
-        }
-      }
-    }
+    if (!a.keep && (tryT -= dt) <= 0) { tryT = 0.5; if (c.demote && c.demote(a)) { unped(c, a); return; } }
+    const sp = a.walkSpeed, fwd = Math.sign(dx);
+    if (!a.fixedZ) a.lineZ = paveZ(c, a, p.x);
     const dz = a.lineZ - p.z;
-    p.x += fwd * Math.min(Math.abs(dx), sp * dt * along);
-    // sideways only if that does not mean walking into the flank of a car or a bike
-    if (Math.abs(dz) < 0.3 || !carAt(c, s, p.z + Math.sign(dz) * 0.5) || carAt(c, s, p.z)) p.z += clamp(dz, -lat * dt, lat * dt);
+    p.x += fwd * Math.min(Math.abs(dx), sp * dt);
+    p.z += clamp(dz, -sp * 0.7 * dt, sp * 0.7 * dt);
     p.y = 0;
-    a.heading = Math.atan2(fwd * along, clamp(dz, -1, 1) * (a.cross ? 1 : 0.6));
+    a.heading = Math.atan2(fwd, clamp(dz, -1, 1) * 0.6);
     a.moving = sp;
   }
 }
 function release(ctx, a) {
   if (!a.alive) return;
-  a.busy = false; a.arms = 'swing'; a.gait = 'walk';
+  a.busy = false; a.keep = false; a.arms = 'swing'; a.gait = 'walk';
   if (ctx.amb) rehome(a, ctx.amb);
   ctx.run(stroll(a));
 }
-/** Borrow a pedestrian who still has some street ahead of them (spawns one if needed). */
+/** Borrow a pedestrian who still has some street ahead of them (one walks in if nobody is around). */
 function* needPed(ctx, xr = 13, filter = null) {
   const ok = (p) => !p.busy && p.alive && Math.abs(p.g.position.x) < xr && Math.abs(p.exitX - p.g.position.x) > 8 && (!filter || filter(p));
   let p = ctx.peds.find(ok);
@@ -430,12 +409,14 @@ function* needPed(ctx, xr = 13, filter = null) {
     const q = ctx.amb.peds.find((a) => !a.busy && a.alive && Math.abs(a.g.position.x + off) < xr && (!filter || filter(a)));
     if (q) { rehome(q, ctx); p = q; }
   }
+  if (!p) p = fromCrowd(ctx, 0, xr, ok);
   if (!p) {
-    const np = spawnPed(ctx, null, { kind: 'civ' });
+    const np = spawnPed(ctx, null, { kind: 'civ', keep: true });
     yield* waitUntil(() => ok(np) || !np.alive, 9);
     p = np.alive && !np.busy ? np : ctx.peds.find(ok);
+    if (!p) np.keep = false;
   }
-  if (p) p.busy = true;
+  if (p) { p.busy = true; p.keep = true; }
   return p || null;
 }
 function panic(ctx, x, r = 16) {
@@ -443,6 +424,8 @@ function panic(ctx, x, r = 16) {
     const off = ctx.amb.sc - ctx.sc;
     for (const a of [...ctx.amb.peds]) if (!a.busy && a.alive && Math.abs(a.g.position.x + off - x) <= r) rehome(a, ctx);
   }
+  // everyone in the crowd nearby runs for it too
+  if (ctx.crowdNear) for (const ag of ctx.crowdNear(x, r).slice(0, 12)) { const p = ctx.promote(ag); if (p) ctx.peds.push(p); }
   for (const a of [...ctx.peds]) {
     if (a.busy || !a.alive || Math.abs(a.g.position.x - x) > r) continue;
     a.busy = true;
@@ -451,204 +434,12 @@ function panic(ctx, x, r = 16) {
       a.arms = 'up';
       if (Math.random() < 0.4) say(ctx, a, ctx.rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
       yield* go(ctx, a, a.g.position.x < x ? EX0 : EX1, a.lineZ, 7.5);
-      yield* popOut(ctx, a);
+      a.arms = 'swing';
+      if (!ctx.demote || !ctx.demote(a)) yield* popOut(ctx, a);
     })());
   }
 }
 
-function* pedSpawner(ctx) {
-  const { L, rnd, st } = ctx, len = L.x1 - L.x0;
-  const busy = clamp(((st.shops || 0) + (st.food || 0) + (st.bars || 0)) / Math.max(1, (st.len || 200) / 100) / 4, 0, 1);
-  const cap = Math.min(64, Math.round(((5 + busy * 9 + (L.kind === 'ped' ? 4 : 0)) * len) / 48));
-  for (let i = 0; i < Math.round(cap * 0.7); i++) spawnPed(ctx, rnd.range(L.x0 + 3, L.x1 - 3));
-  for (;;) {
-    yield* wait(Math.max(0.3, (rnd.range(1.2, 3.6) * (1.4 - busy * 0.8) * 48) / len));
-    if (ctx.peds.length < cap) spawnPed(ctx);
-  }
-}
-
-// ---- traffic on the open street looks where it is going
-const isWalker = (a) => !!a.head && !a.vehicle;
-/**
- * The nearest thing in a vehicle's way: { gap (metres of clear road in front of its nose), v (how fast that
- * thing moves the same way), a (who) }, or null. Everyone on stage counts, and so do passing trams.
- */
-function inTheWay(ctx, me, dir, half, wid, reach) {
-  const p = me.g.position, s0 = ctx.sc + p.x, z0 = p.z, far = reach + half + 8;
-  let best = null;
-  for (const a of ctx.all()) {
-    if (a === me || !a.alive || a.air || !a.ctx) continue;
-    const q = a.g.position;
-    if (q.y > 1.6) continue;
-    const fw = (a.ctx.sc + q.x - s0) * dir;
-    if (fw <= 0 || fw > far) continue;
-    const r = a.vehicle ? (a.wid || 0.7) / 2 : 0.3, ext = a.vehicle ? (a.len || 1.8) / 2 : 0.3;
-    if (Math.abs(q.z - z0) > wid / 2 + r + 0.12) continue;
-    const gap = fw - half - ext;
-    if (!best || gap < best.gap) best = { gap, v: (a.vNow || 0) * dir, a };
-  }
-  for (const l of ctx.trams()) {
-    const q = l.a.g.position, pr = ctx.toStreet(q.x, q.z), fw = (pr.s - s0) * dir;
-    if (fw <= 0 || fw > far + 14 || Math.abs(pr.v - z0) > wid / 2 + 1.5) continue;
-    const t = ctx.tangent(pr.s), al = Math.abs(Math.sin(l.a.heading) * t.tx + Math.cos(l.a.heading) * t.tz); // along the street, or crossing it?
-    const gap = fw - half - (2 + ((l.a.len || 27) / 2 - 2) * al);
-    if (!best || gap < best.gap) best = { gap, v: al > 0.7 ? l.speed * l.dir * dir * 0.5 : 0, a: l.a };
-  }
-  return best;
-}
-/** Knocked over by a car or a bike: up in the air, stars, a shaken fist, and on they walk. Nobody is hurt here. */
-function bonk(ctx, a, veh, v, dir) {
-  const c = a.ctx, bike = veh.type === 'bike' || veh.type === 'scooter';
-  a.busy = true;
-  unped(c, a);
-  c.sfx('bonk');
-  say(c, a, bike ? 'BOINK!' : 'BONK!', { size: 20, color: '#ffd166' });
-  c.shake(bike ? 0.15 : 0.3);
-  c.incident(1);
-  c.news(c.rnd.pick(bike
-    ? [`Cyclist and jaywalker meet on ${c.st.name}. Both blame the other`, `Bell rung too late on ${c.st.name}. Dignity lightly dented`]
-    : [`Jaywalker bonked on ${c.st.name}. Walks it off`, `Driver on ${c.st.name}: "came out of nowhere". Pedestrian: "came out of a shop"`, `Bumper meets trousers on ${c.st.name}. Trousers lodge complaint`]));
-  c.run((function* () {
-    const p = a.g.position, x0 = p.x, z0 = p.z, fly = clamp(v * (bike ? 0.25 : 0.45), 0.8, 3.2) * dir, side = (z0 >= veh.g.position.z ? 1 : -1) * (bike ? 0.9 : 1.3), up = bike ? 0.9 : 1.7;
-    a.arms = 'up'; a.air = true; a.cross = null;
-    a.g.rotation.order = 'YXZ';
-    yield* tween(bike ? 0.5 : 0.75, (t) => { p.x = x0 + fly * t; p.z = z0 + side * t; p.y = Math.sin(t * Math.PI) * up; a.g.rotation.x = t * Math.PI * 2; });
-    a.g.rotation.x = 0; p.y = 0; a.air = false;
-    if (!a.alive) return;
-    a.pose = 'sit'; a.arms = 'swing';
-    c.sfx('thud');
-    c.fx.puff(p.x, 0.2, p.z);
-    say(c, a, '★ ★ ★', { size: 13, color: '#ffe066', dur: 1.5 });
-    yield* wait(bike ? 0.9 : 1.4);
-    a.pose = null;
-    yield* hop(a, 0.35, 0.25);
-    a.arms = 'fist';
-    c.sfx('hey');
-    say(c, a, c.rnd.pick(['HÉ!', 'KIJK UIT!', 'ASO!', 'MIJN BROEK!', 'ZAG JE ME NIET?!']), { size: 13, color: '#ff6b6b' });
-    yield* wait(0.9);
-    if (!a.alive) return;
-    // back on their feet and off the road
-    a.arms = 'swing'; a.busy = false;
-    if (!c.peds.includes(a)) c.peds.push(a);
-    yield* stroll(a);
-  })());
-}
-/**
- * Drive (or ride) along the lane at offset z to toX, braking for whatever is in the way. Returns false if it
- * got stuck for good. A walker who steps out right under the wheels may get bonked.
- */
-function* cruise(ctx, veh, toX, z, speed, bike = false) {
-  const dir = Math.sign(toX - veh.g.position.x) || 1, half = (veh.len || (bike ? 1.86 : 4.4)) / 2, wid = veh.wid || (bike ? 0.6 : 1.85);
-  const brake = bike ? 7 : 9, keep = bike ? 0.8 : 1.5;
-  let v = speed, stuck = 0, honk = 0;
-  for (;;) {
-    const p = veh.g.position;
-    if ((toX - p.x) * dir <= 0.05) { veh.vNow = 0; return true; }
-    const dt = yield;
-    const ob = inTheWay(ctx, veh, dir, half, wid, (v * v) / (2 * brake) + keep + 1);
-    let target = speed;
-    honk -= dt;
-    if (ob) {
-      const room = ob.gap - keep;
-      target = room <= 0 ? 0 : Math.min(speed, Math.max(0, ob.v) + room * 1.5);
-      const walker = isWalker(ob.a);
-      if (walker && target < v - 1 && v > 2.5 && honk <= 0) {
-        honk = 4;
-        ctx.sfx(bike ? 'bell' : 'honk');
-        if (Math.random() < 0.5) say(ctx, veh, bike ? 'TRING!' : 'TOET!', { size: 13, color: '#fff', off: bike ? 1.9 : 2.1 });
-      }
-      if (ob.gap < 0.3) {
-        // no room left. An unwary walker gets bonked now and then; otherwise this stops dead, tyres squealing
-        const amb = ctx.amb || ctx;
-        if (walker && v > 2.4 && !ob.a.busy && ob.a.walkSpeed && ob.a.alive && (amb._bonkAt ?? -99) < ctx.now() - 22) { amb._bonkAt = ctx.now(); bonk(ctx, ob.a, veh, v, dir); v *= 0.25; }
-        else { if (v > 3 && !bike) ctx.sfx('skid'); v = 0; }
-      }
-    }
-    v += clamp(target - v, -brake * 1.4 * dt, (bike ? 2.2 : 3) * dt);
-    if (v < 0) v = 0;
-    if (v < 0.15 && target < 0.15) { stuck += dt; if (stuck > 8) { veh.vNow = 0; return false; } } else stuck = 0;
-    p.x += dir * v * dt;
-    p.z += clamp(z - p.z, -dt, dt);
-    if (!veh.air) p.y = 0;
-    veh.heading = dir > 0 ? E : W;
-    veh.moving = v;
-    veh.vNow = v * dir;
-  }
-}
-/** Is there room to appear at (x, z)? Nothing pops up on top of a queue. */
-function roomAt(ctx, x, z, r) {
-  const s = ctx.sc + x;
-  for (const a of ctx.all()) if (a.alive && a.ctx && Math.abs(a.ctx.sc + a.g.position.x - s) < r && Math.abs(a.g.position.z - z) < 1.6) return false;
-  return true;
-}
-/** A passing car. It vanishes in a puff when it reaches a stretch a gag has closed off. */
-function* drive(ctx, car, z, dir, speed) {
-  const { L } = ctx, half = (car.len || 4.4) / 2 + 0.6, x0 = dir > 0 ? L.x0 + half : L.x1 - half;
-  if (!roomAt(ctx, x0, z, half + 4)) return;
-  ctx.spawn(car, x0, z, 0);
-  car.face(dir > 0 ? E : W);
-  car.g.scale.setScalar(0.001);
-  ctx.road.vehicles.add(car);
-  yield* popIn(ctx, car, 0.35);
-  const inWin = new Set();
-  const watch = (function* () {
-    for (;;) {
-      yield;
-      const s = ctx.sc + car.g.position.x;
-      for (const c of ctx.locales || []) {
-        const near = Math.abs(s - c.sc) < 28;
-        if (near && c.road.closed > 0) return;
-        if (near) { c.road.vehicles.add(car); inWin.add(c); }
-        else if (inWin.has(c)) { c.road.vehicles.delete(car); inWin.delete(c); }
-      }
-    }
-  })();
-  yield* race(cruise(ctx, car, dir > 0 ? L.x1 - half : L.x0 + half, z, speed), watch);
-  for (const c of inWin) c.road.vehicles.delete(car);
-  ctx.road.vehicles.delete(car);
-  car.vNow = 0;
-  yield* popOut(ctx, car);
-}
-function* carSpawner(ctx) {
-  const { L, rnd } = ctx;
-  if (L.kind === 'ped') return;
-  const major = L.kind === 'major', len = L.x1 - L.x0;
-  const oneWay = rnd.sign(), maxMinor = Math.floor(len / 170) + 1;
-  yield* wait(rnd.range(0.2, 1.2));
-  for (;;) {
-    if (major) {
-      const dir = rnd.sign();
-      // a long road must not fill up with hundreds of cars
-      if (ctx.road.vehicles.size < Math.min(26, Math.ceil(len / 70))) ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, rnd.range(7, 8.5)));
-    } else if (ctx.road.vehicles.size < maxMinor) {
-      ctx.run(drive(ctx, makeCar(rnd, 'car', L.night), L.laneF, oneWay, 5));
-    }
-    yield* wait(major ? rnd.range(2.2, 5.5) : rnd.range(7, 14));
-  }
-}
-function* bikeSpawner(ctx) {
-  const { L, rnd } = ctx, len = L.x1 - L.x0, cap = Math.min(22, Math.ceil(len / 45));
-  let riding = 0;
-  yield* wait(rnd.range(0.2, 2));
-  for (;;) {
-    const dir = rnd.sign(), z = dir > 0 ? L.bikeF : L.bikeB, x0 = dir > 0 ? L.x0 + 1.1 : L.x1 - 1.1;
-    if (riding < cap && roomAt(ctx, x0, z, 3)) {
-      const bike = makeBike(rnd, makePerson(rnd, { scale: 1.2 }));
-      riding++;
-      ctx.run((function* () {
-        try {
-          yield* enter(ctx, bike, x0, z, 0);
-          bike.face(dir > 0 ? E : W);
-          if (rnd.chance(0.12)) ctx.sfx('bell');
-          yield* cruise(ctx, bike, dir > 0 ? L.x1 - 1.1 : L.x0 + 1.1, z, rnd.range(4.4, 6.2), true);
-          bike.vNow = 0;
-          yield* popOut(ctx, bike);
-        } finally { riding--; }
-      })());
-    }
-    yield* wait(rnd.range(2.5, 7) * clamp(140 / len, 0.45, 1));
-  }
-}
 function* boatSpawner(ctx) {
   const { L, rnd } = ctx;
   if (!L.canal) return;
@@ -3301,17 +3092,17 @@ function* director(ctx, delay = 2.4, signature = true) {
 }
 
 /** Street-long background life. */
+/** The road at one spot, as the gags see it: they close it, and wait until the city's traffic has cleared it. */
+const roadOf = (ctx) => ({ closed: 0, vehicles: { get size() { return ctx.trafficNear ? ctx.trafficNear() : 0; }, add() {}, delete() {}, has: () => false } });
+/** The street as a whole. Its walkers, bikes, cars and trams belong to the city's crowd (crowd.js), not to the street. */
 export function startAmbient(ctx) {
   ctx.peds = [];
-  ctx.road = { closed: 0, vehicles: new Set() };
-  ctx.run(pedSpawner(ctx));
-  ctx.run(carSpawner(ctx));
-  ctx.run(bikeSpawner(ctx));
+  ctx.road = roadOf(ctx);
 }
 /** One spot on the street where gags play. `only` forces a single gag (debug). */
 export function startLocale(ctx, { only = null, delay = 2.4, signature = true, withHeli = false } = {}) {
   ctx.peds = [];
-  ctx.road = { closed: 0, vehicles: new Set() };
+  ctx.road = roadOf(ctx);
   ctx.wanted = null;
   ctx.run(boatSpawner(ctx));
   ctx.run(gullSpawner(ctx));

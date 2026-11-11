@@ -29,7 +29,7 @@ export function house(v, gl, o) {
   const gh = 2.6, fh = 2.2, H = gh + (floors - 1) * fh, zc = z - depth / 2;
   const wall = o.wall || rnd.pick(BRICK);
   const roof = o.roof || rnd.pick(['flat', 'flat', 'pitch', 'step', 'bell']);
-  const roofCol = rnd.pick(ROOFS);
+  const roofCol = o.roofCol || rnd.pick(ROOFS);
   const out = { x, w, top: y0 + H, sign: null };
 
   v.box(x, y0, zc, w - 0.08, H, depth, wall, 0.03);
