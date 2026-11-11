@@ -65,23 +65,26 @@ export function loadIndex() {
     return ix;
   }).catch((e) => { _index = null; throw e; }));
 }
-async function pixels(url) {
+/** The pixels of an image. `div` reads every div-th pixel only (phones cannot hold the full height map in a canvas). */
+async function pixels(url, div = 1) {
   const img = new Image();
   img.src = url;
   await img.decode();
   const c = document.createElement('canvas');
-  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.width = Math.round(img.naturalWidth / div); c.height = Math.round(img.naturalHeight / div);
   const g = c.getContext('2d', { willReadFrequently: true });
-  g.drawImage(img, 0, 0);
+  g.imageSmoothingEnabled = false; // the values are codes, not colours: never blend neighbours
+  g.drawImage(img, 0, 0, c.width, c.height);
   return g.getImageData(0, 0, c.width, c.height);
 }
+const SMALL = typeof matchMedia === 'function' && (matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) < 560);
 export function loadCity() {
   return (_city ||= (async () => {
     const ix = await loadIndex();
     const [ground, height, terr] = await Promise.all([pixels(ROOT + ix.ground.file), pixels(ROOT + ix.height.file),
-      ix.terrain ? pixels(ROOT + ix.terrain.file).catch(() => null) : null]);
+      ix.terrain ? pixels(ROOT + ix.terrain.file, SMALL ? 2 : 1).catch(() => null) : null]);
     const city = { ix, ground, height };
-    setupTerrain(city, terr);
+    setupTerrain(city, terr, SMALL ? 2 : 1);
     return city;
   })().catch((e) => { _city = null; throw e; }));
 }
@@ -92,9 +95,9 @@ export function loadCity() {
 export const EX = 1.4;
 const NATURAL = new Uint8Array(256);
 for (const c of [2, 3, 4, 5, 6, 7]) NATURAL[c] = 1;
-function setupTerrain(city, img) {
+function setupTerrain(city, img, div = 1) {
   const ix = city.ix, [ex0, , , ey1] = ix.extent, T = ix.terrain;
-  const on = !!(img && T), cell = on ? T.cell : 8;
+  const on = !!(img && T), cell = on ? T.cell * div : 8;
   const w = on ? img.width : 1, h = on ? img.height : 1, v = new Uint8Array(w * h), lut = new Float32Array(256);
   if (on) {
     for (let i = 0, n = w * h; i < n; i++) v[i] = img.data[i * 4];
@@ -115,12 +118,13 @@ function setupTerrain(city, img) {
   // It depends on the position alone, so separately built pieces of the world meet without a step.
   const G = city.ground, gw = G.width, gh = G.height, gd = G.data, gc = ix.ground.cell, BL = 64, blocks = new Map();
   const cls = (i, j) => gd[(cl(Math.round(((j + 0.5) * cell) / gc - 0.5), gh) * gw + cl(Math.round(((i + 0.5) * cell) / gc - 0.5), gw)) * 4];
+  const rr = Math.max(1, Math.round(24 / cell)), rn = Math.max(1, Math.round(8 / cell));
   const node = (i, j) => {
     if (cls(i, j) === 10) return -0.12; // the sea
     let m = Infinity;
-    if (on) { for (let dj = -3; dj <= 3; dj++) for (let di = -3; di <= 3; di++) { const q = landPx(i + di, j + dj); if (q < m) m = q; } } else m = 0;
+    if (on) { for (let dj = -rr; dj <= rr; dj++) for (let di = -rr; di <= rr; di++) { const q = landPx(i + di, j + dj); if (q < m) m = q; } } else m = 0;
     let nat = 0, urb = 0;
-    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const c = cls(i + di, j + dj); if (c === 1 || c === 10) continue; if (NATURAL[c]) nat++; else urb++; }
+    for (let dj = -rn; dj <= rn; dj += rn) for (let di = -rn; di <= rn; di += rn) { const c = cls(i + di, j + dj); if (c === 1 || c === 10) continue; if (NATURAL[c]) nat++; else urb++; }
     return m - (1.55 - 0.95 * (nat + urb ? nat / (nat + urb) : 0.5));
   };
   const waterPx = (i, j) => {
@@ -232,6 +236,8 @@ export const U = {
   uClip: { value: new THREE.Vector4(1, 1, -1, -1) },
   // far-away building blocks: fine ones within uNear of the camera target, coarse ones beyond, none past uFar
   uNear: { value: 1300 }, uFar: { value: 1e9 }, uMask: { value: null }, uExt: { value: new THREE.Vector2() },
+  // painted windows: lit at night
+  uNight: { value: 0 },
 };
 const TERR_GLSL = `
 uniform sampler2D uTerr; uniform vec2 uTS; uniform vec2 uTO; uniform vec2 uTX; uniform vec2 uTZ; uniform vec4 uEnc; uniform vec2 uEnc2;
@@ -244,16 +250,22 @@ float terrAt(vec2 s) {
   ivec2 i = ivec2(f);
   return mix(mix(terrV(i), terrV(i + ivec2(1, 0)), t.x), mix(terrV(i + ivec2(0, 1)), terrV(i + ivec2(1, 1)), t.x), t.y);
 }`;
-function cutPatch(mat, tint = true) {
+/**
+ * `tint`: flattened buildings turn grey. `tile`: the mesh belongs to a streamed tile, whose geometry is in the
+ * tile's own coordinates and which steps aside wherever the detailed area around the street draws the same thing.
+ */
+function cutPatch(mat, tint = true, tile = false) {
+  const windows = tint && mat.isMeshLambertMaterial;
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nvarying float vCut;' + TERR_GLSL)
+      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + TERR_GLSL)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        vCut = 0.0;
+        vCut = 0.0; vWU = aW; vWY = position.y; vWF = vec3(abs(aW), aB.z - 2.0, fract(aB.x * 0.137 + aB.y * 0.291));
         if (aB.z > 0.0) {
+          vec2 bXZ = (modelMatrix * vec4(aB.x, 0.0, aB.y, 1.0)).xz; // where its owner stands, in scene coords
           float cutR = max(aB.w, 0.0);
-          vec2 cutD = aB.xy - uFocus.xz;
+          vec2 cutD = bXZ - uFocus.xz;
           float cutT = dot(cutD, uCamDir);
           float cutL = length(cutD - uCamDir * cutT);
           float cutH = max(0.3, (cutT - cutR - 7.0) * uTan);
@@ -267,26 +279,48 @@ function cutPatch(mat, tint = true) {
             // a building either clears the sight line to the street or lies down flat: half-squashed fronts look wrong
             float cutS = mix(1.0, mix(0.22 / aB.z, 1.0, cutK), cutW);
             transformed.y *= cutS * uGrow;
-            transformed.y += terrAt(aB.xy); // it stands on the ground under its centre
+            transformed.y += terrAt(bXZ) + 0.1; // it stands on the ground under its centre
             vCut = 1.0 - cutS;
           }
+          ${tile ? 'if (bXZ.x > uClip.x && bXZ.y > uClip.y && bXZ.x < uClip.z && bXZ.y < uClip.w) transformed = vec3(0.0);' : ''}
         }`);
     if (tint) sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vCut;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\n\tdiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6, 0.62, 0.58), smoothstep(0.2, 0.85, vCut) * 0.93);');
+      .replace('#include <common>', '#include <common>\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;\nuniform float uNight;\nfloat wHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float wGlow = 0.0; vec3 wLit = vec3(0.0);
+        ${windows ? `if (vWF.x > 999.0) {
+          // windows painted on a plain wall: evenly spread along it, one row per floor
+          float wMode = floor(vWF.x / 1000.0), wLen = vWF.x - wMode * 1000.0, wTop = vWF.y;
+          float wT = clamp((vWU / vWF.x + 1.0) * 0.5, 0.0, 1.0);
+          float wN = wMode > 1.5 ? 1.0 : max(1.0, floor(wLen / 3.1)), wPitch = wMode > 1.5 ? 3.0 : 2.8;
+          float wX = wT * wN, wFy = (vWY - (wMode > 1.5 ? 3.0 : 0.95)) / wPitch;
+          vec2 wC = vec2(fract(wX), fract(wFy)), wE = vec2(fwidth(wX), fwidth(wFy)) + 1e-4;
+          vec2 wLo = wMode > 1.5 ? vec2(0.4 / wLen, 0.08) : vec2(0.27, 0.0), wHi = wMode > 1.5 ? vec2(1.0 - 0.4 / wLen, 0.52) : vec2(0.73, 0.47);
+          vec2 wIn = smoothstep(wLo - wE, wLo + wE, wC) * (1.0 - smoothstep(wHi - wE, wHi + wE, wC));
+          float wOn = wIn.x * wIn.y * step(0.0, wFy) * step(vWY + (wMode > 1.5 ? 1.4 : 1.5), wTop) * step(abs(vNormal.y), 0.5) * (1.0 - smoothstep(0.05, 0.3, vCut));
+          wOn *= 1.0 - smoothstep(0.35, 0.9, max(wE.x, wE.y)); // too far away to tell windows apart: let them melt into the wall
+          float wR = wHash(vec3(floor(wX) + wLen, floor(wFy), vWF.z * 91.0));
+          vec3 wGlass = mix(vec3(0.27, 0.57, 0.8), vec3(0.016, 0.03, 0.07), uNight);
+          wGlass *= 0.86 + 0.28 * wR;
+          diffuseColor.rgb = mix(diffuseColor.rgb, wGlass, wOn);
+          wGlow = wOn * uNight * step(wMode > 1.5 ? 0.6 : 0.7, wR);
+          wLit = mix(vec3(1.0, 0.7, 0.2), vec3(1.0, 0.86, 0.5), fract(wR * 7.3));
+        }` : ''}
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6, 0.62, 0.58), smoothstep(0.2, 0.85, vCut) * 0.93);`)
+      .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, wLit, wGlow);\n\t#include <opaque_fragment>');
   };
-  mat.customProgramCacheKey = () => 'cut7' + (tint ? 't' : '');
+  mat.customProgramCacheKey = () => 'cut9' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
   return mat;
 }
 /** Ground pieces outside the detailed area leave a hole where that area is. */
 function clipPatch(mat) {
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uClip = U.uClip;
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vXZ;').replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvXZ = transformed.xz;');
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vXZ;').replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vXZ;\nuniform vec4 uClip;')
       .replace('#include <map_fragment>', 'if (vXZ.x > uClip.x && vXZ.y > uClip.y && vXZ.x < uClip.z && vXZ.y < uClip.w) discard;\n\t#include <map_fragment>');
   };
-  mat.customProgramCacheKey = () => 'clip1';
+  mat.customProgramCacheKey = () => 'clip2';
   return mat;
 }
 /** Far-away building blocks pick their own level of detail: see U.uNear. */
@@ -317,6 +351,12 @@ export const CUT = {
   glow: cutPatch(new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })),
   depth: cutPatch(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking }), false),
 };
+/** The same three for streamed tiles (tile-local geometry, hidden inside the detailed area). */
+const CUTT = {
+  solid: cutPatch(new THREE.MeshLambertMaterial({ vertexColors: true }), true, true),
+  glow: cutPatch(new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }), true, true),
+  depth: cutPatch(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking }), false, true),
+};
 /** How much a thing at (x, z) of height h is ducked right now (mirrors the shader; used for signs). */
 export function cutWeight(x, z, r = 5) {
   const f = U.uFocus.value, d = U.uCamDir.value, dx = x - f.x, dz = z - f.z;
@@ -340,17 +380,19 @@ const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
 /** May a footprint be drawn as its bounding box? Only if the box hardly sticks out beyond the real outline: a big L-shaped block must not spill over the street. */
 const boxy = (o) => o.fill >= 0.72 && (1 - o.fill) * o.w * o.d < 45;
-function drawGeneric(v, gl, b, lod, rnd, night) {
+function drawGeneric(v, gl, b, rnd, night) {
   const o = b.o, th = Math.atan2(-o.uz, o.ux), h = b.h, era = eraOf(b.year);
   const tall = h > 24;
   v.setT(th, o.cx, o.cz); gl.setT(th, o.cx, o.cz);
   const rad = Math.min(o.w, o.d) / 2;
   v.setB(o.cx, o.cz, h + 2, rad); gl.setB(o.cx, o.cz, h + 2, rad);
   const wall = tall ? rnd.pick(TOWER) : rnd.pick(era.wall), roofCol = rnd.pick(era.roofs);
-  const glass = night ? '#1c2a44' : '#8fc7e8';
   const small = b.area < 22;
   for (const r of b.rects) {
+    // the windows are painted on by the shader (see cutPatch): a grid on houses, ribbons of glass on towers
+    v.setW(small || h <= 3.4 ? 0 : tall ? 2 : 1);
     v.box(r.x, 0, r.z, r.w, h, r.d, small ? P.shade(wall, 0.8) : wall, 0.035);
+    v.setW(0);
     const span = Math.min(r.w, r.d);
     if (b.roof && b.rects.length === 1 && span < 14 && !tall) {
       const alongX = r.w >= r.d, rise = clamp(span * 0.36, 0.9, 3.2), n = 3;
@@ -358,33 +400,19 @@ function drawGeneric(v, gl, b, lod, rnd, night) {
         const k = 1 - (i * 0.92) / n;
         v.box(r.x, h + (i * rise) / n, r.z, alongX ? r.w + 0.1 : r.w * k + 0.1, rise / n, alongX ? r.d * k + 0.1 : r.d + 0.1, roofCol, 0.05);
       }
+      // a chimney breaks the roof line
+      if (!small && rnd.chance(0.5)) v.box(r.x + (alongX ? rnd.range(-0.3, 0.3) * r.w : 0), h + rise * 0.3, r.z + (alongX ? 0 : rnd.range(-0.3, 0.3) * r.d), 0.6, rise * 0.7 + 0.7, 0.6, '#8a5a48', 0.08);
     } else {
       v.box(r.x, h, r.z, r.w + 0.15, 0.3, r.d + 0.15, tall ? P.shade(wall, 0.8) : '#efe9dc');
       if (span > 2) v.box(r.x, h + 0.3, r.z, r.w - 0.5, 0.08, r.d - 0.5, '#4a4e57');
-    }
-    if (tall) {
-      // high-rise: a ribbon of glass per floor
-      for (let y = 3.2; y + 1.4 < h; y += 3.0) {
-        const lit = night && rnd.chance(0.4);
-        const t = lit ? gl : v, col = lit ? rnd.pick(LIT) : glass;
-        t.box(r.x, y, r.z + r.d / 2, r.w - 0.8, 1.3, 0.12, col); t.box(r.x, y, r.z - r.d / 2, r.w - 0.8, 1.3, 0.12, col);
-        t.box(r.x + r.w / 2, y, r.z, 0.12, 1.3, r.d - 0.8, col); t.box(r.x - r.w / 2, y, r.z, 0.12, 1.3, r.d - 0.8, col);
-      }
-      if (h > 55) { v.box(r.x, h + 0.3, r.z, 0.14, 4, 0.14, '#555'); gl.box(r.x, h + 4.3, r.z, 0.4, 0.4, 0.4, '#ff3b3b'); }
-    } else if (lod === 1 && !small && h > 3.4) {
-      for (let y = 1.0; y + 1.5 < h; y += 2.8) {
-        for (const [len, fx, fz, ax] of [[r.w, 0, 1, 1], [r.w, 0, -1, 1], [r.d, 1, 0, 0], [r.d, -1, 0, 0]]) {
-          const n = Math.floor(len / 3.2);
-          for (let i = 0; i < n; i++) {
-            const along = (i + 0.5 - n / 2) * (len / n);
-            const lit = night && rnd.chance(0.3);
-            const t = lit ? gl : v, col = lit ? rnd.pick(LIT) : glass;
-            if (ax) t.box(r.x + along, y, r.z + (fz * r.d) / 2, 1.5, 1.3, 0.1, col);
-            else t.box(r.x + (fx * r.w) / 2, y, r.z + along, 0.1, 1.3, 1.5, col);
-          }
-        }
+      // flat roofs carry things: a stair house, air handling units
+      if (span > 7 && !small) {
+        if (rnd.chance(0.55)) v.box(r.x + rnd.range(-0.25, 0.25) * r.w, h + 0.3, r.z + rnd.range(-0.25, 0.25) * r.d, rnd.range(2, 3.4), rnd.range(1.4, 2.4), rnd.range(2, 3.4), P.shade(wall, 0.86), 0.04);
+        const n = rnd.int(0, span > 14 ? 3 : 1);
+        for (let i = 0; i < n; i++) v.box(r.x + rnd.range(-0.36, 0.36) * r.w, h + 0.3, r.z + rnd.range(-0.36, 0.36) * r.d, 1.5, 0.9, 1.1, '#aeb4ba', 0.06);
       }
     }
+    if (tall && h > 55) { v.box(r.x, h + 0.3, r.z, 0.14, 4, 0.14, '#555'); gl.box(r.x, h + 4.3, r.z, 0.4, 0.4, 0.4, '#ff3b3b'); }
   }
 }
 
@@ -568,17 +596,53 @@ function paintTop(grid, rails, footprints) {
   }
   for (const fp of footprints) grid.fill([fp], C.BUILDING);
 }
+// How far each kind of ground stands above the road surface, in metres. Pavements sit on kerbs, grass and
+// woodland lie higher and uneven, dunes roll: the ground is a stepped surface, not one flat sheet.
+const STEP = new Float32Array(256).fill(0.14), ROUGH = new Float32Array(256);
+for (const c of [C.ASPHALT, C.KLINKER, C.SERVICE, C.PARKING, C.MARK]) STEP[c] = 0;
+STEP[C.BIKELANE] = STEP[C.CYCLE] = 0.05;
+STEP[C.CURB] = 0.17; STEP[C.DIRT] = 0.07; STEP[C.RAILBED] = 0.09; STEP[C.RAIL] = 0.2; STEP[C.PITCH] = 0.18;
+STEP[C.GRASS] = 0.2; ROUGH[C.GRASS] = 0.12;
+STEP[C.FOREST] = 0.24; ROUGH[C.FOREST] = 0.3;
+STEP[C.DUNE] = 0.2; ROUGH[C.DUNE] = 0.6;
+STEP[C.SAND] = 0.1; ROUGH[C.SAND] = 0.16;
+STEP[C.FARM] = 0.16; ROUGH[C.FARM] = 0.1;
+const LOWLY = new Uint8Array(256); // surfaces that lie at road level (they get a dark gutter line along a kerb)
+for (let c = 0; c < 256; c++) LOWLY[c] = STEP[c] < 0.06 ? 1 : 0;
+
 function groundTexture(grid) {
   const w = grid.w, h = grid.h, a = grid.a, cell = grid.cell, data = new Uint8Array(w * h * 4);
+  // soft shade on the ground around buildings: how much building lies within about 1.7 m
+  const rad = Math.max(1, Math.round(1.7 / cell)), full = (2 * rad + 1) ** 2, row = new Uint16Array(w * h), occ = new Uint16Array(w * h);
+  for (let j = 0; j < h; j++) {
+    let run = 0;
+    const o = j * w;
+    for (let i = -rad; i < w; i++) {
+      if (i + rad < w && a[o + i + rad] === C.BUILDING) run++;
+      if (i - rad - 1 >= 0 && a[o + i - rad - 1] === C.BUILDING) run--;
+      if (i >= 0) row[o + i] = run;
+    }
+  }
+  for (let i = 0; i < w; i++) {
+    let run = 0;
+    for (let j = -rad; j < h; j++) {
+      if (j + rad < h) run += row[(j + rad) * w + i];
+      if (j - rad - 1 >= 0) run -= row[(j - rad - 1) * w + i];
+      if (j >= 0) occ[j * w + i] = run;
+    }
+  }
   for (let j = 0, o = 0; j < h; j++) {
     const bz = Math.floor(j * cell);
     for (let i = 0; i < w; i++, o += 4) {
-      const k0 = a[j * w + i], p = LUT[k0] || LUT[0], bx = Math.floor(i * cell);
+      const q = j * w + i, k0 = a[q], p = LUT[k0] || LUT[0], bx = Math.floor(i * cell);
       let alt = false;
       if (p.check) alt = ((Math.floor((i * cell) / p.check) + Math.floor((j * cell) / p.check)) & 1) === 1;
       else if (p.stripe) alt = (Math.floor((j * cell) / p.stripe) & 1) === 1;
       else if (p.speck) alt = hash2(bx, bz) < p.speck;
-      const c = alt ? p.b : p.a, k = 0.97 + hash2(bx + 91, bz + 17) * 0.06;
+      const c = alt ? p.b : p.a;
+      let k = 0.97 + hash2(bx + 91, bz + 17) * 0.06;
+      if (k0 !== C.BUILDING && occ[q]) k *= 1 - 0.42 * Math.min(1, (occ[q] / full) * 1.7);
+      if (LOWLY[k0] && ((i > 0 && !LOWLY[a[q - 1]]) || (i < w - 1 && !LOWLY[a[q + 1]]) || (j > 0 && !LOWLY[a[q - w]]) || (j < h - 1 && !LOWLY[a[q + w]]))) k *= 0.86;
       data[o] = Math.min(255, c[0] * k); data[o + 1] = Math.min(255, c[1] * k); data[o + 2] = Math.min(255, c[2] * k);
       data[o + 3] = WET[k0] ? 0 : 255; // the land surface has holes where the water is
     }
@@ -592,35 +656,128 @@ function groundTexture(grid) {
 }
 const BANK = (() => { const t = mask(C.GRASS, C.FOREST, C.DUNE, C.PITCH, C.FARM, C.DIRT); t[C.SAND] = 2; return t; })();
 const BANK_COL = [[0.52, 0.5, 0.46], [0.4, 0.4, 0.26], [0.84, 0.76, 0.54]]; // quay stone, earth bank, sand
+/** A typed array that grows as numbers are pushed. */
+class Buf {
+  constructor(T, n = 4096) { this.a = new T(n); this.n = 0; }
+  room(k) { if (this.n + k > this.a.length) { const b = new this.a.constructor(Math.max(this.a.length * 2, this.n + k)); b.set(this.a); this.a = b; } }
+  cut() { return this.a.slice(0, this.n); }
+}
 /**
- * The ground for one painted grid: a relief mesh with the grid as its texture, the water surface lying
- * lower, and walls along every shore. `sc` turns grid coords into scene coords, `mt` into map metres.
+ * The ground for one painted grid, in the grid's own coordinates: a stepped land surface with the grid as
+ * its texture (kerbs, verges and rough ground are real steps), the water surface lying lower, and walls along
+ * every shore. `mt` turns grid coords into map metres. Leaves `grid.off` (height of every cell above the terrain).
  */
-function buildGround(city, grid, { sc, mt, gs = 4, clip = false, skip = null }) {
+function buildGround(city, grid, { mt, gs = 4, clip = false }) {
   const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell, tex = groundTexture(grid), meshes = [];
-  const idxOf = (n, len) => new (n > 65535 ? Uint32Array : Uint16Array)(len);
+  const n = Math.max(1, Math.round(gs / cell)), nbx = Math.ceil(w / n), nbz = Math.ceil(h / n), lw = nbx + 1;
+  // terrain heights on the block lattice; inside a block the ground is interpolated, so pieces meet without cracks
+  const lat = new Float32Array(lw * (nbz + 1));
+  for (let j = 0; j <= nbz; j++) for (let i = 0; i <= nbx; i++) { const m = mt(x0 + Math.min(i * n, w) * cell, z0 + Math.min(j * n, h) * cell); lat[j * lw + i] = city.landAt(m[0], m[1]); }
+  const base = (ci, cj) => {
+    let bi = Math.floor(ci / n), bj = Math.floor(cj / n);
+    if (bi >= nbx) bi = nbx - 1;
+    if (bj >= nbz) bj = nbz - 1;
+    const i0 = bi * n, j0 = bj * n, fx = (ci - i0) / (Math.min(w, i0 + n) - i0), fz = (cj - j0) / (Math.min(h, j0 + n) - j0), k = bj * lw + bi;
+    const p = lat[k] + (lat[k + 1] - lat[k]) * fx, q = lat[k + lw] + (lat[k + lw + 1] - lat[k + lw]) * fx;
+    return p + (q - p) * fz;
+  };
+  // every cell's height above the terrain: its class, plus one roll of the dice per block for rough ground
+  const off = (grid.off = new Float32Array(w * h));
+  for (let bj = 0; bj < nbz; bj++) for (let bi = 0; bi < nbx; bi++) {
+    const r = hash2(bi + 311, bj + 7919), i1 = Math.min(w, bi * n + n), j1 = Math.min(h, bj * n + n);
+    for (let j = bj * n; j < j1; j++) for (let i = bi * n, o = j * w + i; i < i1; i++, o++) { const c = a[o]; off[o] = STEP[c] + ROUGH[c] * r; }
+  }
   {
-    const nx = Math.max(1, Math.ceil(W / gs)), nz = Math.max(1, Math.ceil(H / gs)), nv = (nx + 1) * (nz + 1);
-    const pos = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), idx = idxOf(nv, nx * nz * 6);
-    for (let j = 0, k = 0; j <= nz; j++) for (let i = 0; i <= nx; i++, k++) {
-      const gx = x0 + Math.min(i * gs, W), gz = z0 + Math.min(j * gs, H), m = mt(gx, gz), p = sc(gx, gz);
-      pos[k * 3] = p[0]; pos[k * 3 + 1] = city.landAt(m[0], m[1]); pos[k * 3 + 2] = p[1];
-      uv[k * 2] = (gx - x0) / W; uv[k * 2 + 1] = (gz - z0) / H;
+    const P3 = new Buf(Float32Array, 1 << 15), N3 = new Buf(Float32Array, 1 << 15), U2 = new Buf(Float32Array, 1 << 14), IX = new Buf(Uint32Array, 1 << 15);
+    const vert = (ci, cj, y, u, v, nx, ny, nz) => {
+      const p = P3.a, q = N3.a, t = U2.a;
+      p[P3.n++] = x0 + ci * cell; p[P3.n++] = y; p[P3.n++] = z0 + cj * cell;
+      q[N3.n++] = nx; q[N3.n++] = ny; q[N3.n++] = nz;
+      t[U2.n++] = u; t[U2.n++] = v;
+    };
+    const room = () => { P3.room(12); N3.room(12); U2.room(8); IX.room(6); };
+    const tri = (v0, flip) => { const ix = IX.a; if (flip) { ix[IX.n++] = v0; ix[IX.n++] = v0 + 2; ix[IX.n++] = v0 + 1; ix[IX.n++] = v0; ix[IX.n++] = v0 + 3; ix[IX.n++] = v0 + 2; } else { ix[IX.n++] = v0; ix[IX.n++] = v0 + 1; ix[IX.n++] = v0 + 2; ix[IX.n++] = v0; ix[IX.n++] = v0 + 2; ix[IX.n++] = v0 + 3; } };
+    const top = (ci0, cj0, ci1, cj1, o, nx, ny, nz) => {
+      room();
+      const v0 = P3.n / 3;
+      vert(ci0, cj0, base(ci0, cj0) + o, ci0 / w, cj0 / h, nx, ny, nz);
+      vert(ci0, cj1, base(ci0, cj1) + o, ci0 / w, cj1 / h, nx, ny, nz);
+      vert(ci1, cj1, base(ci1, cj1) + o, ci1 / w, cj1 / h, nx, ny, nz);
+      vert(ci1, cj0, base(ci1, cj0) + o, ci1 / w, cj0 / h, nx, ny, nz);
+      tri(v0, false);
+    };
+    const used = new Uint8Array(n * n);
+    for (let bj = 0; bj < nbz; bj++) for (let bi = 0; bi < nbx; bi++) {
+      const i0 = bi * n, j0 = bj * n, i1 = Math.min(w, i0 + n), j1 = Math.min(h, j0 + n), bw = i1 - i0, bh = j1 - j0, k = bj * lw + bi;
+      // the block's slope gives its top faces their shading
+      let nx = -((lat[k + 1] - lat[k]) + (lat[k + lw + 1] - lat[k + lw])) / (2 * bw * cell), nz = -((lat[k + lw] - lat[k]) + (lat[k + lw + 1] - lat[k + 1])) / (2 * bh * cell), ny = 1;
+      const l = Math.hypot(nx, ny, nz);
+      nx /= l; ny /= l; nz /= l;
+      const first = off[j0 * w + i0];
+      let same = true;
+      for (let j = j0; j < j1 && same; j++) for (let i = i0, o = j * w + i; i < i1; i++, o++) if (off[o] !== first) { same = false; break; }
+      if (same) { top(i0, j0, i1, j1, first, nx, ny, nz); continue; }
+      // mixed block: as few rectangles as will cover it
+      used.fill(0);
+      for (let jj = 0; jj < bh; jj++) for (let ii = 0; ii < bw; ii++) {
+        if (used[jj * n + ii]) continue;
+        const o = off[(j0 + jj) * w + i0 + ii];
+        let x1 = ii + 1;
+        while (x1 < bw && !used[jj * n + x1] && off[(j0 + jj) * w + i0 + x1] === o) x1++;
+        let y1 = jj + 1;
+        grow: while (y1 < bh) { for (let q = ii; q < x1; q++) if (used[y1 * n + q] || off[(j0 + y1) * w + i0 + q] !== o) break grow; y1++; }
+        for (let y = jj; y < y1; y++) for (let q = ii; q < x1; q++) used[y * n + q] = 1;
+        top(i0 + ii, j0 + jj, i0 + x1, j0 + y1, o, nx, ny, nz);
+      }
     }
-    for (let j = 0, q = 0; j < nz; j++) for (let i = 0; i < nx; i++, q += 6) {
-      const A = j * (nx + 1) + i, B = A + 1, D = A + nx + 1, Cc = D + 1;
-      idx[q] = A; idx[q + 1] = D; idx[q + 2] = Cc; idx[q + 3] = A; idx[q + 4] = Cc; idx[q + 5] = B;
+    // the risers: a vertical face wherever two neighbouring cells of land differ in height
+    const riserX = (i, ja, jb, oL, oR) => {
+      room();
+      const v0 = P3.n / 3, hi = Math.max(oL, oR), lo = Math.min(oL, oR), u = ((oL > oR ? i - 1 : i) + 0.5) / w, nx = oL > oR ? 1 : -1;
+      const ya = base(i, ja), yb = base(i, jb);
+      vert(i, ja, ya + hi, u, (ja + 0.5) / h, nx, 0, 0);
+      vert(i, jb, yb + hi, u, (jb - 0.5) / h, nx, 0, 0);
+      vert(i, jb, yb + lo, u, (jb - 0.5) / h, nx, 0, 0);
+      vert(i, ja, ya + lo, u, (ja + 0.5) / h, nx, 0, 0);
+      tri(v0, nx < 0);
+    };
+    const riserZ = (j, ia, ib, oU, oD) => {
+      room();
+      const v0 = P3.n / 3, hi = Math.max(oU, oD), lo = Math.min(oU, oD), v = ((oU > oD ? j - 1 : j) + 0.5) / h, nz = oU > oD ? 1 : -1;
+      const ya = base(ia, j), yb = base(ib, j);
+      vert(ia, j, ya + hi, (ia + 0.5) / w, v, 0, 0, nz);
+      vert(ib, j, yb + hi, (ib - 0.5) / w, v, 0, 0, nz);
+      vert(ib, j, yb + lo, (ib - 0.5) / w, v, 0, 0, nz);
+      vert(ia, j, ya + lo, (ia + 0.5) / w, v, 0, 0, nz);
+      tri(v0, nz > 0);
+    };
+    for (let i = 1; i < w; i++) {
+      let j0 = -1, a0 = 0, b0 = 0;
+      for (let j = 0; j <= h; j++) {
+        let oL = 0, oR = 0, edge = false;
+        if (j < h) { const q = j * w + i; if (!WET[a[q - 1]] && !WET[a[q]]) { oL = off[q - 1]; oR = off[q]; edge = Math.abs(oL - oR) > 0.012; } }
+        if (j0 >= 0 && (!edge || oL !== a0 || oR !== b0 || j % n === 0)) { riserX(i, j0, j, a0, b0); j0 = -1; }
+        if (edge && j0 < 0) { j0 = j; a0 = oL; b0 = oR; }
+      }
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    geo.computeVertexNormals();
+    for (let j = 1; j < h; j++) {
+      let i0 = -1, a0 = 0, b0 = 0;
+      for (let i = 0; i <= w; i++) {
+        let oU = 0, oD = 0, edge = false;
+        if (i < w) { const q = j * w + i; if (!WET[a[q - w]] && !WET[a[q]]) { oU = off[q - w]; oD = off[q]; edge = Math.abs(oU - oD) > 0.012; } }
+        if (i0 >= 0 && (!edge || oU !== a0 || oD !== b0 || i % n === 0)) { riserZ(j, i0, i, a0, b0); i0 = -1; }
+        if (edge && i0 < 0) { i0 = i; a0 = oU; b0 = oD; }
+      }
+    }
+    const geo = new THREE.BufferGeometry(), nv = P3.n / 3;
+    geo.setAttribute('position', new THREE.BufferAttribute(P3.cut(), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(N3.cut(), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(U2.cut(), 2));
+    geo.setIndex(new THREE.BufferAttribute(nv > 65535 ? IX.cut() : Uint16Array.from(IX.a.subarray(0, IX.n)), 1));
     const mat = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5 });
     const land = new THREE.Mesh(geo, clip ? clipPatch(mat) : mat);
     land.receiveShadow = true;
     land.renderOrder = -2;
-    land.frustumCulled = false;
     meshes.push(land);
   }
   // where is the water?
@@ -640,14 +797,14 @@ function buildGround(city, grid, { sc, mt, gs = 4, clip = false, skip = null }) 
       if (!near) continue;
       const v0 = pos.length / 3;
       for (const [di, dj] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
-        const gx = x0 + Math.min((i + di) * ws, W), gz = z0 + Math.min((j + dj) * ws, H), m = mt(gx, gz), p = sc(gx, gz);
-        pos.push(p[0], city.waterAt(m[0], m[1]), p[1]);
+        const gx = x0 + Math.min((i + di) * ws, W), gz = z0 + Math.min((j + dj) * ws, H), m = mt(gx, gz);
+        pos.push(gx, city.waterAt(m[0], m[1]), gz);
         uv.push((gx - x0) / W, (gz - z0) / H);
       }
       idx.push(v0, v0 + 3, v0 + 2, v0, v0 + 2, v0 + 1);
     }
-    const geo = new THREE.BufferGeometry(), n = pos.length / 3, nor = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) nor[i * 3 + 1] = 1;
+    const geo = new THREE.BufferGeometry(), nn = pos.length / 3, nor = new Float32Array(nn * 3);
+    for (let i = 0; i < nn; i++) nor[i * 3 + 1] = 1;
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
@@ -656,26 +813,23 @@ function buildGround(city, grid, { sc, mt, gs = 4, clip = false, skip = null }) 
     const water = new THREE.Mesh(geo, clip ? clipPatch(mat) : mat);
     water.receiveShadow = true;
     water.renderOrder = -2;
-    water.frustumCulled = false;
     meshes.push(water);
   }
   {
     // quay walls and banks: a vertical face wherever land meets water
     const pos = [], nor = [], col = [], idx = [], maxRun = Math.max(1, Math.round(gs / cell));
+    const offAt = (x, z) => { const i = Math.floor((x - x0) / cell), j = Math.floor((z - z0) / cell); return i < 0 || j < 0 || i >= w || j >= h ? 0.14 : off[j * w + i]; };
     const quad = (ax, az, bx, bz, wx, wz, tone) => {
-      const A = sc(ax, az), B = sc(bx, bz);
-      if (skip && skip((A[0] + B[0]) / 2, (A[1] + B[1]) / 2)) return;
-      const ma = mt(ax, az), mb = mt(bx, bz);
-      const ta = city.landAt(ma[0], ma[1]), tb = city.landAt(mb[0], mb[1]), ba = city.waterAt(ma[0], ma[1]), bb = city.waterAt(mb[0], mb[1]);
+      const ma = mt(ax, az), mb = mt(bx, bz), o = offAt(ax + bx - wx, az + bz - wz); // the land cell lies across the edge from the water
+      const ta = city.landAt(ma[0], ma[1]) + o, tb = city.landAt(mb[0], mb[1]) + o, ba = city.waterAt(ma[0], ma[1]), bb = city.waterAt(mb[0], mb[1]);
       if (ta - ba < 0.22 && tb - bb < 0.22) return;
-      const Wp = sc(wx, wz);
-      let nx = -(B[1] - A[1]), nz = B[0] - A[0];
+      let nx = -(bz - az), nz = bx - ax;
       const l = Math.hypot(nx, nz) || 1;
       nx /= l; nz /= l;
-      const flip = nx * (Wp[0] - A[0]) + nz * (Wp[1] - A[1]) < 0;
+      const flip = nx * (wx - ax) + nz * (wz - az) < 0;
       if (flip) { nx = -nx; nz = -nz; }
       const v0 = pos.length / 3, c = BANK_COL[tone];
-      pos.push(A[0], ta, A[1], B[0], tb, B[1], B[0], bb - 0.5, B[1], A[0], ba - 0.5, A[1]);
+      pos.push(ax, ta, az, bx, tb, bz, bx, bb - 0.5, bz, ax, ba - 0.5, az);
       for (let k = 0; k < 4; k++) { nor.push(nx, 0, nz); const d = k < 2 ? 1 : 0.7; col.push(c[0] * d, c[1] * d, c[2] * d); }
       if (flip) idx.push(v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3); else idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
     };
@@ -704,43 +858,52 @@ function buildGround(city, grid, { sc, mt, gs = 4, clip = false, skip = null }) 
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
       geo.setIndex(idx);
-      const walls = new THREE.Mesh(geo, WALL);
+      const walls = new THREE.Mesh(geo, clip ? WALLT : WALL);
       walls.receiveShadow = true;
-      walls.frustumCulled = false;
       meshes.push(walls);
     }
   }
   return { meshes, tex };
 }
 const WALL = new THREE.MeshLambertMaterial({ vertexColors: true });
+const WALLT = clipPatch(new THREE.MeshLambertMaterial({ vertexColors: true }));
 
-/** A stand of trees as one instanced mesh. pts: flat [x, z, size, ...] in scene coords. */
-function treeMesh(pts, rnd, cap, yAt) {
+// Three kinds of tree, so a row of them is not a row of clones: a broad crown, a tall narrow one, a low round one.
+const TREES = [
+  (v) => { v.box(0, 0, 0, 0.42, 1.8, 0.42, '#7a5234'); v.box(0, 1.8, 0, 2.2, 0.8, 2.2, '#3f9a48'); v.box(0, 2.6, 0, 2.7, 1.0, 2.7, '#4caf50'); v.box(0.1, 3.6, -0.1, 1.9, 0.8, 1.9, '#5cbd5c'); v.box(0, 4.4, 0, 0.9, 0.4, 0.9, '#68c765'); },
+  (v) => { v.box(0, 0, 0, 0.36, 1.5, 0.36, '#6d4a30'); v.box(0, 1.5, 0, 1.3, 1.2, 1.3, '#3b8f4d'); v.box(0, 2.7, 0, 1.6, 1.5, 1.6, '#43a054'); v.box(0, 4.2, 0, 1.2, 1.2, 1.2, '#4fb060'); v.box(0, 5.4, 0, 0.7, 0.8, 0.7, '#5dbb69'); },
+  (v) => { v.box(0, 0, 0, 0.5, 1.3, 0.5, '#7a5234'); v.box(0, 1.3, 0, 2.6, 0.7, 2.6, '#55a548'); v.box(0, 2.0, 0, 3.1, 1.1, 3.1, '#63b552'); v.box(-0.1, 3.1, 0.1, 2.2, 0.7, 2.2, '#72c25c'); },
+];
+const TREE_H = [4.8, 6.2, 3.8];
+let _treeGeo = null;
+/** A stand of trees: one instanced mesh per kind of tree, in a group. pts: flat [x, z, size, ...]. */
+function treeMesh(pts, rnd, cap, yAt, mat = CUT.solid, depth = CUT.depth) {
   const n = Math.min(pts.length / 3, cap);
   if (n <= 0) return null;
-  const tv = new Vox(5);
-  tv.box(0, 0, 0, 0.42, 1.8, 0.42, '#7a5234');
-  tv.box(0, 1.8, 0, 2.2, 0.8, 2.2, '#3f9a48');
-  tv.box(0, 2.6, 0, 2.7, 1.0, 2.7, '#4caf50');
-  tv.box(0.1, 3.6, -0.1, 1.9, 0.8, 1.9, '#5cbd5c');
-  tv.box(0, 4.4, 0, 0.9, 0.4, 0.9, '#68c765');
-  const geo = tv.geometry(), aB = new Float32Array(n * 4);
-  const inst = new THREE.InstancedMesh(geo, CUT.solid, n);
+  _treeGeo ||= TREES.map((draw, i) => { const tv = new Vox(5 + i); draw(tv); return tv.geometry(); });
+  const stride = pts.length / 3 / n, picks = [[], [], []];
+  for (let i = 0; i < n; i++) { const k = Math.floor(i * stride) * 3, h = hash2(Math.round(pts[k] * 7), Math.round(pts[k + 1] * 7)); picks[h < 0.6 ? 0 : h < 0.8 ? 1 : 2].push(k); }
+  const group = new THREE.Group();
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), p = new THREE.Vector3(), s = new THREE.Vector3(), col = new THREE.Color();
-  const stride = pts.length / 3 / n;
-  for (let i = 0; i < n; i++) {
-    const k = Math.floor(i * stride) * 3, sc = pts[k + 2];
-    e.set(0, Math.floor(rnd() * 4) * (Math.PI / 2), 0);
-    m.compose(p.set(pts[k], yAt(pts[k], pts[k + 1]) - 0.05, pts[k + 1]), q.setFromEuler(e), s.set(sc * rnd.range(0.9, 1.1), sc, sc * rnd.range(0.9, 1.1)));
-    inst.setMatrixAt(i, m);
-    inst.setColorAt(i, col.setRGB(rnd.range(0.82, 1.08), rnd.range(0.9, 1.1), rnd.range(0.78, 1.0)));
-    aB[i * 4] = pts[k]; aB[i * 4 + 1] = pts[k + 1]; aB[i * 4 + 2] = 4.8 * sc; aB[i * 4 + 3] = -1;
-  }
-  geo.setAttribute('aB', new THREE.InstancedBufferAttribute(aB, 4));
-  inst.castShadow = true; inst.receiveShadow = true;
-  inst.customDepthMaterial = CUT.depth;
-  inst.frustumCulled = false;
-  return inst;
+  picks.forEach((list, kind) => {
+    if (!list.length) return;
+    const geo = _treeGeo[kind].clone(), aB = new Float32Array(list.length * 4);
+    const inst = new THREE.InstancedMesh(geo, mat, list.length);
+    list.forEach((k, i) => {
+      const sc = pts[k + 2];
+      e.set(0, Math.floor(rnd() * 4) * (Math.PI / 2), 0);
+      m.compose(p.set(pts[k], yAt(pts[k], pts[k + 1]) - 0.05, pts[k + 1]), q.setFromEuler(e), s.set(sc * rnd.range(0.9, 1.1), sc, sc * rnd.range(0.9, 1.1)));
+      inst.setMatrixAt(i, m);
+      inst.setColorAt(i, col.setRGB(rnd.range(0.82, 1.08), rnd.range(0.9, 1.1), rnd.range(0.78, 1.0)));
+      aB[i * 4] = pts[k]; aB[i * 4 + 1] = pts[k + 1]; aB[i * 4 + 2] = TREE_H[kind] * sc; aB[i * 4 + 3] = -1;
+    });
+    geo.setAttribute('aB', new THREE.InstancedBufferAttribute(aB, 4));
+    inst.castShadow = true; inst.receiveShadow = true;
+    inst.customDepthMaterial = depth;
+    inst.computeBoundingSphere();
+    group.add(inst);
+  });
+  return group;
 }
 
 // ---------------------------------------------------------------- build
@@ -748,13 +911,15 @@ function treeMesh(pts, rnd, cap, yAt) {
  * st: street properties; geometry: its MultiLineString coordinates (lon/lat).
  * Returns the scene group plus everything the stage and the gags need to play on it.
  */
-export async function buildWorld(st, geometry, { night = false, seed = '', lite = false } = {}) {
+export async function buildWorld(st, geometry, { night = false, seed = '', lite = false, soft = false } = {}) {
   const city = await loadCity(), ix = city.ix;
+  // a world built while another one is on screen takes breathers, so the picture keeps moving
+  const breathe = soft ? () => new Promise((r) => setTimeout(r, 12)) : () => null;
   const t0 = performance.now();
   const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + seed));
   const f = frameFor(ix, geometry);
   const streetLen = polyLen(f.spine);
-  const margin = lite ? 150 : streetLen > 900 ? 190 : 250;
+  const margin = lite ? 110 : streetLen > 900 ? 130 : 160;
   const tiles = await Promise.all(tileKeys(f, margin).map(async (k) => [k, await loadTile(ix, k)]));
   const t1 = performance.now();
 
@@ -791,7 +956,14 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   }
   const R = regionOf(f, margin);
   const inR = (x, z, pad = 0) => x > R.x0 - pad && x < R.x1 + pad && z > R.z0 - pad && z < R.z1 + pad;
-  bld = bld.filter((b) => inR(b.ring[0][0], b.ring[0][1], 20));
+  // the detailed area is exactly the ground raster; streamed tiles hide whatever falls inside it
+  const span = Math.max(R.x1 - R.x0, R.z1 - R.z0);
+  const cell = lite ? (span > 1400 ? 2 : 1) : span > 2600 ? 2 : span > 1300 ? 1 : 0.5;
+  const clip = { x0: R.x0, z0: R.z0, x1: R.x0 + Math.ceil((R.x1 - R.x0) / cell) * cell, z1: R.z0 + Math.ceil((R.z1 - R.z0) / cell) * cell };
+  const inC = (x, z) => x > clip.x0 && x < clip.x1 && z > clip.z0 && z < clip.z1;
+  for (const b of bld) b.o = obbOf(b.ring);
+  bld = bld.filter((b) => inC(b.o.cx, b.o.cz)); // a building belongs to whoever has its centre
+  await breathe();
 
   // ---- decode the rest
   const gnd = [], roads = [], rails = [], trees = [], pois = [];
@@ -875,7 +1047,6 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   // ---- buildings: boxes, how they face the street, which fronts get the full treatment
   const units = [];
   for (const b of bld) {
-    b.o = obbOf(b.ring);
     b.area = ringArea(b.ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(b.ring, b.o);
     const o = b.o, pr = path.project(o.cx, o.cz);
@@ -960,9 +1131,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   }
 
   // ---- ground raster
-  frameTerrain(city, f);
-  const span = Math.max(R.x1 - R.x0, R.z1 - R.z0);
-  const cell = lite ? (span > 1400 ? 2 : 1) : span > 2600 ? 2 : span > 1300 ? 1 : 0.5;
+  await breathe();
   const grid = new Grid(R.x0, R.z0, Math.ceil((R.x1 - R.x0) / cell), Math.ceil((R.z1 - R.z0) / cell), cell);
   const can = (...cls) => { const t = new Uint8Array(256); for (const c of cls) t[c] = 1; return t; };
   const toM = (x, z) => f.M(x, z), same = (x, z) => [x, z];
@@ -1000,10 +1169,14 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   }
   L.tramNear = tramOnStreet > 2;
   paintTop(grid, rails, bld.map((b) => b.flat));
-  /** Height of whatever you would stand or float on at a scene position. */
+  /** Height of whatever you would stand or float on at a scene position (kerbs and rough ground included). */
+  const gw = grid.w, gh = grid.h;
   const hAt = (x, z) => {
     const mx = f.ox + x * f.dx + z * f.dy, my = f.oy + x * f.dy - z * f.dx;
-    return WET[grid.get(x, z)] ? city.waterAt(mx, my) : city.landAt(mx, my);
+    const i = Math.floor((x - R.x0) / cell), j = Math.floor((z - R.z0) / cell);
+    if (i < 0 || j < 0 || i >= gw || j >= gh) return surfaceAt(city, mx, my); // beyond the detailed area: ask the tile that is there
+    const q = j * gw + i;
+    return WET[grid.a[q]] ? city.waterAt(mx, my) : city.landAt(mx, my) + (grid.off ? grid.off[q] : 0.14);
   };
   const landY = (x, z) => city.landAt(f.ox + x * f.dx + z * f.dy, f.oy + x * f.dy - z * f.dx);
 
@@ -1029,14 +1202,16 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   }
 
   // ---- scene objects
+  await breathe();
   const group = new THREE.Group();
   const disposables = [];
-  const clip = { x0: R.x0, z0: R.z0, x1: R.x0 + grid.w * cell, z1: R.z0 + grid.h * cell };
   {
-    const G = buildGround(city, grid, { sc: same, mt: toM, gs: lite ? 6 : 4 });
+    const G = buildGround(city, grid, { mt: toM, gs: lite ? 6 : 4 });
     disposables.push(G.tex);
+    for (const m of G.meshes) m.frustumCulled = false;
     group.add(...G.meshes);
   }
+  await breathe();
 
   // buildings, merged into chunks
   const chunks = new Map(), CH = 110;
@@ -1056,20 +1231,23 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
         if (hi.chimney) hi.chimney.y += gy;
         if (hi.sign) { hi.sign.position.y += gy; group.add(hi.sign); signs.push({ m: hi.sign, x: u.cx, z: u.cz }); }
       }
-    } else { const c = chunkOf(b.o.cx, b.o.cz); drawGeneric(c.v, c.gl, b, b.dist < (lite ? 60 : 115) ? 1 : 2, rnd, night); }
+    } else { const c = chunkOf(b.o.cx, b.o.cz); drawGeneric(c.v, c.gl, b, rnd, night); }
   }
+  // the shader lifts buildings onto the terrain, so their chunks are a little bigger than their geometry says
+  const roomy = (m) => { m.geometry.computeBoundingSphere(); m.geometry.boundingSphere.radius += 45; return m; };
   for (const c of chunks.values()) {
     c.v.setT(); c.gl.setT();
-    if (!c.v.empty) { const m = c.v.mesh(CUT.solid); m.customDepthMaterial = CUT.depth; group.add(m); }
-    if (!c.gl.empty) { const m = new THREE.Mesh(c.gl.geometry(), CUT.glow); group.add(m); }
+    if (!c.v.empty) { const m = roomy(c.v.mesh(CUT.solid)); m.customDepthMaterial = CUT.depth; group.add(m); }
+    if (!c.gl.empty) { const m = roomy(new THREE.Mesh(c.gl.geometry(), CUT.glow)); group.add(m); }
   }
+  await breathe();
 
   // trees
   {
     const pts = [], hb = L.hw + L.bw + 0.4;
     const okCls = can(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
     const push = (x, z, sc) => {
-      if (!inR(x, z, -2) || !okCls[grid.get(x, z)]) return;
+      if (!inC(x, z) || !okCls[grid.get(x, z)]) return;
       const pr = path.project(x, z);
       if (Math.abs(pr.v) < hb && pr.s > path.sA - 2 && pr.s < path.sB + 2) return;
       if (pr.d > 150 && rnd() < 0.35) return;
@@ -1083,8 +1261,8 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       else if (cl === C.GRASS) { if (rnd() < 0.07) push(jx, jz, rnd.range(1.3, 2.0)); }
       else if (cl === C.DUNE) { if (rnd() < 0.06) push(jx, jz, rnd.range(0.5, 0.9)); }
     }
-    const inst = treeMesh(pts, rnd, lite ? 6000 : 16000, landY);
-    if (inst) group.add(inst);
+    const inst = treeMesh(pts, rnd, lite ? 6000 : 16000, hAt);
+    if (inst) { for (const t of inst.children) t.frustumCulled = false; group.add(inst); }
   }
 
   // rails and big roads as paths for trams and passing traffic
@@ -1094,7 +1272,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
 
   const W = {
     group, path, grid, solid, frame: f, region: R, clip, L, st, rnd, night, lite, hAt, landY,
-    heroes: heroInfo, signs, pois, roads, tramLines, sideRoads, builtAt,
+    heroes: heroInfo, signs, pois, roads, rails, tramLines, sideRoads, builtAt, city, inClip: inC, classAt,
     anchors: { houses: [], shops: [], racks: [], benches: [], bins: [], parked: [], lamps: [], stalls: [], chimneys: [], atms: [], boxes: [] },
     northAz: Math.atan2(-f.dy, f.dx),
     toScene: (lon, lat) => f.S((lon - ix.proj.lon0) * ix.proj.kx, (lat - ix.proj.lat0) * ix.proj.ky),
@@ -1103,18 +1281,24 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     inCity: (x, z) => { const m = f.M(x, z), e = ix.extent; return f.S(clamp(m[0], e[0] + 200, e[2] - 200), clamp(m[1], e[1] + 200, e[3] - 200)); },
     C,
   };
+  await breathe();
   dress(W);
-  const back = cityBackdrop(city, f);
-  group.add(back);
-  U.uClip.value.set(clip.x0, clip.z0, clip.x1, clip.z1);
-  U.uNear.value = lite ? 520 : 1300;
-  U.uFar.value = lite ? 5200 : 1e9;
-  W.stream = new Streamer(W, city);
+  /** Put this world on screen: point the shared shaders and the whole-city model at its frame, start streaming tiles. */
+  W.activate = () => {
+    frameTerrain(city, f);
+    U.uClip.value.set(clip.x0, clip.z0, clip.x1, clip.z1);
+    U.uNear.value = lite ? 520 : 1300;
+    U.uFar.value = lite ? 5200 : 1e9;
+    U.uNight.value = night ? 1 : 0;
+    W.back = cityBackdrop(city, f);
+    group.add(W.back);
+    W.stream = new Streamer(W, city);
+  };
   /** Per frame: draw the right amount of city for where the camera is. */
-  W.lod = (x, z, dist, live) => { back.userData.lod(x, z); if (live) W.stream.update(x, z, dist); };
+  W.lod = (x, z, dist, live, az) => { W.back.userData.lod(x, z); if (live) W.stream.update(x, z, dist, az); };
   W.ms = { fetch: Math.round(t1 - t0), build: Math.round(performance.now() - t1) };
   W.dispose = () => {
-    W.stream.dispose();
+    if (W.stream) W.stream.dispose();
     const walk = (o) => {
       if (o.userData.keep) return; // the whole-city model is shared between streets
       if (o.geometry) o.geometry.dispose();
@@ -1123,7 +1307,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       for (const c of o.children) walk(c);
     };
     walk(group);
-    for (const c of [...back.children]) back.remove(c);
+    if (W.back) for (const c of [...W.back.children]) W.back.remove(c);
     for (const t of disposables) t.dispose();
   };
   return W;
@@ -1132,52 +1316,85 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
 // ---------------------------------------------------------------- streamed tiles
 // Away from the detailed area the city is drawn tile by tile (256 m), only around the camera and only when
 // it is low enough to tell the difference. Tiles carry real building outlines, ground, water and trees.
-function buildTile(W, city, key, t) {
-  const f = W.frame, R = W.region, cr = W.clip, [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
+// A tile is built once, in its own coordinates, and placed into whichever street's frame is on screen: moving
+// the focus to another street keeps every tile that is already there.
+const _built = new Map(), _byNum = new Map(); // key → tile (most recently used last); the same tiles by number, for height look-ups
+let _builtNight = null;
+const tileNum = (tx, ty) => (tx + 512) * 2048 + ty + 512;
+function dropTile(key) {
+  const c = _built.get(key);
+  if (!c) return;
+  _built.delete(key);
+  _byNum.delete(c.num);
+  c.dispose();
+}
+/** Height of the surface at a point in map metres, away from any street's detailed area. */
+function surfaceAt(city, mx, my) {
+  const c = _byNum.get(tileNum(Math.floor(mx / TILE), Math.floor(my / TILE)));
+  if (c) {
+    const g = c.grid, i = Math.floor((mx - c.ox) / g.cell), j = Math.floor((c.oy + TILE - my) / g.cell);
+    if (i >= 0 && j >= 0 && i < g.w && j < g.h) { const q = j * g.w + i; return WET[g.a[q]] ? city.waterAt(mx, my) : city.landAt(mx, my) + g.off[q]; }
+  }
+  return city.landAt(mx, my) + 0.14;
+}
+/** Ground class at a point in map metres, if a tile is there (255 otherwise). */
+export function classAt(mx, my) {
+  const c = _byNum.get(tileNum(Math.floor(mx / TILE), Math.floor(my / TILE)));
+  if (!c) return 255;
+  const g = c.grid, i = Math.floor((mx - c.ox) / g.cell), j = Math.floor((c.oy + TILE - my) / g.cell);
+  return i >= 0 && j >= 0 && i < g.w && j < g.h ? g.a[j * g.w + i] : 255;
+}
+function buildTile(city, key, t, night, lite) {
+  const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
   const rnd = makeRng(hashStr('tile|' + key));
   const g = new THREE.Group();
-  const inR = (x, z, pad) => x > R.x0 - pad && x < R.x1 + pad && z > R.z0 - pad && z < R.z1 + pad;
-  const c = W.lite ? 2 : 1, grid = new Grid(0, 0, TILE / c, TILE / c, c);
-  // tile data is in decimetres from the tile's south-west corner; the grid runs north to south
+  const c = lite ? 2 : 1, grid = new Grid(0, 0, TILE / c, TILE / c, c);
+  // tile data is in decimetres from the tile's south-west corner; the tile's own coordinates run east and south from its north-west corner
   const loc = (e, from) => { const a = new Float32Array(e.length - from); for (let i = from; i + 1 < e.length; i += 2) { a[i - from] = e[i] / 10; a[i - from + 1] = TILE - e[i + 1] / 10; } return a; };
-  const mt = (gx, gz) => [ox + gx, oy + TILE - gz], sc = (gx, gz) => f.S(ox + gx, oy + TILE - gz);
+  const mt = (gx, gz) => [ox + gx, oy + TILE - gz];
   const gnd = (t.g || []).map((e) => ({ cls: e[0], area: e[1], rings: e.slice(2).map((r) => loc(r, 0)) }));
-  const roads = (t.r || []).map((e) => ({ cls: e[0], w: e[1] / 10, flags: e[3], a: loc(e, 4) }));
+  const roads = (t.r || []).map((e) => ({ cls: e[0], w: e[1] / 10, name: e[2] >= 0 && t.n ? t.n[e[2]] : '', flags: e[3], a: loc(e, 4) }));
   const rails = (t.l || []).map((e) => ({ kind: e[0], flags: e[1], a: loc(e, 2) }));
   paintBase(city, grid, mt, gnd, roads);
   const v = new Vox(rnd.int(1, 9999), true), gl = new Vox(rnd.int(1, 9999), true), flats = [];
   for (const e of t.b || []) {
-    flats.push(loc(e, 3));
-    const ring = [];
-    for (let i = 3; i + 1 < e.length; i += 2) ring.push(f.S(ox + e[i] / 10, oy + e[i + 1] / 10));
-    if (ring.length < 3 || inR(ring[0][0], ring[0][1], 20)) continue; // the detailed area draws its own
+    const flat = loc(e, 3), ring = [];
+    flats.push(flat);
+    for (let i = 0; i + 1 < flat.length; i += 2) ring.push([flat[i], flat[i + 1]]);
+    if (ring.length < 3) continue;
     const b = { ring, h: e[0], roof: e[1], year: e[2] };
     b.o = obbOf(ring);
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
-    drawGeneric(v, gl, b, 2, rnd, W.night);
+    drawGeneric(v, gl, b, rnd, night);
   }
   paintTop(grid, rails, flats);
-  const G = buildGround(city, grid, { sc, mt, gs: 8, clip: true, skip: (x, z) => x > cr.x0 && x < cr.x1 && z > cr.z0 && z < cr.z1 });
+  const G = buildGround(city, grid, { mt, gs: 8, clip: true });
   g.add(...G.meshes);
   v.setT(); gl.setT();
-  if (!v.empty) { const m = v.mesh(CUT.solid); m.customDepthMaterial = CUT.depth; m.frustumCulled = false; g.add(m); }
-  if (!gl.empty) { const m = new THREE.Mesh(gl.geometry(), CUT.glow); m.frustumCulled = false; g.add(m); }
+  // buildings are lifted onto the terrain by the shader and may stick out of the tile: give them a generous bounding sphere
+  const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(TILE / 2, 30, TILE / 2), 240); return m; };
+  if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add(m); }
+  if (!gl.empty) g.add(roomy(new THREE.Mesh(gl.geometry(), CUTT.glow)));
   // trees: the mapped ones, plus woods and a sprinkle on grass
   const pts = [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH);
-  const push = (gx, gz, size) => { if (!ok[grid.get(gx, gz)]) return; const p = sc(gx, gz); if (!inR(p[0], p[1], -2)) pts.push(p[0], p[1], size); };
+  const push = (gx, gz, size) => { if (ok[grid.get(gx, gz)]) pts.push(gx, gz, size); };
   if (t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, rnd.range(1.35, 1.95));
-  const step = W.lite ? 10 : 7;
+  const step = lite ? 10 : 7;
   for (let z = 2; z < TILE; z += step) for (let x = 2; x < TILE; x += step) {
     const jx = x + rnd.range(-2.6, 2.6), jz = z + rnd.range(-2.6, 2.6), cl = grid.get(jx, jz);
     if (cl === C.FOREST) { if (rnd() < 0.9) push(jx, jz, rnd.range(1.7, 2.6)); }
     else if (cl === C.GRASS) { if (rnd() < 0.07) push(jx, jz, rnd.range(1.3, 2.0)); }
     else if (cl === C.DUNE) { if (rnd() < 0.06) push(jx, jz, rnd.range(0.5, 0.9)); }
   }
-  const trees = treeMesh(pts, rnd, W.lite ? 700 : 1800, W.landY);
+  const yAt = (gx, gz) => {
+    const i = Math.min(grid.w - 1, Math.max(0, Math.floor(gx / c))), j = Math.min(grid.h - 1, Math.max(0, Math.floor(gz / c)));
+    return city.landAt(ox + gx, oy + TILE - gz) + grid.off[j * grid.w + i];
+  };
+  const trees = treeMesh(pts, rnd, lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth);
   if (trees) g.add(trees);
   return {
-    g,
+    key, num: tileNum(tx, ty), g, grid, ox, oy, roads, rails, pois: t.p || [],
     dispose() {
       g.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
@@ -1188,16 +1405,27 @@ function buildTile(W, city, key, t) {
     },
   };
 }
+/** Stand a tile in a street's frame. */
+function placeTile(c, f) {
+  const p = f.S(c.ox, c.oy + TILE);
+  c.g.position.set(p[0], 0, p[1]);
+  c.g.rotation.y = Math.atan2(-f.dy, f.dx);
+  c.g.updateMatrixWorld(true);
+}
 
 class Streamer {
   constructor(W, city) {
     this.W = W; this.city = city; this.M = cityModel(city);
     this.group = new THREE.Group();
     W.group.add(this.group);
+    // tiles carry their lit windows and lamps: day tiles are no use at night
+    if (_builtNight !== W.night) { for (const k of [..._built.keys()]) dropTile(k); _builtNight = W.night; }
     this.live = new Map(); this.pending = new Set(); this.ready = []; this.queued = new Set(); this.failed = new Map();
     this.want = []; this.wantSet = new Set(); this.sig = '';
-    this.cap = W.lite ? 14 : 44; this.rmax = W.lite ? 380 : 640; this.off = 1500;
+    this.cap = W.lite ? 16 : 72; this.rmax = W.lite ? 380 : 820; this.off = 1500;
     this.on = true; this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
+    /** Called with (tile, true) when a tile comes on screen and (tile, false) when it leaves. */
+    this.onTile = null;
   }
   _mask(key, v) {
     const [tx, ty] = key.split('_').map(Number), e = this.city.ix.extent, M = this.M, i = tx - Math.round(e[0] / TILE), j = ty - Math.round(e[1] / TILE);
@@ -1214,7 +1442,22 @@ class Streamer {
     }
     return true;
   }
-  update(x, z, dist) {
+  _attach(key, c) {
+    this.live.set(key, c);
+    if (!c.g) return;
+    _built.delete(key); _built.set(key, c); // most recently used
+    placeTile(c, this.W.frame);
+    this.group.add(c.g);
+    this._mask(key, this.on ? 255 : 0);
+    if (this.onTile) this.onTile(c, true);
+  }
+  _detach(key) {
+    const c = this.live.get(key);
+    this.live.delete(key);
+    if (c && c.g) { this.group.remove(c.g); this._mask(key, 0); if (this.onTile) this.onTile(c, false); }
+  }
+  /** x, z: what the camera looks at; dist: how far away it is; az: the side it stands on. */
+  update(x, z, dist, az = 0) {
     if (this.dead) return;
     const on = dist < this.off;
     if (on !== this.on) {
@@ -1225,7 +1468,9 @@ class Streamer {
     }
     if (!on) return;
     const f = this.W.frame, ix = this.city.ix, now = performance.now();
-    const rad = clamp(dist * 0.9 + 140, 260, this.rmax), m = f.M(x, z), cx = Math.floor(m[0] / TILE), cy = Math.floor(m[1] / TILE);
+    const rad = clamp(dist * 0.9 + 320, 440, this.rmax);
+    // the camera looks across what it is aimed at: there is more to see beyond the target than in front of it
+    const lead = Math.min(rad * 0.3, dist * 0.8), m = f.M(x - Math.sin(az) * lead, z - Math.cos(az) * lead), cx = Math.floor(m[0] / TILE), cy = Math.floor(m[1] / TILE);
     const sig = cx + ',' + cy + ',' + Math.round(rad / 40) + ',' + Math.round(m[0] / 64) + ',' + Math.round(m[1] / 64);
     if (sig !== this.sig) {
       this.sig = sig;
@@ -1240,6 +1485,8 @@ class Streamer {
       want.sort((a, b) => a[0] - b[0]);
       this.want = want.map((q) => q[1]);
       this.wantSet = new Set(this.want);
+      // tiles built for an earlier street come straight back
+      for (const key of this.want) if (!this.live.has(key) && _built.has(key)) this._attach(key, _built.get(key));
     }
     let flying = this.pending.size;
     for (const key of this.want) {
@@ -1254,7 +1501,7 @@ class Streamer {
       });
     }
     // one tile per frame at most, with a breather after each, so the camera keeps moving smoothly
-    if (this.ready.length && now - this.last > 70) {
+    if (this.ready.length && now - this.last > 50) {
       // nearest wanted tile first; tiles the camera has already left behind are not built at all
       this.ready = this.ready.filter((q) => this.wantSet.has(q[0]) || (this.queued.delete(q[0]), false));
       let bi = 0;
@@ -1262,34 +1509,31 @@ class Streamer {
       const [key, t] = this.ready.length ? this.ready.splice(bi, 1)[0] : [null, null];
       if (key) this.queued.delete(key);
       if (key && !this.live.has(key)) {
-        let chunk;
-        try { chunk = buildTile(this.W, this.city, key, t); } catch (e) { console.error('tile failed', key, e); chunk = { g: null, dispose() {} }; }
-        this.live.set(key, chunk);
-        if (chunk.g) { this.group.add(chunk.g); this._mask(key, 255); }
+        let chunk = _built.get(key);
+        if (!chunk) {
+          try { chunk = buildTile(this.city, key, t, this.W.night, this.W.lite); _built.set(key, chunk); _byNum.set(chunk.num, chunk); } catch (e) { console.error('tile failed', key, e); chunk = { g: null, dispose() {} }; }
+        }
+        this._attach(key, chunk);
         this.built++;
       }
       this.last = performance.now();
       this.ms = this.last - now;
     }
-    if (this.live.size > this.cap) {
+    if (_built.size > this.cap) {
       // too many in memory: let go of the farthest one that is not wanted right now
       let worst = null, wd = -1;
-      for (const key of this.live.keys()) {
+      for (const key of _built.keys()) {
         if (this.wantSet.has(key)) continue;
         const [tx, ty] = key.split('_').map(Number), d = Math.hypot((tx + 0.5) * TILE - m[0], (ty + 0.5) * TILE - m[1]);
         if (d > wd) { wd = d; worst = key; }
       }
-      if (worst) this._drop(worst);
+      if (worst) { this._detach(worst); dropTile(worst); }
     }
   }
-  _drop(key) {
-    const c = this.live.get(key);
-    this.live.delete(key);
-    if (c && c.g) { this.group.remove(c.g); c.dispose(); this._mask(key, 0); }
-  }
+  /** Leave the scene. The tiles themselves stay in memory for the next street. */
   dispose() {
     this.dead = true;
-    for (const key of [...this.live.keys()]) this._drop(key);
+    for (const key of [...this.live.keys()]) this._detach(key);
     this.ready = [];
     this.queued.clear();
   }

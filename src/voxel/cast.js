@@ -13,6 +13,9 @@ function turnTo(g, heading, dt, k = 12) {
   g.rotation.y += d * Math.min(1, dt * k);
 }
 
+/** People are scaled by this on top of their nominal scale so they read as about 2 m tall next to real-size cars. */
+export const PERSON_K = 0.72;
+
 /**
  * Biped. Forward is +z. Options:
  *  kind: 'civ' | 'cop' | 'robber' | 'raccoon' | 'kid' | 'granny' | 'hoodie' | 'chef'
@@ -38,6 +41,7 @@ export function makePerson(rnd, o = {}) {
   const g = new THREE.Group();
   const b = new THREE.Group(); // bobbing body root
   g.add(b);
+  scale *= PERSON_K;
   g.scale.setScalar(scale);
 
   const limb = (x, y, w, h, d, col, foot) => {
@@ -250,10 +254,10 @@ function quad(rnd, { body, head, len = 0.9, h = 0.45, w = 0.36, legH = 0.3, tail
   return a;
 }
 export const makeDog = (rnd) => quad(rnd, {
-  body: rnd.pick(['#c68642', '#8d5524', '#f1e0c5', '#444', '#d9a066']), head: '#b0703a', snout: '#f1e0c5', scale: 1.15, earCol: '#5c3a1e',
+  body: rnd.pick(['#c68642', '#8d5524', '#f1e0c5', '#444', '#d9a066']), head: '#b0703a', snout: '#f1e0c5', scale: 0.8, earCol: '#5c3a1e',
 });
 export const makeCat = (rnd) => quad(rnd, {
-  body: rnd.pick(['#f08a24', '#2f2f2f', '#bdbdbd', '#f5efe6']), head: rnd.pick(['#f08a24', '#2f2f2f', '#bdbdbd']), len: 0.7, h: 0.32, w: 0.28, legH: 0.22, scale: 1.05,
+  body: rnd.pick(['#f08a24', '#2f2f2f', '#bdbdbd', '#f5efe6']), head: rnd.pick(['#f08a24', '#2f2f2f', '#bdbdbd']), len: 0.7, h: 0.32, w: 0.28, legH: 0.22, scale: 0.62,
 });
 
 /** Bird (gull / pigeon / stork). Flies when a.fly is true. */
@@ -262,9 +266,9 @@ export function makeBird(rnd, kind = 'gull') {
   const b = new THREE.Group();
   g.add(b);
   const C = {
-    gull: { body: '#ffffff', wing: '#b9c2cc', beak: '#f5a623', leg: '#f5a623', s: 1.15 },
-    pigeon: { body: '#8794a8', wing: '#667085', beak: '#e6a15c', leg: '#d9534f', s: 0.8 },
-    stork: { body: '#ffffff', wing: '#1f1f1f', beak: '#e4572e', leg: '#e4572e', s: 1.5 },
+    gull: { body: '#ffffff', wing: '#b9c2cc', beak: '#f5a623', leg: '#f5a623', s: 0.8 },
+    pigeon: { body: '#8794a8', wing: '#667085', beak: '#e6a15c', leg: '#d9534f', s: 0.58 },
+    stork: { body: '#ffffff', wing: '#1f1f1f', beak: '#e4572e', leg: '#e4572e', s: 1.1 },
   }[kind];
   const stork = kind === 'stork';
   const legH = stork ? 0.7 : 0.14;

@@ -34,7 +34,7 @@ export function crossSection(st, clearB, clearF, night) {
   if (kind === 'minor') {
     const park = hw >= 2.5;
     L.canPark = park;
-    L.laneB = L.laneF = L.chaseZ = park ? -1.05 : 0;
+    L.laneB = L.laneF = L.chaseZ = park ? -1.15 : 0; // 1.85 m car: -2.08..-0.22, parked cars from +0.68
     L.bikeB = -(hw - 0.35); L.bikeF = park ? 0.35 : hw - 0.4;
   }
   return L;
@@ -62,6 +62,54 @@ export function dress(W) {
   const cls = (s, off) => { const p = path.xz(s, off); return G.get(p[0], p[1]); };
   const free = (s, off) => okT[cls(s, off)] === 1;
   const sA = path.sA, sB = path.sB, len = sB - sA;
+
+  // ---- where the pavement really is: scanned from the painted ground every 2 m, on both sides, along the whole path
+  // (also round the corner at both ends, where the street's own cross-section is not drawn)
+  L.sA = sA; L.sB = sB;
+  {
+    const DS = 2, n = Math.ceil(path.len / DS) + 1, set = (...c) => { const t = new Uint8Array(256); for (const k of c) t[k] = 1; return t; };
+    const GOOD = set(C.WALK, C.PED, C.PLAZA, C.LAND, C.FOOT), SOSO = set(C.DIRT, C.GRASS, C.SAND, C.DUNE, C.FOREST, C.PITCH, C.FARM);
+    const ROADY = set(C.ASPHALT, C.KLINKER, C.SERVICE, C.BIKELANE, C.CYCLE, C.MARK, C.CURB, C.PARKING, C.RAILBED, C.RAIL);
+    const tabs = {};
+    for (const sgn of [-1, 1]) {
+      const t = (tabs[sgn] = new Float32Array(n * 2)); // per sample: inner edge of the walkable strip, its width (edge < 0: none)
+      for (let k = 0; k < n; k++) {
+        let a = -1, b = -1, soft = -1;
+        for (let v = 0.6; v <= 12; v += 0.4) {
+          const c = cls(k * DS, sgn * v);
+          if (GOOD[c]) { if (a < 0) a = v; b = v; }
+          else if (a >= 0) break;
+          else if (SOSO[c]) { if (soft < 0 && v > 1.4) soft = v; }
+          else if (!ROADY[c] && v > 1.6) break; // a wall or water before any pavement
+        }
+        if (a >= 0 && b - a >= 0.4) { t[k * 2] = a + 0.25; t[k * 2 + 1] = Math.min(b - a, 3.2); }
+        else if (soft >= 0) { t[k * 2] = soft + 0.3; t[k * 2 + 1] = 0.7; } // no pavement: the verge will do
+        else t[k * 2] = -1;
+      }
+      // a short gap is a side street to cross: carry the line straight over it
+      for (let k = 0; k < n; k++) {
+        if (t[k * 2] >= 0) continue;
+        let k1 = k;
+        while (k1 < n && t[k1 * 2] < 0) k1++;
+        const lo = k - 1, hi = k1 < n ? k1 : -1;
+        for (let q = k; q < k1; q++) {
+          if (lo >= 0 && hi >= 0 && k1 - k <= 12) { const f = (q - lo) / (hi - lo); t[q * 2] = t[lo * 2] + (t[hi * 2] - t[lo * 2]) * f; t[q * 2 + 1] = Math.min(t[lo * 2 + 1], t[hi * 2 + 1]); }
+          else { t[q * 2] = hb + 0.9; t[q * 2 + 1] = 1.2; } // nothing to go by: beside the kerb
+        }
+        k = k1;
+      }
+      // people do not turn on a sixpence: smooth the line a little
+      const e = new Float32Array(n);
+      for (let k = 0; k < n; k++) { const k0 = Math.max(0, k - 2), k2 = Math.min(n - 1, k + 2); let sum = 0; for (let q = k0; q <= k2; q++) sum += t[q * 2]; e[k] = Math.max(t[k * 2] - 0.2, sum / (k2 - k0 + 1)); }
+      for (let k = 0; k < n; k++) { t[k * 2 + 1] = Math.max(0.3, t[k * 2 + 1] - (e[k] - t[k * 2])); t[k * 2] = e[k]; }
+    }
+    /** Where to walk at arc length s: side −1 (far) or 1 (camera side), f = 0…1 across the pavement's width. Returns the offset from the centre line. */
+    L.walkAt = (side, f, s) => {
+      const t = tabs[side < 0 ? -1 : 1], x = clamp(s / DS, 0, n - 1.001), k = Math.floor(x), u = x - k;
+      const a = t[k * 2] + (t[k * 2 + 2] - t[k * 2]) * u, w = t[k * 2 + 1] + (t[k * 2 + 3] - t[k * 2 + 1]) * u;
+      return (side < 0 ? -1 : 1) * (a + w * f);
+    };
+  }
 
   // ---- house anchors
   for (const h of W.heroes) {
@@ -104,7 +152,7 @@ export function dress(W) {
       if (doorNear(s, 1.4) || A.racks.some((r) => Math.abs(r.s - s) < 5) || !free(s, off) || !free(s, off + 1)) continue;
       at(s, off);
       P.bikeRack(v, 0, 0, rnd, 4, 0);
-      A.racks.push({ s, z: off + 1.05 });
+      A.racks.push({ s, z: off + 1.7 });
     }
     // benches, backs to the houses, facing the street
     for (let k = 0; k < (W.builtAt((b0 + b1) / 2, -1) ? 2 : block % 2); k++) {
@@ -194,8 +242,8 @@ export function dress(W) {
   // ---- parked cars along the kerb on small streets
   if (L.canPark) {
     const road = cls(sA + len / 2, 0);
-    const pz = L.hw - 0.95, dens = Math.min(0.62, 30 / Math.max(1, len / 5.2));
-    for (let s = sA + 3.5; s < sB - 4; s += rnd.range(4.4, 6)) {
+    const pz = L.hw - 1.0, dens = Math.min(0.62, 30 / Math.max(1, len / 6.4)); // 1.85 m car: kerb side at hw - 0.075
+    for (let s = sA + 3.5; s < sB - 4; s += rnd.range(5.5, 7.2)) { // 4.4 m cars, at least 1.1 m between
       if (!rnd.chance(dens) || L.zebras.some((z) => Math.abs(z - s) < 3.2)) continue;
       if (cls(s, pz) !== road || cls(s, L.hw + 0.6) !== C.CURB && cls(s, hb + 0.8) !== C.WALK) continue;
       const car = P.makeCar(rnd, 'car', false), f = at(s, pz);

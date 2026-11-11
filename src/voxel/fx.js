@@ -155,7 +155,7 @@ export class Fx {
     el.appendChild(inner);
     this.overlay.appendChild(el);
     const src = at.isVector3 ? at.clone() : at;
-    this.texts.push({ el, src, t: 0, dur, rise, off: off ?? (at.isVector3 ? 0 : 2.9) });
+    this.texts.push({ el, src, t: 0, dur, rise, off: off ?? (at.isVector3 ? 0 : 2.2) });
     if (this.texts.length > 14) this._kill(0);
   }
   _kill(i) {

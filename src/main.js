@@ -43,6 +43,43 @@ async function boot() {
   const S = streets.features.map((f) => f.properties);
   S.forEach((p, i) => { p.id = streets.features[i].id; p.lname = p.name.toLowerCase(); });
 
+  // ---- which street runs through a given spot? (used when the street camera wanders onto another street)
+  // every street's line segments, in metres, binned into 64 m cells
+  const KX = 68430, KY = 111267, LON0 = 4.3, LAT0 = 52.07, CELL = 64;
+  const segs = new Map();
+  streets.features.forEach((f, id) => {
+    for (const line of f.geometry.coordinates) for (let i = 1; i < line.length; i++) {
+      const ax = (line[i - 1][0] - LON0) * KX, ay = (line[i - 1][1] - LAT0) * KY, bx = (line[i][0] - LON0) * KX, by = (line[i][1] - LAT0) * KY;
+      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / (CELL / 2)));
+      let last = null;
+      for (let k = 0; k <= n; k++) {
+        const key = Math.floor((ax + ((bx - ax) * k) / n) / CELL) * 4096 + Math.floor((ay + ((by - ay) * k) / n) / CELL);
+        if (key === last) continue;
+        last = key;
+        let bin = segs.get(key);
+        if (!bin) segs.set(key, (bin = []));
+        bin.push(id, ax, ay, bx, by);
+      }
+    }
+  });
+  /** The street whose centre line passes within `max` metres of a point; `skip` is a street to ignore. */
+  const streetAt = (lngLat, max, skip = -1) => {
+    const x = (lngLat[0] - LON0) * KX, y = (lngLat[1] - LAT0) * KY, cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
+    let best = -1, bd = max;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const bin = segs.get((cx + dx) * 4096 + cy + dy);
+      if (!bin) continue;
+      for (let i = 0; i < bin.length; i += 5) {
+        if (bin[i] === skip) continue;
+        const ax = bin[i + 1], ay = bin[i + 2], ex = bin[i + 3] - ax, ey = bin[i + 4] - ay;
+        const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey || 1)));
+        const d = Math.hypot(ax + ex * t - x, ay + ey * t - y);
+        if (d < bd) { bd = d; best = bin[i]; }
+      }
+    }
+    return best;
+  };
+
   $('#logo-year').textContent = `· ${num(meta.year)} police data`;
   if (matchMedia('(hover: none)').matches) $('#hint').textContent = 'Tap a neighbourhood to zoom · tap a street to drop in';
   $('#legend').innerHTML = [1, 2, 3, 4, 5].map((l) => `<div><i style="background:${LV[l]}"></i>${LV_NAMES[l]}</div>`).join('');
@@ -169,6 +206,7 @@ async function boot() {
     const wn = wijkName(p.wijk);
     $('#t-kicker').textContent = wn && wn !== p.buurtName ? `${p.buurtName} · ${wn}` : p.buurtName;
     $('#t-name').textContent = p.name;
+    $('#t-name').style.fontSize = p.name.length > 17 ? 'clamp(14px, 2.2vw, 26px)' : ''; // long names stay on one line where they can
     $('#t-meter').innerHTML = [0, 1, 2, 3, 4].map((i) => `<span class="pip ${i < lv ? 'on' : ''}" style="--i:${i};--c:${c}"></span>`).join('') + `<span class="lvname" style="--c:${c}">${LV_NAMES[lv].toUpperCase()}</span>`;
     let html = '';
     if (b) {
@@ -217,6 +255,19 @@ async function boot() {
     }
   };
   hooks.onPin = () => play('whoosh');
+  // roaming onto another street moves the whole show there: its name, its figures, its shenanigans
+  let cand = -1, candN = 0;
+  hooks.onRoam = ({ lngLat, dist, off }) => {
+    if (busy || !current || dist > 240 || off < 15) { cand = -1; return; }
+    const id = streetAt(lngLat, 13, current.id);
+    if (id < 0 || !S[id] || S[id].len < 25) { cand = -1; return; }
+    if (id !== cand) { cand = id; candN = 0; return; }
+    if (++candN >= 3) { cand = -1; shiftFocus(S[id], lngLat); } // the camera has rested on it for most of a second
+  };
+  hooks.onSwap = () => {
+    cut.classList.add('swap');
+    setTimeout(() => cut.classList.remove('swap'), 200);
+  };
   // zooming all the way out hands over to the map
   hooks.onExit = () => closeStreet(true);
   hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; };
@@ -336,6 +387,32 @@ async function boot() {
     startMusic(p.level);
     mapEl.classList.remove('lock');
     await sleep(300);
+  }
+  /** Move the focus to another street without moving the camera (the viewer roamed onto it). */
+  async function shiftFocus(p0, lngLat) {
+    if (busy || !current || !p0) return;
+    busy = true;
+    try {
+      const p = withLevel(p0);
+      const ok = await stage.show(p, hooks, { ...stageOpts(p, lngLat), keep: true });
+      if (!ok) {
+        if (!stage.W) recover('That street would not load. Try another one.'); // otherwise the street we had is still playing
+        return;
+      }
+      current = p;
+      fillHud(p);
+      cut.classList.remove('titled');
+      void cut.offsetWidth;
+      cut.classList.add('titled');
+      play('slam');
+      startMusic(p.level);
+      history.replaceState(null, '', `#s=${p.id}`);
+    } catch (e) {
+      console.error(e);
+      recover('That street would not load. Try another one.');
+    } finally {
+      busy = false;
+    }
   }
   async function closeStreet(viaZoom) {
     if (busy || !current) return;

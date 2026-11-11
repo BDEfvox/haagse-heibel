@@ -14,7 +14,7 @@ The files in this folder are derived data, simplified, combined and reformatted 
 
 - Terrain heights (world/city-terrain.png): AHN (Actueel Hoogtebestand Nederland) DTM 0.5 m, Rijkswaterstaat, CC0 1.0,
   via PDOK WCS. https://service.pdok.nl/rws/ahn/wcs/v1_0
-  Changes: resampled to 8 m cells, holes filled, smoothed, sea set to 0 m, encoded in 8 bits.
+  Changes: resampled to 4 m cells, holes filled, smoothed, sea set to 0 m, encoded in 8 bits.
 
 - Municipal trees (the tree positions in world/tiles that do not come from OpenStreetMap): Gemeente Den Haag tree register
   ("Bomen met ID", 123,603 points, last edited November 2022), published on the municipality's open-data portal

@@ -8,7 +8,8 @@ import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
 import { makeBird } from './cast.js';
-import { makeCar, makeTram } from './props.js';
+import { makeTram } from './props.js';
+import { Crowd } from './crowd.js';
 import { sfx } from '../audio.js';
 
 const SKY = {
@@ -197,14 +198,14 @@ export class Stage {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.fit = Math.max((w < h ? 16 : 27) / (this.camera.aspect * TAN), 15 / TAN) * 1.04;
+    this.fit = Math.max((w < h ? 14 : 23) / (this.camera.aspect * TAN), 13 / TAN) * 1.04;
   }
 
   /** Where the camera sits to watch one spot on the street. */
   _view(ctx) {
     const path = this.W.path, p = path.xz(ctx.sc, -(this.W.L.hw + this.W.L.bw) * 0.6 - 1.2);
     path.at(ctx.sc, _f);
-    return { tx: p[0], tz: p[1], ty: this.W.landY(p[0], p[1]) + 1.5, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 65, fov: FOV, roll: 0 };
+    return { tx: p[0], tz: p[1], ty: this.W.landY(p[0], p[1]) + 1.2, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 56, fov: FOV, roll: 0 };
   }
   _setMode(mode) {
     if (this.mode === mode) return;
@@ -300,8 +301,9 @@ export class Stage {
     if (sp.lead && first && typeof first.heading === 'number' && first.moving) { const sh = Math.sin(first.heading), ch = Math.cos(first.heading); X += (tx * sh - tz * ch) * sp.lead; Z += (tz * sh + tx * ch) * sp.lead; }
     az = clamp(az + (d.az || 0) * age + (c.azFix || 0), -1.75, 1.75);
     return {
-      tx: X, tz: Z, ty: Y + (sp.y ?? 1.3), az: base + az, el: clamp((sp.el ?? 0.3) + (d.el || 0) * age, -0.2, 1.45),
-      dist: Math.max(5, dist + (d.dist || 0) * age), fov: sp.fov || FOV, roll: clamp(sp.roll || 0, -0.2, 0.2),
+      // shots were framed for taller figures: aim lower and stand closer now that people are life-size
+      tx: X, tz: Z, ty: Y + (sp.y ?? 1.3) * 0.76, az: base + az, el: clamp((sp.el ?? 0.3) + (d.el || 0) * age, -0.2, 1.45),
+      dist: Math.max(4, (dist + (d.dist || 0) * age) * (dist < 20 ? 0.78 : 0.88)), fov: sp.fov || FOV, roll: clamp(sp.roll || 0, -0.2, 0.2),
     };
   }
   /** Is the line from a shot's subject to its camera free of buildings (as drawn, with their heights)? */
@@ -342,24 +344,43 @@ export class Stage {
   }
 
   // ------------------------------------------------------------ show
+  /**
+   * Open a street. With `opts.keep` (and a street already open) the camera stays exactly where it is: the new
+   * street is built while the old one keeps playing, then they change places in a single frame.
+   */
   async show(st, hooks = {}, opts = {}) {
-    this.hide();
+    const keep = !!opts.keep && !!this.W && this.running;
+    if (keep) this._tok++; else this.hide();
     const token = this._tok;
     const level = clamp(Math.round(+st.level) || 1, 1, 5), sky = SKY[level];
-    this.hooks = hooks;
-    this.root.style.setProperty('--sky-top', sky.top);
-    this.root.style.setProperty('--sky-bot', sky.bot);
-    this.root.classList.toggle('stars', !!sky.stars);
+    const dress = () => {
+      this.hooks = hooks;
+      this.root.style.setProperty('--sky-top', sky.top);
+      this.root.style.setProperty('--sky-bot', sky.bot);
+      this.root.classList.toggle('stars', !!sky.stars);
+    };
+    if (!keep) dress();
     let W;
     try {
-      W = await buildWorld(st, opts.geometry, { night: !!sky.night, seed: opts.seed || '', lite: this.lite });
+      W = await buildWorld(st, opts.geometry, { night: !!sky.night, seed: opts.seed || '', lite: this.lite, soft: keep });
     } catch (e) {
       console.error('world build failed', e);
       return false;
     }
     if (token !== this._tok) { W.dispose(); return false; }
+    let view = null;
+    if (keep) {
+      const o = this.W, r = this.rig, g = this.goal;
+      if (!o || !this.running || this.mode === 'leave' || this.mode === 'drop' || this.exiting) { W.dispose(); return false; }
+      // the camera, in map terms, so it can be put back in the new street's frame
+      const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
+      view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
+      if (this.sky !== sky) hooks.onSwap?.();
+      this._teardown();
+      dress();
+    }
     try {
-      this._begin(W, st, sky, level, opts);
+      this._begin(W, st, sky, level, { ...opts, view });
     } catch (e) {
       console.error('scene start failed', e);
       if (!this.W) W.dispose();
@@ -377,7 +398,13 @@ export class Stage {
     this.hemi.color.set(sky.hs); this.hemi.groundColor.set(sky.hg); this.hemi.intensity = sky.hI;
     this.scene.fog.color.set(sky.fog || sky.bot);
     this.sunDir = new THREE.Vector3(...sky.pos).normalize();
+    W.activate();
     this.scene.add(W.group);
+    // background life on every other street: the detailed area's roads now, each tile's roads as it streams in
+    this.crowd = new Crowd(W, { lite: this.lite });
+    this.scene.add(this.crowd.group);
+    this.crowd.addRegion();
+    W.stream.onTile = (c, on) => { if (!this.crowd) return; if (on) this.crowd.addTile(c); else this.crowd.remove(c.key); };
     this.dyn = new THREE.Group();
     this.scene.add(this.dyn);
 
@@ -486,6 +513,12 @@ export class Stage {
           if (this.cine && this.cine.ctx === ctx && this.cine.name === name) this._cineEnd();
           if (this.cineSkip === name) this.cineSkip = null;
         },
+        /** Everyone and everything on stage, and where the trams are: traffic looks ahead with these. */
+        all: () => stage.actors,
+        trams: () => stage.life,
+        now: () => stage.time,
+        toStreet: (X, Z) => path.project(X, Z),
+        tangent: (s) => path.at(s, _f),
         /** The director's camera for one gag (see _cam). */
         cam: (name) => this._cam(ctx, name),
         cineBusy: () => !!this.cine && this.cine.ctx === ctx,
@@ -502,13 +535,28 @@ export class Stage {
     const from = typeof opts.from === 'function' ? opts.from() : opts.from;
     const mid = path.xz((path.sA + path.sB) / 2, 0);
     const d0 = clamp(from?.dist || 2600, 300, 60000), c0 = from?.lngLat ? W.toScene(from.lngLat[0], from.lngLat[1]) : mid;
-    const dur = CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
-    this.drop = { t: 0, dur, d0, c0, y0: W.landY(c0[0], c0[1]) };
-    this.mode = 'drop';
-    this.cutEnd = dur + 30;
-    this.lastSwitch = dur; this.idleT = 0; this.autoFree = true;
-    U.uGrow.value = 0.02;
-    Object.assign(this.rig, { tx: c0[0], tz: c0[1], ty: this.drop.y0, az: W.northAz, el: TOP, dist: d0, fov: FOV, roll: 0 });
+    const V = opts.view || null;
+    const dur = V ? 0 : CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
+    this.cutK = undefined; this.roamT = 0;
+    if (V) {
+      // the focus moved here from another street: the camera carries on from exactly where it was
+      const F = W.frame, az = (d) => Math.atan2(d[0] * F.dx + d[1] * F.dy, d[0] * F.dy - d[1] * F.dx);
+      const p = F.S(V.m[0], V.m[1]), q = F.S(V.gm[0], V.gm[1]);
+      Object.assign(this.rig, { tx: p[0], tz: p[1], ty: V.ty, az: az(V.d), el: V.el, dist: V.dist, fov: FOV, roll: 0 });
+      Object.assign(this.goal, { tx: q[0], tz: q[1], ty: V.ty, az: az(V.gd), el: V.gel, dist: V.gdist, fov: FOV, roll: 0 });
+      this.drop = null;
+      this.mode = 'free';
+      this.cutEnd = 0; this.lastSwitch = 0; this.idleT = 0; this.autoFree = false;
+      U.uGrow.value = 1;
+      hooks.onMode?.('free');
+    } else {
+      this.drop = { t: 0, dur, d0, c0, y0: W.landY(c0[0], c0[1]) };
+      this.mode = 'drop';
+      this.cutEnd = dur + 30;
+      this.lastSwitch = dur; this.idleT = 0; this.autoFree = true;
+      U.uGrow.value = 0.02;
+      Object.assign(this.rig, { tx: c0[0], tz: c0[1], ty: this.drop.y0, az: W.northAz, el: TOP, dist: d0, fov: FOV, roll: 0 });
+    }
 
     startAmbient(amb);
     this.locales.forEach((c, i) => startLocale(c, i === 0
@@ -556,6 +604,11 @@ export class Stage {
     cancelAnimationFrame(this._raf);
     this._clearPointers?.();
     this.mode = 'idle';
+    this._teardown();
+    this.keys.clear();
+  }
+  /** Take the current street off the stage (the render loop and the input state are left alone). */
+  _teardown() {
     if (this.cine) { this.cine = null; this.hooks?.onCine?.(false); }
     if (this.leaveTo && !this.leaveTo.done) { this.leaveTo.done = true; this.leaveTo.resolve(); }
     this.leaveTo = null;
@@ -568,11 +621,12 @@ export class Stage {
       this.scene.remove(this.dyn);
       this.dyn = null;
     }
+    if (this.crowd) { this.scene.remove(this.crowd.group); this.crowd.dispose(); this.crowd = null; }
     if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
     this.actors = [];
+    this.life = [];
     this.gags = new Set();
-    this.keys.clear();
   }
 
   _focus(ctx, X, Z, zoom, hold, prio) {
@@ -595,14 +649,6 @@ export class Stage {
       if (this.life.filter((l) => l.tram).length < 3) {
         const path = W.tramLines[Math.floor(rnd() * W.tramLines.length)], dir = rnd() < 0.5 ? 1 : -1;
         this._addLife(makeTram(W.night), path, dir, 9, 0, true);
-      }
-    }
-    if (T.car < 0 && W.sideRoads.length) {
-      T.car = 1.2 + rnd() * 2.6;
-      if (this.life.filter((l) => !l.tram).length < (this.lite ? 4 : 9)) {
-        const path = W.sideRoads[Math.floor(rnd() * W.sideRoads.length)], dir = rnd() < 0.5 ? 1 : -1;
-        const r = makeRng((rnd() * 1e9) | 0);
-        this._addLife(makeCar(r, r.chance(0.1) ? 'taxi' : r.chance(0.1) ? 'van' : 'car', W.night), path, dir, 8 + rnd() * 3, dir * 1.7, false);
       }
     }
     for (let i = this.life.length - 1; i >= 0; i--) {
@@ -676,7 +722,7 @@ export class Stage {
     for (const c of this.clouds) c.position.x += c.userData.v * dt;
 
     // ---- camera
-    let shotOn = false, shotBlocked = false;
+    let shotOn = false, shotBlocked = false, snapCut = false;
     if (this.mode === 'drop') {
       const D = this.drop;
       if (!this.hold) D.t += real * (this.debugSpeed || 1);
@@ -767,7 +813,14 @@ export class Stage {
         r.dist *= Math.pow(g.dist / r.dist, k);
         r.fov += ((g.fov || FOV) - r.fov) * k; r.roll += ((g.roll || 0) - r.roll) * k;
       }
+      snapCut = snap;
       if (this.mode === 'free' && r.dist >= EXIT && !this.exiting) { this.exiting = true; this.hooks.onExit?.(); }
+      if (this.mode === 'free' && !this.exiting && this.hooks.onRoam && (this.roamT -= real) <= 0) {
+        this.roamT = 0.25;
+        const pr = W.path.project(r.tx, r.tz);
+        // how far the camera's target is from the street that is open (leaving it past either end counts too)
+        this.hooks.onRoam({ lngLat: W.toLngLat(r.tx, r.tz), dist: r.dist, off: pr.d + Math.max(0, W.path.sA - pr.s, pr.s - W.path.sB) });
+      }
     }
     const sh = this.fx.shakeAmt * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
     const tx = r.tx + (Math.random() - 0.5) * sh, ty = r.ty + (Math.random() - 0.5) * sh, tz = r.tz + (Math.random() - 0.5) * sh;
@@ -785,7 +838,8 @@ export class Stage {
     this.scene.fog.near = r.dist * 1.6 + 180;
     this.scene.fog.far = r.dist * 7 + 2400;
     this.fx.zoom = r.dist;
-    W.lod(r.tx, r.tz, r.dist, this.mode !== 'drop' && this.mode !== 'leave');
+    W.lod(r.tx, r.tz, r.dist, this.mode !== 'drop' && this.mode !== 'leave', r.az);
+    this.crowd.update(dt, r.tx, r.tz, r.dist);
 
     // ---- things in the way duck; shadows follow the camera
     U.uFocus.value.set(r.tx, 0, r.tz);
@@ -793,7 +847,13 @@ export class Stage {
     U.uTan.value = Math.tan(clamp(r.el, 0.1, 1.45));
     U.uR.value = shotOn ? r.dist * 0.3 + 3 : r.dist * 0.6 + 20; // a directed shot only clears its own sight line
     U.uHalf.value = shotBlocked ? 0 : 0.5; // ...unless something is in the way: then everything on the camera's side of the subject ducks
-    U.uCut.value = clamp((1.3 - r.el) / 0.15) * clamp((700 - r.dist) / 300);
+    // The cutaway is only for watching the street from close by. It fades out as the camera climbs, and when the
+    // camera wanders off the street there is nothing to keep in view, so everything stands up again.
+    let need = clamp((1.3 - r.el) / 0.15) * clamp((190 - r.dist) / 80);
+    if (need > 0 && this.mode === 'free') need *= clamp((46 - W.path.project(r.tx, r.tz).d) / 26);
+    if (shotOn || shotBlocked) need = Math.max(need, clamp((1.3 - r.el) / 0.15));
+    this.cutK = snapCut ? need : (this.cutK ?? need) + (need - (this.cutK ?? need)) * (1 - Math.exp(-real * 6));
+    U.uCut.value = this.cutK < 0.004 ? 0 : this.cutK;
     for (const s of W.signs) s.m.visible = U.uGrow.value > 0.9 && cutWeight(s.x, s.z) < 0.5;
     const half = clamp(r.dist * 0.55, 45, 260), sc = this.sun.shadow.camera;
     this.sun.castShadow = r.dist < 1300;

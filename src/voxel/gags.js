@@ -89,7 +89,7 @@ function tidy(a) {
   if (a.drop) a.drop();
   a.pose = null; a.air = false; a.arms = 'swing'; a.gait = 'walk';
   a.g.visible = true; a.g.rotation.x = 0; a.g.rotation.z = 0;
-  a.g.scale.setScalar(a.baseScale || a.scale || 1.25);
+  a.g.scale.setScalar(a.baseScale || a.scale || 0.9);
   a.g.position.y = 0;
 }
 /** Like needPed, but never waits: borrow a walker near cx if one is there. */
@@ -240,12 +240,13 @@ function* goEach(ctx, a, x, z, speed, each) {
   }
 }
 /** A person riding a bike that is a separate actor: the rider is parked on the saddle every frame. */
-const seat = (bike, rider, y = 0.25) => {
+// (saddle top 1.05 m at 0.30 m behind the bike's centre; hip sits 0.05 m above it, see makeBike)
+const seat = (bike, rider, y = 0.52) => {
   const b = bike.g.position, h = bike.g.rotation.y;
-  rider.g.position.set(b.x - Math.sin(h) * 0.22, b.y + y, b.z - Math.cos(h) * 0.22);
+  rider.g.position.set(b.x - Math.sin(h) * 0.28, b.y + y, b.z - Math.cos(h) * 0.28);
   rider.heading = h;
 };
-function* rideTo(ctx, bike, rider, x, z, speed, each, y = 0.25) {
+function* rideTo(ctx, bike, rider, x, z, speed, each, y = 0.52) {
   for (;;) {
     const p = bike.g.position, dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz);
     if (d <= 0.06) return;
@@ -258,7 +259,7 @@ function* rideTo(ctx, bike, rider, x, z, speed, each, y = 0.25) {
     if (each && each(dt, s) === true) return;
   }
 }
-const mount = (bike, rider, y = 0.25) => { rider.air = true; rider.pose = 'ride'; rider.arms = 'swing'; rider.g.rotation.order = 'YXZ'; seat(bike, rider, y); };
+const mount = (bike, rider, y = 0.52) => { rider.air = true; rider.pose = 'ride'; rider.arms = 'swing'; rider.g.rotation.order = 'YXZ'; seat(bike, rider, y); };
 const dismount = (rider, x, z) => { rider.pose = null; rider.air = false; rider.g.position.set(x, 0, z); };
 /** A thin glowing line between two street-space points: `aim(ax, ay, az, bx, by, bz)`. */
 function lineObj(R, col = '#e8f7ff', w = 0.045) {
@@ -320,20 +321,25 @@ function rehome(a, to) {
   a.ctx = to; a.g._ctx = to;
   to.peds.push(a);
 }
+/** Where the pavement is for this walker at x (their side of the street, their place across its width). */
+const paveZ = (ctx, a, x) => (ctx.L.walkAt ? ctx.L.walkAt(a.side, a.wf ?? 0.5, ctx.sc + x) : a.side * (ctx.L.hw + ctx.L.bw + 1.2));
 function spawnPed(ctx, atX = null, opts = {}) {
   const { L, rnd } = ctx, ex0 = L.x0 + 0.5, ex1 = L.x1 - 0.5;
   const dir = opts.dir ?? rnd.sign();
-  const z = (opts.z ?? rnd.pick([...L.walkB, ...L.walkF])) + rnd.range(-0.15, 0.15);
   const r = rnd();
   const a = makePerson(rnd, { kind: opts.kind || (r < 0.12 ? 'kid' : r < 0.22 ? 'granny' : 'civ') });
-  a.dir = dir; a.lineZ = z; a.exitX = dir > 0 ? ex1 : ex0; a.walkSpeed = a.speed;
-  ctx.spawn(a, atX ?? (dir > 0 ? ex0 : ex1), z);
+  a.dir = dir; a.exitX = dir > 0 ? ex1 : ex0;
+  a.walkSpeed = a.kind === 'granny' ? rnd.range(1.0, 1.3) : rnd.range(1.35, 2.0); // a stroll, at life size
+  const x = atX ?? (dir > 0 ? ex0 : ex1);
+  if (opts.z != null) { a.lineZ = opts.z + rnd.range(-0.15, 0.15); a.fixedZ = true; a.side = a.lineZ >= 0 ? 1 : -1; }
+  else { a.side = rnd.sign(); a.wf = rnd.range(0.15, 0.85); a.lineZ = paveZ(ctx, a, x); }
+  ctx.spawn(a, x, a.lineZ);
   a.face(dir > 0 ? E : W);
   ctx.peds.push(a);
   ctx.run((function* () {
     a.g.scale.setScalar(0.001);
     yield* popIn(ctx, a);
-    yield* stroll(a);
+    yield* stroll(a, true);
   })());
   return a;
 }
@@ -341,16 +347,71 @@ function unped(ctx, a) {
   const list = (a.ctx || ctx).peds, i = list.indexOf(a);
   if (i >= 0) list.splice(i, 1);
 }
-function* stroll(a) {
+/** Is something driving or riding towards the spot at arc length s? (People look before they cross. Some of them.) */
+function traffic(ctx, s, reach) {
+  const hb = ctx.L.hw + ctx.L.bw;
+  for (const a of ctx.all()) {
+    if (!a.vehicle || !a.alive || !a.vNow) continue;
+    const q = a.g.position, ds = a.ctx.sc + q.x - s;
+    if (Math.abs(q.z) < hb && Math.abs(ds) < reach && ds * a.vNow < 0) return true;
+  }
+  return false;
+}
+/** Is a vehicle standing or passing right where a walker is about to step (s along, z across)? Nobody walks through a car. */
+function carAt(ctx, s, z) {
+  for (const a of ctx.all()) {
+    if (!a.vehicle || !a.alive || !a.ctx || a.air) continue;
+    const q = a.g.position;
+    if (Math.abs(a.ctx.sc + q.x - s) < (a.len || 1.8) / 2 + 0.45 && Math.abs(q.z - z) < (a.wid || 0.6) / 2 + 0.4) return true;
+  }
+  return false;
+}
+/** How often a walker steps into the road without looking, per look (twice a second): rougher streets, more of it. */
+const jayRate = (ctx) => 0.0016 * (0.5 + 0.3 * ctx.level) * clamp(ctx.mix?.factor?.carChase ?? 1, 0.6, 2.2);
+/**
+ * Walk along the pavement to the end of the street. The line follows the real pavement, crosses side streets,
+ * and now and then the walker crosses over on purpose: at a zebra after looking, or anywhere without.
+ */
+function* stroll(a, keepSide = false) {
+  if (!keepSide) { a.side = a.g.position.z >= 0 ? 1 : -1; a.wf ??= 0.5; }
+  a.cross = null;
+  let look = 0.5 + Math.random();
   while (!a.busy && a.alive) {
-    const p = a.g.position, dx = a.exitX - p.x;
-    if (Math.abs(dx) < 0.12) { unped(a.ctx, a); yield* popOut(a.ctx, a); return; }
+    const c = a.ctx, L = c.L, p = a.g.position, dx = a.exitX - p.x;
+    if (Math.abs(dx) < 0.12) { unped(c, a); yield* popOut(c, a); return; }
     const dt = yield;
-    const sp = a.walkSpeed, dz = a.lineZ - p.z;
-    p.x += Math.sign(dx) * Math.min(Math.abs(dx), sp * dt);
-    p.z += clamp(dz, -sp * dt * 0.7, sp * dt * 0.7);
+    if (a.busy || !a.alive) return;
+    const sp = a.walkSpeed, s = c.sc + p.x, fwd = Math.sign(dx);
+    let lat = sp * 0.7, along = 1;
+    if (a.cross) {
+      const X = a.cross;
+      if (X.wait > 0) {
+        // at the kerb, waiting for a gap
+        X.wait -= dt;
+        if (X.wait > 0 && traffic(c, s, 15)) { a.heading = Math.atan2(0, -a.side); continue; }
+        X.wait = 0;
+      }
+      a.lineZ = c.L.walkAt ? c.L.walkAt(X.to, a.wf, s) : -a.lineZ;
+      lat = sp; along = 0.12;
+      // a car in the way (queueing, or just passing): let it go first
+      if (carAt(c, s, p.z + Math.sign(a.lineZ - p.z) * 0.7) && !carAt(c, s, p.z)) { a.heading = Math.atan2(0, Math.sign(a.lineZ - p.z)); continue; }
+      if (Math.abs(a.lineZ - p.z) < 0.2) { a.side = X.to; a.cross = null; }
+    } else {
+      if (!a.fixedZ) a.lineZ = paveZ(c, a, p.x);
+      if ((look -= dt) <= 0) {
+        look = 0.5;
+        if (L.kind !== 'ped' && !a.fixedZ && L.walkAt && s > L.sA + 5 && s < L.sB - 5) {
+          const zebra = L.zebras && L.zebras.some((z) => Math.abs(z - s) < 1.3);
+          if (zebra ? Math.random() < 0.25 : Math.random() < jayRate(c)) a.cross = { to: -a.side, wait: zebra || Math.random() < 0.35 ? 3.5 : 0 };
+        }
+      }
+    }
+    const dz = a.lineZ - p.z;
+    p.x += fwd * Math.min(Math.abs(dx), sp * dt * along);
+    // sideways only if that does not mean walking into the flank of a car or a bike
+    if (Math.abs(dz) < 0.3 || !carAt(c, s, p.z + Math.sign(dz) * 0.5) || carAt(c, s, p.z)) p.z += clamp(dz, -lat * dt, lat * dt);
     p.y = 0;
-    a.heading = Math.atan2(Math.sign(dx), clamp(dz, -1, 1) * 0.6);
+    a.heading = Math.atan2(fwd * along, clamp(dz, -1, 1) * (a.cross ? 1 : 0.6));
     a.moving = sp;
   }
 }
@@ -405,10 +466,126 @@ function* pedSpawner(ctx) {
     if (ctx.peds.length < cap) spawnPed(ctx);
   }
 }
+
+// ---- traffic on the open street looks where it is going
+const isWalker = (a) => !!a.head && !a.vehicle;
+/**
+ * The nearest thing in a vehicle's way: { gap (metres of clear road in front of its nose), v (how fast that
+ * thing moves the same way), a (who) }, or null. Everyone on stage counts, and so do passing trams.
+ */
+function inTheWay(ctx, me, dir, half, wid, reach) {
+  const p = me.g.position, s0 = ctx.sc + p.x, z0 = p.z, far = reach + half + 8;
+  let best = null;
+  for (const a of ctx.all()) {
+    if (a === me || !a.alive || a.air || !a.ctx) continue;
+    const q = a.g.position;
+    if (q.y > 1.6) continue;
+    const fw = (a.ctx.sc + q.x - s0) * dir;
+    if (fw <= 0 || fw > far) continue;
+    const r = a.vehicle ? (a.wid || 0.7) / 2 : 0.3, ext = a.vehicle ? (a.len || 1.8) / 2 : 0.3;
+    if (Math.abs(q.z - z0) > wid / 2 + r + 0.12) continue;
+    const gap = fw - half - ext;
+    if (!best || gap < best.gap) best = { gap, v: (a.vNow || 0) * dir, a };
+  }
+  for (const l of ctx.trams()) {
+    const q = l.a.g.position, pr = ctx.toStreet(q.x, q.z), fw = (pr.s - s0) * dir;
+    if (fw <= 0 || fw > far + 14 || Math.abs(pr.v - z0) > wid / 2 + 1.5) continue;
+    const t = ctx.tangent(pr.s), al = Math.abs(Math.sin(l.a.heading) * t.tx + Math.cos(l.a.heading) * t.tz); // along the street, or crossing it?
+    const gap = fw - half - (2 + ((l.a.len || 27) / 2 - 2) * al);
+    if (!best || gap < best.gap) best = { gap, v: al > 0.7 ? l.speed * l.dir * dir * 0.5 : 0, a: l.a };
+  }
+  return best;
+}
+/** Knocked over by a car or a bike: up in the air, stars, a shaken fist, and on they walk. Nobody is hurt here. */
+function bonk(ctx, a, veh, v, dir) {
+  const c = a.ctx, bike = veh.type === 'bike' || veh.type === 'scooter';
+  a.busy = true;
+  unped(c, a);
+  c.sfx('bonk');
+  say(c, a, bike ? 'BOINK!' : 'BONK!', { size: 20, color: '#ffd166' });
+  c.shake(bike ? 0.15 : 0.3);
+  c.incident(1);
+  c.news(c.rnd.pick(bike
+    ? [`Cyclist and jaywalker meet on ${c.st.name}. Both blame the other`, `Bell rung too late on ${c.st.name}. Dignity lightly dented`]
+    : [`Jaywalker bonked on ${c.st.name}. Walks it off`, `Driver on ${c.st.name}: "came out of nowhere". Pedestrian: "came out of a shop"`, `Bumper meets trousers on ${c.st.name}. Trousers lodge complaint`]));
+  c.run((function* () {
+    const p = a.g.position, x0 = p.x, z0 = p.z, fly = clamp(v * (bike ? 0.25 : 0.45), 0.8, 3.2) * dir, side = (z0 >= veh.g.position.z ? 1 : -1) * (bike ? 0.9 : 1.3), up = bike ? 0.9 : 1.7;
+    a.arms = 'up'; a.air = true; a.cross = null;
+    a.g.rotation.order = 'YXZ';
+    yield* tween(bike ? 0.5 : 0.75, (t) => { p.x = x0 + fly * t; p.z = z0 + side * t; p.y = Math.sin(t * Math.PI) * up; a.g.rotation.x = t * Math.PI * 2; });
+    a.g.rotation.x = 0; p.y = 0; a.air = false;
+    if (!a.alive) return;
+    a.pose = 'sit'; a.arms = 'swing';
+    c.sfx('thud');
+    c.fx.puff(p.x, 0.2, p.z);
+    say(c, a, '★ ★ ★', { size: 13, color: '#ffe066', dur: 1.5 });
+    yield* wait(bike ? 0.9 : 1.4);
+    a.pose = null;
+    yield* hop(a, 0.35, 0.25);
+    a.arms = 'fist';
+    c.sfx('hey');
+    say(c, a, c.rnd.pick(['HÉ!', 'KIJK UIT!', 'ASO!', 'MIJN BROEK!', 'ZAG JE ME NIET?!']), { size: 13, color: '#ff6b6b' });
+    yield* wait(0.9);
+    if (!a.alive) return;
+    // back on their feet and off the road
+    a.arms = 'swing'; a.busy = false;
+    if (!c.peds.includes(a)) c.peds.push(a);
+    yield* stroll(a);
+  })());
+}
+/**
+ * Drive (or ride) along the lane at offset z to toX, braking for whatever is in the way. Returns false if it
+ * got stuck for good. A walker who steps out right under the wheels may get bonked.
+ */
+function* cruise(ctx, veh, toX, z, speed, bike = false) {
+  const dir = Math.sign(toX - veh.g.position.x) || 1, half = (veh.len || (bike ? 1.86 : 4.4)) / 2, wid = veh.wid || (bike ? 0.6 : 1.85);
+  const brake = bike ? 7 : 9, keep = bike ? 0.8 : 1.5;
+  let v = speed, stuck = 0, honk = 0;
+  for (;;) {
+    const p = veh.g.position;
+    if ((toX - p.x) * dir <= 0.05) { veh.vNow = 0; return true; }
+    const dt = yield;
+    const ob = inTheWay(ctx, veh, dir, half, wid, (v * v) / (2 * brake) + keep + 1);
+    let target = speed;
+    honk -= dt;
+    if (ob) {
+      const room = ob.gap - keep;
+      target = room <= 0 ? 0 : Math.min(speed, Math.max(0, ob.v) + room * 1.5);
+      const walker = isWalker(ob.a);
+      if (walker && target < v - 1 && v > 2.5 && honk <= 0) {
+        honk = 4;
+        ctx.sfx(bike ? 'bell' : 'honk');
+        if (Math.random() < 0.5) say(ctx, veh, bike ? 'TRING!' : 'TOET!', { size: 13, color: '#fff', off: bike ? 1.9 : 2.1 });
+      }
+      if (ob.gap < 0.3) {
+        // no room left. An unwary walker gets bonked now and then; otherwise this stops dead, tyres squealing
+        const amb = ctx.amb || ctx;
+        if (walker && v > 2.4 && !ob.a.busy && ob.a.walkSpeed && ob.a.alive && (amb._bonkAt ?? -99) < ctx.now() - 22) { amb._bonkAt = ctx.now(); bonk(ctx, ob.a, veh, v, dir); v *= 0.25; }
+        else { if (v > 3 && !bike) ctx.sfx('skid'); v = 0; }
+      }
+    }
+    v += clamp(target - v, -brake * 1.4 * dt, (bike ? 2.2 : 3) * dt);
+    if (v < 0) v = 0;
+    if (v < 0.15 && target < 0.15) { stuck += dt; if (stuck > 8) { veh.vNow = 0; return false; } } else stuck = 0;
+    p.x += dir * v * dt;
+    p.z += clamp(z - p.z, -dt, dt);
+    if (!veh.air) p.y = 0;
+    veh.heading = dir > 0 ? E : W;
+    veh.moving = v;
+    veh.vNow = v * dir;
+  }
+}
+/** Is there room to appear at (x, z)? Nothing pops up on top of a queue. */
+function roomAt(ctx, x, z, r) {
+  const s = ctx.sc + x;
+  for (const a of ctx.all()) if (a.alive && a.ctx && Math.abs(a.ctx.sc + a.g.position.x - s) < r && Math.abs(a.g.position.z - z) < 1.6) return false;
+  return true;
+}
 /** A passing car. It vanishes in a puff when it reaches a stretch a gag has closed off. */
 function* drive(ctx, car, z, dir, speed) {
-  const { L } = ctx, half = (car.len || 3.4) / 2 + 0.6;
-  ctx.spawn(car, dir > 0 ? L.x0 + half : L.x1 - half, z, 0);
+  const { L } = ctx, half = (car.len || 4.4) / 2 + 0.6, x0 = dir > 0 ? L.x0 + half : L.x1 - half;
+  if (!roomAt(ctx, x0, z, half + 4)) return;
+  ctx.spawn(car, x0, z, 0);
   car.face(dir > 0 ? E : W);
   car.g.scale.setScalar(0.001);
   ctx.road.vehicles.add(car);
@@ -426,9 +603,10 @@ function* drive(ctx, car, z, dir, speed) {
       }
     }
   })();
-  yield* race(go(ctx, car, dir > 0 ? L.x1 - half : L.x0 + half, z, speed), watch);
+  yield* race(cruise(ctx, car, dir > 0 ? L.x1 - half : L.x0 + half, z, speed), watch);
   for (const c of inWin) c.road.vehicles.delete(car);
   ctx.road.vehicles.delete(car);
+  car.vNow = 0;
   yield* popOut(ctx, car);
 }
 function* carSpawner(ctx) {
@@ -441,7 +619,7 @@ function* carSpawner(ctx) {
     if (major) {
       const dir = rnd.sign();
       // a long road must not fill up with hundreds of cars
-      if (ctx.road.vehicles.size < Math.min(26, Math.ceil(len / 70))) ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, 7));
+      if (ctx.road.vehicles.size < Math.min(26, Math.ceil(len / 70))) ctx.run(drive(ctx, makeCar(rnd, rnd.chance(0.1) ? 'taxi' : rnd.chance(0.08) ? 'van' : 'car', L.night), dir > 0 ? L.laneF : L.laneB, dir, rnd.range(7, 8.5)));
     } else if (ctx.road.vehicles.size < maxMinor) {
       ctx.run(drive(ctx, makeCar(rnd, 'car', L.night), L.laneF, oneWay, 5));
     }
@@ -453,17 +631,17 @@ function* bikeSpawner(ctx) {
   let riding = 0;
   yield* wait(rnd.range(0.2, 2));
   for (;;) {
-    if (riding < cap) {
-      const dir = rnd.sign();
+    const dir = rnd.sign(), z = dir > 0 ? L.bikeF : L.bikeB, x0 = dir > 0 ? L.x0 + 1.1 : L.x1 - 1.1;
+    if (riding < cap && roomAt(ctx, x0, z, 3)) {
       const bike = makeBike(rnd, makePerson(rnd, { scale: 1.2 }));
       riding++;
       ctx.run((function* () {
         try {
-          const z = dir > 0 ? L.bikeF : L.bikeB;
-          yield* enter(ctx, bike, dir > 0 ? L.x0 + 1.1 : L.x1 - 1.1, z, 0);
+          yield* enter(ctx, bike, x0, z, 0);
           bike.face(dir > 0 ? E : W);
           if (rnd.chance(0.12)) ctx.sfx('bell');
-          yield* go(ctx, bike, dir > 0 ? L.x1 - 1.1 : L.x0 + 1.1, z, rnd.range(4.6, 6.4));
+          yield* cruise(ctx, bike, dir > 0 ? L.x1 - 1.1 : L.x0 + 1.1, z, rnd.range(4.4, 6.2), true);
+          bike.vNow = 0;
           yield* popOut(ctx, bike);
         } finally { riding--; }
       })());
@@ -585,7 +763,7 @@ G.napCat = {
     cat.pose = 'sleep';
     ctx.focus(b.x, b.z, 0.62, 4);
     ctx.news('Cat begins scheduled 16-hour nap');
-    for (let i = 0; i < 5; i++) { say(ctx, cat, 'Z', { size: 13 + i * 3, color: '#cfe8ff', off: 1, rise: 1.8, dur: 1.5 }); ctx.sfx('zzz'); yield* wait(1.0); }
+    for (let i = 0; i < 5; i++) { say(ctx, cat, 'Z', { size: 13 + i * 3, color: '#cfe8ff', off: 0.7, rise: 1.8, dur: 1.5 }); ctx.sfx('zzz'); yield* wait(1.0); }
     cat.pose = null;
     yield* leave(ctx, cat);
   },
@@ -617,7 +795,7 @@ G.pigeonLady = {
     }
     for (let i = 0; i < 6; i++) {
       gran.arms = i % 2 ? 'hold' : 'swing';
-      ctx.fx.burst(b.x, 1.2, b.z + 0.8, { n: 4, colors: ['#e9c46a', '#d9b382'], speed: 2.5, up: 3, size: [0.05, 0.08], life: [0.5, 0.8] });
+      ctx.fx.burst(b.x, 0.95, b.z + 0.8, { n: 4, colors: ['#e9c46a', '#d9b382'], speed: 2.5, up: 3, size: [0.05, 0.08], life: [0.5, 0.8] });
       yield* wait(1.0);
     }
     for (const p of birds) {
@@ -714,7 +892,7 @@ G.seagullFries = {
       R.run((function* () {
         yield* fly(scout, px + side * 3, 7, pz + 2, 10);
         ctx.sfx('squawk');
-        say(ctx, scout, 'kraai?', { size: 12, color: '#cfe8ff', off: 0.8 });
+        say(ctx, scout, 'kraai?', { size: 12, color: '#cfe8ff', off: 0.6 });
         yield* fly(scout, px - side * 8, 9, pz + 6, 7);
         scout.face(side > 0 ? E : W);
         yield* waitUntil(() => dived, 14);
@@ -756,29 +934,29 @@ G.seagullFries = {
       ctx.slowmo(0.3, 1.0);
       cam.track(scout, { hold: 2.2, lead: 1.2 });
       ctx.sfx('whoosh');
-      say(ctx, scout, 'KRAAAAI', { size: 16, color: '#ffd60a', off: 0.8 });
-      yield* fly(scout, px + 0.5, p.y + 1.75, pz + 0.55, 12.5);
+      say(ctx, scout, 'KRAAAAI', { size: 16, color: '#ffd60a', off: 0.6 });
+      yield* fly(scout, px + 0.5, p.y + 1.3, pz + 0.55, 12.5); // hand height of a 2 m person
       ped.drop();
       scout.b.add(fries);
       fries.position.set(0, 0.25, 0.55);
       ctx.sfx('yoink');
-      say(ctx, scout, 'YOINK!', { size: 22, color: '#ffd60a', off: 0.8 });
-      ctx.fx.puff(px, 1.6, pz);
+      say(ctx, scout, 'YOINK!', { size: 22, color: '#ffd60a', off: 0.6 });
+      ctx.fx.puff(px, 1.2, pz);
       ctx.incident();
       ped.heading = 0; ped.arms = 'up';
       // a mid-air tug of war over the last chip
       cam.ots(ped, scout, { hold: 2.2 });
       let boing = 0;
       yield* tween(1.0, (t) => {
-        scout.g.position.set(px + 0.5 + t * 0.9 + Math.sin(t * 22) * 0.3, 1.8 + t * 1.5 + Math.sin(t * 30) * 0.1, pz + 0.55);
+        scout.g.position.set(px + 0.5 + t * 0.9 + Math.sin(t * 22) * 0.3, 1.35 + t * 1.1 + Math.sin(t * 30) * 0.08, pz + 0.55);
         p.y = Math.abs(Math.sin(t * 13)) * 0.4;
-        if (t > boing) { boing += 0.28; ctx.sfx('boing'); ctx.fx.burst(px + 0.6, 1.9, pz + 0.6, { n: 3, colors: ['#ffd166'], speed: 2, up: 3, size: [0.05, 0.09], life: [0.5, 0.8] }); }
+        if (t > boing) { boing += 0.28; ctx.sfx('boing'); ctx.fx.burst(px + 0.6, 1.4, pz + 0.6, { n: 3, colors: ['#ffd166'], speed: 2, up: 3, size: [0.05, 0.09], life: [0.5, 0.8] }); }
       });
       p.y = 0;
       let last = null;
       for (let i = 0; i < 3; i++) {
         const f = R.add(item.fries());
-        f.scale.setScalar(0.7); f.position.set(px + 0.5, 1.9, pz + 0.5);
+        f.scale.setScalar(0.7); f.position.set(px + 0.5, 1.4, pz + 0.5);
         R.run(arc(f, px + rnd.range(-1.6, 1.6), 0.02, pz + rnd.range(0.4, 1.3), 0.8, 0.5, rnd.range(-5, 5)));
         if (i === 0) last = f; // the one left for later
       }
@@ -813,7 +991,7 @@ G.seagullFries = {
           const dt = yield;
           t += dt;
           const q = g.g.position, tp = p, off = Math.sin(t * 5 + ph) * 1.3;
-          const tx = tp.x + off, ty = 2.2 + Math.abs(Math.sin(t * 6 + i)) * 1.0, tz = tp.z + 0.6;
+          const tx = tp.x + off, ty = 1.65 + Math.abs(Math.sin(t * 6 + i)) * 0.75, tz = tp.z + 0.6;
           const dx = tx - q.x, dy = ty - q.y, dz = tz - q.z, d = Math.hypot(dx, dy, dz) || 1, s = Math.min(d, 9.5 * dt);
           q.x += dx / d * s; q.y += dy / d * s; q.z += dz / d * s;
           g.heading = Math.atan2(dx, dz); g.moving = 9;
@@ -830,11 +1008,11 @@ G.seagullFries = {
         if (lv >= 4 && poops < 2 && pt0 < 0 && rnd.chance(0.04)) {
           poops++; pt0 = 0.6;
           ctx.sfx('pop', 0.6);
-          ctx.fx.puff(p.x, 2.6, p.z, '#ffffff');
+          ctx.fx.puff(p.x, 2.0, p.z, '#ffffff');
           ctx.fx.text('KLETS!', ped, { size: 18, color: '#ffffff' });
         }
       });
-      if (lv >= 4 && poops === 0) { ctx.sfx('pop', 0.6); ctx.fx.puff(p.x, 2.6, p.z, '#ffffff'); ctx.fx.text('KLETS!', ped, { size: 18, color: '#ffffff' }); }
+      if (lv >= 4 && poops === 0) { ctx.sfx('pop', 0.6); ctx.fx.puff(p.x, 2.0, p.z, '#ffffff'); ctx.fx.text('KLETS!', ped, { size: 18, color: '#ffffff' }); }
       ped.arms = 'swing';
       yield* go(ctx, ped, px + toMid * 3, pz, 3.6);
 
@@ -854,11 +1032,11 @@ G.seagullFries = {
         yield* wait(0.6);
         const thief = sky(cop.g.position.x + 8, 9, cop.g.position.z + 6);
         cam.track(thief, { hold: 1.6 });
-        yield* fly(thief, cop.g.position.x + 0.5, 1.7, cop.g.position.z + 0.5, 12);
+        yield* fly(thief, cop.g.position.x + 0.5, 1.3, cop.g.position.z + 0.5, 12);
         cop.drop();
         thief.b.add(cw); cw.position.set(0, 0.25, 0.55);
         ctx.sfx('yoink');
-        say(ctx, thief, 'YOINK!', { size: 20, color: '#ffd60a', off: 0.8 });
+        say(ctx, thief, 'YOINK!', { size: 20, color: '#ffd60a', off: 0.6 });
         cop.arms = 'up';
         R.run((function* () { yield* fly(thief, thief.g.position.x + 26, 13, thief.g.position.z + 8, 11); R.gone(thief); })());
         yell(ctx, cop, 'MIJN STROOPWAFEL!', '#7db8ff', 14);
@@ -946,7 +1124,7 @@ G.parkingTicket = {
     say(ctx, cop, '*krabbel*', { size: 12, color: '#cfe8ff' });
     yield* wait(1.3);
     const t = item.ticket();
-    t.position.set(car.x + 0.75, 0.86, car.z);
+    t.position.set(car.x + 1.05, 0.97, car.z); // on the bonnet by the windscreen of the 4.4 m car
     ctx.world.add(t);
     ctx.sfx('coin');
     ctx.fx.text('BON! €109', at(car.x, 2.4, car.z), { size: 18, color: '#ffe066' });
@@ -984,12 +1162,12 @@ G.herringHeist = {
     yield* enter(ctx, dog, dir > 0 ? EX0 : EX1, L.walkF[1]);
     yield* go(ctx, dog, s.x, zz, 4);
     dog.heading = 0;
-    yield* hop(dog, 0.8, 0.3);
+    yield* hop(dog, 0.6, 0.3);
     const fish = sculpt((v) => { v.box(0, 0, 0, 0.5, 0.12, 0.14, '#b8c7d1'); v.box(0.3, 0, 0, 0.12, 0.2, 0.06, '#8fa3ad'); });
     dog.b.add(fish);
     fish.position.set(0, 0.42, 0.72);
     ctx.sfx('yoink');
-    say(ctx, dog, 'YOINK!', { size: 20, color: '#ffd60a', off: 1.4 });
+    say(ctx, dog, 'YOINK!', { size: 20, color: '#ffd60a', off: 1.0 });
     ctx.incident();
     ctx.news(`Dog steals ${s.label === 'HARING' ? 'herring' : 'snack'}, shows zero remorse`);
     const chef = makePerson(rnd, { kind: 'chef' });
@@ -1046,16 +1224,16 @@ G.bikeThief = {
       cam.shot({ on: th, dist: 7, el: 0.35, az: 0.5, hold: 2.6, drift: { dist: -0.3 } });
       yield* wait(0.2);
       for (let i = 0; i < 3; i++) {
-        ctx.sfx('snip'); ctx.fx.sparks(r.x, 0.8, r.z - 0.4, i === 2 ? 9 : 4);
+        ctx.sfx('snip'); ctx.fx.sparks(r.x, 0.9, r.z - 0.8, i === 2 ? 9 : 4); // lock on the 1.86 m bike parked at r.z - 1.15 .. r.z + 0.2
         yield* hop(th, 0.08, 0.16);
         yield* wait(0.12);
       }
       ctx.fx.text('KNIP!', at(r.x, 2.2, r.z), { size: 18, color: '#ffe08a' });
       const kid = makeBike(rnd, null, '#ff70a6');
-      kid.body.scale.setScalar(0.55);
+      kid.body.scale.setScalar(0.55 * 1.19); // makeBike's own body scale is 1.19
       yield* R.enter(kid, r.x - dir * 0.9, rz + 0.55, 0);
       kid.face(dir > 0 ? E : W);
-      mount(kid, th, 0.08);
+      mount(kid, th, 0.12);
       ctx.sfx('bell');
       say(ctx, th, 'YOINK!', { size: 20, color: '#ffd60a' });
       ctx.incident();
@@ -1069,15 +1247,15 @@ G.bikeThief = {
         balcony = R.add(piece((v) => {
           const bx = home.win.x, by = home.win.y - 0.42, bz = home.win.z + 0.45;
           v.box(bx, by, bz, 1.5, 0.12, 0.9, '#d6d0c2');
-          v.box(bx, by + 0.12, bz + 0.42, 1.5, 0.78, 0.07, '#2f3640');
-          v.box(bx - 0.72, by + 0.12, bz, 0.07, 0.78, 0.9, '#2f3640');
-          v.box(bx + 0.72, by + 0.12, bz, 0.07, 0.78, 0.9, '#2f3640');
+          v.box(bx, by + 0.12, bz + 0.42, 1.5, 1.0, 0.07, '#2f3640'); // 1 m railing for a 2 m person
+          v.box(bx - 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
+          v.box(bx + 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
         }));
         yield* R.enter(owner, home.win.x, home.win.z + 0.35, home.win.y - 0.3);
         owner.heading = 0; owner.arms = 'fist';
         yell(ctx, owner, 'HÉ! MIJN KINDERFIETS!', '#ff6b6b', 15);
       })());
-      yield* rideTo(ctx, kid, th, r.x + dir * 3.6, rz + 0.55, 2.6, null, 0.08);
+      yield* rideTo(ctx, kid, th, r.x + dir * 3.6, rz + 0.55, 2.6, null, 0.12);
       cam.ots(th, owner, { hold: 2.6 });
       yield* doubleTake(ctx, th, '?!');
       dismount(th, kid.g.position.x - dir * 0.6, kid.g.position.z);
@@ -1101,7 +1279,7 @@ G.bikeThief = {
       th.heading = Math.PI;
       cam.shot({ on: th, dist: 6, el: 0.3, az: -0.5, hold: 2.2 });
       yield* wait(0.3);
-      ctx.sfx('snip'); ctx.fx.sparks(r.x, 0.8, r.z - 0.4, 12);
+      ctx.sfx('snip'); ctx.fx.sparks(r.x, 0.9, r.z - 0.8, 12);
       ctx.fx.text('KNIP!', at(r.x, 2.2, r.z), { size: 22, color: '#ffe08a' });
       ctx.shake(0.15);
       const bike = makeBike(rnd);
@@ -1109,7 +1287,7 @@ G.bikeThief = {
       bike.face(dir > 0 ? E : W);
       const chain = chainObj(R, 6);
       chain.place(bike.g.position.x, 0.3, bike.g.position.z);
-      mount(bike, th, 0.25);
+      mount(bike, th);
       ctx.wanted = th;
       ctx.sfx('yoink'); ctx.sfx('bell');
       say(ctx, th, 'YOINK!', { size: 22, color: '#ffd60a' });
@@ -1128,7 +1306,7 @@ G.bikeThief = {
       let spark = 0, rattle = 0, snag = false, tow = 0;
       yield* rideTo(ctx, bike, th, edge, rz + 0.55, 8.2, (dt) => {
         const q = bike.g.position, h = bike.g.rotation.y;
-        chain.update(q.x - Math.sin(h) * 0.55, 0.3, q.z - Math.cos(h) * 0.55);
+        chain.update(q.x - Math.sin(h) * 0.95, 0.3, q.z - Math.cos(h) * 0.95);
         const tl = chain.tail.position;
         spark -= dt; rattle -= dt;
         if (spark < 0) { spark = 0.07; ctx.fx.sparks(tl.x, 0.08, tl.z, 2); }
@@ -1161,12 +1339,12 @@ G.bikeThief = {
       });
       ctx.sfx('thud'); ctx.shake(0.35);
       ctx.fx.puff(lx, 0.1, lz, '#e8e8e8');
-      ctx.fx.text('PLOF!', at(lx, 1.6, lz), { size: 26, color: '#ffd60a' });
+      ctx.fx.text('PLOF!', at(lx, 1.3, lz), { size: 26, color: '#ffd60a' });
       kid.moving = 0; kid.g.rotation.z = 0;
       bike.g.rotation.x = 0; bike.g.position.y = 0;
       yield* wait(0.6);
       // sits up, stars circling
-      th.g.rotation.x = 0; th.air = true; th.pose = 'sit'; th.g.position.y = 0.32; th.arms = 'swing';
+      th.g.rotation.x = 0; th.air = true; th.pose = 'sit'; th.g.position.y = 0.23; th.arms = 'swing';
       say(ctx, th, '★ ★', { size: 16, color: '#ffe066', dur: 1 });
       cam.close(th, { hold: 1.8 });
 
@@ -1198,7 +1376,7 @@ G.bikeThief = {
         say(ctx, th, 'BUSTED!', { size: 24, color: '#7db8ff' });
         cam.close(th, { hold: 1.8 });
         cam.freeze(0.5);
-        ctx.fx.burst(lx, 1.5, lz, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
+        ctx.fx.burst(lx, 1.2, lz, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
         ctx.news('Bike thief caught after dragging own evidence 14 metres. Owner: "€60 for the lock"');
         yield* wait(1.4);
         own2.arms = 'swing';
@@ -1220,7 +1398,7 @@ G.bikeThief = {
           own2.arms = 'carry';
           yield* goEach(ctx, bike, rackX, rz + 0.55, 3.0, () => {
             const q = bike.g.position, h = bike.g.rotation.y;
-            chain.update(q.x - Math.sin(h) * 0.55, 0.3, q.z - Math.cos(h) * 0.55);
+            chain.update(q.x - Math.sin(h) * 0.95, 0.3, q.z - Math.cos(h) * 0.95);
             const tl = chain.tail.position;
             kid.g.position.x = tl.x; kid.g.position.z = tl.z; kid.heading = h; kid.moving = 2;
             own2.g.position.set(q.x - dir * 0.2, 0, q.z + 0.9); own2.heading = bike.heading; own2.moving = 2;
@@ -1359,7 +1537,7 @@ G.graffiti = {
       yield* wait(0.3);
       say(ctx, cr, 'hmm...', { size: 13, color: '#cfe8ff' });
       yield* lookAround(cr, 0.35, 0.35);
-      ctx.fx.text('★☆☆☆☆', at(vx, 2.9, vz), { size: 20, color: '#ffe066', dur: 1.6 });
+      ctx.fx.text('★☆☆☆☆', at(vx, 2.3, vz), { size: 20, color: '#ffe066', dur: 1.6 });
       say(ctx, cr, rnd.pick(['"Het mist diepgang."', '"Ik zie Banksy niet."', '"Mijn nichtje kan dit ook."']), { size: 13, color: '#fff', dur: 1.8 });
       ctx.sfx('gasp');
       yield* wait(0.9);
@@ -1434,7 +1612,7 @@ G.graffiti = {
       ctx.sfx('thud'); ctx.shake(0.3);
       ctx.fx.puff(cp.x, 0.1, cp.z, col);
       ctx.fx.text('PLOF!', cop, { size: 24, color: '#ffd60a' });
-      cop.pose = 'sit'; cop.air = true; cp.y = 0.32; cop.heading = 0;
+      cop.pose = 'sit'; cop.air = true; cp.y = 0.23; cop.heading = 0;
       say(ctx, cop, '★ ★', { size: 15, color: '#ffe066', dur: 1 });
       cam.close(cop, { hold: 1.8 });
       if (lv >= 4) R.run(R.cop(kid, 7, 0.3, 'POLITIE!'));
@@ -1543,7 +1721,7 @@ G.burglar = {
     ctx.incident(2);
     ctx.news(`Burglar exits ${ctx.st.name} home via window "like a professional"`);
     yield* wait(0.35);
-    const trail = ctx.run((function* () { for (;;) { yield* wait(0.3); if (rob.alive) ctx.fx.cash(rob.g.position.x, 1.6, rob.g.position.z, 1, 2, 4); } })());
+    const trail = ctx.run((function* () { for (;;) { yield* wait(0.3); if (rob.alive) ctx.fx.cash(rob.g.position.x, 1.2, rob.g.position.z, 1, 2, 4); } })());
     const busted = rnd.chance(0.35);
     ctx.run(footCop(ctx, rob, busted ? 8.4 : 5.6, 0.2));
     if (L.kind !== 'ped' && ctx.road.closed === 0) ctx.run((function* () { yield* closeRoad(ctx); yield* policeRun(ctx, dir, L.chaseZ, 9, 0); openRoad(ctx); })());
@@ -1551,8 +1729,8 @@ G.burglar = {
     if (busted) {
       yield* go(ctx, rob, h.x + dir * 12, L.walkB[1], 6);
       ctx.sfx('slam');
-      ctx.fx.puff(rob.g.position.x, 1, rob.g.position.z, '#ffe08a');
-      ctx.fx.burst(rob.g.position.x, 1.5, rob.g.position.z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
+      ctx.fx.puff(rob.g.position.x, 0.8, rob.g.position.z, '#ffe08a');
+      ctx.fx.burst(rob.g.position.x, 1.15, rob.g.position.z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
       say(ctx, rob, 'BUSTED!', { size: 26, color: '#7db8ff' });
       rob.arms = 'up';
       ctx.news('Burglar caught after 12-metre pursuit. Officer "barely winded"');
@@ -1569,8 +1747,8 @@ G.burglar = {
 };
 
 const gateProp = () => piece((v, gl) => {
-  for (const sx of [-0.8, 0.8]) { v.box(sx, 0, 0, 0.12, 1.5, 0.12, '#cfd8dc'); gl.box(sx, 1.5, 0, 0.18, 0.16, 0.18, '#ff2d2d'); }
-  v.box(0, 1.5, 0, 1.72, 0.06, 0.12, '#b0bec5');
+  for (const sx of [-0.8, 0.8]) { v.box(sx, 0, 0, 0.12, 2.1, 0.12, '#cfd8dc'); gl.box(sx, 2.1, 0, 0.18, 0.16, 0.18, '#ff2d2d'); } // 2.1 m: taller than a 2 m person
+  v.box(0, 2.1, 0, 1.72, 0.06, 0.12, '#b0bec5');
 }, 21);
 const cartProp = () => sculpt((v) => {
   v.box(0, 0.28, 0, 1.0, 0.05, 0.62, '#9aa5ad');
@@ -1669,7 +1847,7 @@ G.shopHeist = {
       ctx.sfx('alarm');
       yield* go(ctx, rob, dx, gz + 0.9, 3);
       // PIEP PIEP PIEP: the gate lights up with the robber half-way through it
-      ctx.fx.text('PIEP! PIEP! PIEP!', at(dx, 2.9, gz), { size: 18, color: '#ff6b6b', dur: 1.8 });
+      ctx.fx.text('PIEP! PIEP! PIEP!', at(dx, 2.5, gz), { size: 18, color: '#ff6b6b', dur: 1.8 });
       ctx.shake(0.15);
       const gblink = R.run((function* () { let u = 0; for (;;) { u += yield; gate.children[1].visible = Math.floor(u * 6) % 2 === 0; } })());
       rob.moving = 0;
@@ -1735,11 +1913,11 @@ G.shopHeist = {
       ctx.fx.puff(rp.x, 0.2, cz);
       R.panic(rp.x, 12, 3);
       ctx.fx.sparks(rp.x + dir, 0.6, cz, 10);
-      ctx.fx.text('KLETTER-KLETTER-BOEM!', at(rp.x, 3, cz), { size: 20, color: '#ffd60a' });
-      ctx.fx.cash(rp.x, 1.5, cz, 10, 3, 5);
+      ctx.fx.text('KLETTER-KLETTER-BOEM!', at(rp.x, 2.5, cz), { size: 20, color: '#ffd60a' });
+      ctx.fx.cash(rp.x, 1.15, cz, 10, 3, 5);
       ctx.sfx('clatter'); ctx.sfx('thud');
       R.run(tween(0.6, (u) => { cart.rotation.z = (dir > 0 ? -1 : 1) * 1.4 * ease.outQuad(u); cart.position.y = 0.3 * u; }));
-      rob.pose = 'sit'; rob.air = true; rp.y = 0.32;
+      rob.pose = 'sit'; rob.air = true; rp.y = 0.23;
       say(ctx, rob, '★ ★', { size: 16, color: '#ffe066', dur: 1 });
       yield* wait(0.9);
 
@@ -1949,7 +2127,7 @@ G.bennyHill = {
       yield* popOut(ctx, m);
     };
     ctx.sfx('whistle');
-    say(ctx, at(a, 3, L.walkF[1]), '♪ ♫ ♪', { size: 18, color: '#ffe08a' });
+    say(ctx, at(a, 2.4, L.walkF[1]), '♪ ♫ ♪', { size: 18, color: '#ffe08a' });
     yield* all(...cast.map((m, i) => path(m, i * 0.36)));
   },
 };
@@ -2043,7 +2221,7 @@ G.plofkraak = {
     yield* go(ctx, van, A.x - dir * 1, vz, 14);
     ctx.fx.smoke(van.g.position.x - dir * 2, 0.3, vz, 6, ['#ddd', '#bbb'], 0.4);
     say(ctx, van, 'INSTAPPEN!', { size: 15, color: '#ffd60a' });
-    yield* all(go(ctx, r1, A.x - dir * 1, vz - 1.1, 7.5), go(ctx, r2, A.x - dir * 1.8, vz - 1.1, 7.5));
+    yield* all(go(ctx, r1, A.x - dir * 1, vz - van.wid / 2 - 0.5, 7.5), go(ctx, r2, A.x - dir * 1.8, vz - van.wid / 2 - 0.5, 7.5));
     ctx.run(popOut(ctx, r1));
     yield* popOut(ctx, r2);
     ctx.wanted = van;
@@ -2071,7 +2249,7 @@ G.plofkraak = {
 
 // ---------------------------------------------------------------- gags for specific kinds of crime
 const alarmLights = (x, z) => {
-  const m = sculpt((v) => { for (const sx of [-1.5, 1.5]) for (const sz of [-0.6, 0.6]) v.box(sx, 0.55, sz, 0.22, 0.2, 0.3, '#ffb000'); }, MAT.glow);
+  const m = sculpt((v) => { for (const sx of [-2.0, 2.0]) for (const sz of [-0.85, 0.85]) v.box(sx, 0.6, sz, 0.22, 0.2, 0.3, '#ffb000'); }, MAT.glow); // lights at the corners of a 4.4 x 1.85 m car
   m.position.set(x, 0.001, z);
   return m;
 };
@@ -2159,7 +2337,7 @@ G.carBreakIn = {
       yield* wait(0.4);
       R.stop(snore);
       ctx.sfx('glass'); ctx.sfx('thud');
-      ctx.fx.burst(car.x, 1.0, car.z + 0.7, { n: 26, colors: ['#bfe9ff', '#ffffff', '#8fd3f4', '#e8f7ff'], speed: 5, up: 5.5, size: [0.05, 0.13], life: [0.6, 1.1], glow: true });
+      ctx.fx.burst(car.x, 1.2, car.z + 0.95, { n: 26, colors: ['#bfe9ff', '#ffffff', '#8fd3f4', '#e8f7ff'], speed: 5, up: 5.5, size: [0.05, 0.13], life: [0.6, 1.1], glow: true });
       ctx.fx.text('KRAK!', at(car.x, 2.4, car.z), { size: 22, color: '#bfe9ff' });
       ctx.shake(0.2);
       ctx.wanted = thief;
@@ -2173,9 +2351,9 @@ G.carBreakIn = {
       const held = [true, true, true];
       for (let i = 0; i < 3; i++) {
         const o = R.add(loot[i]);
-        o.position.set(car.x + (i - 1) * 0.4, 1.0, car.z + 0.2);
+        o.position.set(car.x + (i - 1) * 0.4, 1.25, car.z + 0.2);
         ctx.sfx(i === 1 ? 'pop' : 'yoink', 1.1);
-        R.run(arc(o, car.x + (i - 1) * 0.4, 2.6, z, 0.5, 0.45));
+        R.run(arc(o, car.x + (i - 1) * 0.4, 2.0, z, 0.5, 0.45));
         yield* wait(0.38);
       }
       let ph = 0;
@@ -2185,7 +2363,7 @@ G.carBreakIn = {
           const dt = yield;
           ph += dt * 6.5;
           const tp = thief.g.position;
-          loot.forEach((o, i) => { if (held[i]) o.position.set(tp.x + Math.cos(ph + (i * TAU) / 3) * 0.6, 2.5 + Math.sin(ph + (i * TAU) / 3) * 0.5, tp.z); });
+          loot.forEach((o, i) => { if (held[i]) o.position.set(tp.x + Math.cos(ph + (i * TAU) / 3) * 0.5, 1.95 + Math.sin(ph + (i * TAU) / 3) * 0.4, tp.z); });
         }
       })());
       say(ctx, thief, 'JA HOOR!', { size: 15, color: '#ffd60a' });
@@ -2246,7 +2424,7 @@ G.carBreakIn = {
         say(ctx, thief, 'BUSTED!', { size: 24, color: '#7db8ff' });
         cam.close(thief, { hold: 1.8 });
         cam.freeze(0.5);
-        ctx.fx.burst(thief.g.position.x, 1.5, z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
+        ctx.fx.burst(thief.g.position.x, 1.15, z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
         yield* wait(1.2);
       } else {
         thief.arms = 'swing';
@@ -2301,7 +2479,10 @@ G.fenderBender = {
       const sz = z + (z > 0 ? 1.5 : -1.5);
       const a = makeCar(rnd, 'car', L.night), b = makeCar(rnd, rnd.chance(0.3) ? 'taxi' : 'car', L.night), c3 = makeCar(rnd, 'car', L.night);
       const xs = dir * rnd.range(1, 5), x0 = dir > 0 ? X0 + 2.6 : X1 - 2.6, x1 = dir > 0 ? X1 - 2.6 : X0 + 2.6;
-      const heading = dir > 0 ? E : W, bx = xs - dir * 3.5, ix = xs - dir * 1.7;
+      const heading = dir > 0 ? E : W, gap = a.len + 0.2, bx = xs - dir * gap, ix = xs - dir * (gap / 2); // bumper to bumper (cars are 4.4 m long)
+      const clampZ = (q) => clamp(q, -(L.hw - 0.95), L.hw - 0.95);
+      const zIn = clampZ(z + (z > 0 ? -2.05 : 2.05)); // a lane clear of the 1.85 m wide stopped cars
+      const zOut = L.kind === 'major' ? -z : clampZ(z + (z > 0 ? 2.05 : -2.05));
       const spot = pt(xs - dir * 1.5, z);
       let impact = false, slowed = false;
 
@@ -2352,7 +2533,7 @@ G.fenderBender = {
           yield* arc(bm, lx + k * dir * 0.5, 0.05, lz, 0.35, 0.3, k * 1.5);
         })());
       }
-      R.run((function* () { for (let i = 0; i < 18; i++) { ctx.fx.smoke(b.g.position.x + dir * 1.6, 1.0, z, 2, ['#888', '#666'], 0.4); yield* wait(0.2); } })());
+      R.run((function* () { for (let i = 0; i < 18; i++) { ctx.fx.smoke(b.g.position.x + dir * 2.1, 1.15, z, 2, ['#888', '#666'], 0.4); yield* wait(0.2); } })());
       ctx.sfx('honk'); say(ctx, b, 'TUUUT!', { size: 15, color: '#ffd166' });
       bird.face(0);
       say(ctx, bird, 'rrrk', { size: 11, color: '#cfe8ff' });
@@ -2366,7 +2547,7 @@ G.fenderBender = {
         yield* R.enter(c3, x0, z, 0);
         c3.face(heading);
         ctx.sfx('honk'); say(ctx, c3, 'HÉ! DOORRIJDEN!', { size: 13, color: '#ffd166' });
-        yield* goEach(ctx, c3, bx - dir * 3.5, z, 11);
+        yield* goEach(ctx, c3, bx - dir * gap, z, 11);
         ctx.sfx('skid');
         cHit = true;
       })());
@@ -2399,7 +2580,7 @@ G.fenderBender = {
       yield* all(go(ctx, d1, xs - dir * 0.2, sz, 4), go(ctx, d2, xs - dir * 1.4, sz, 4));
       faceTo(d1, d2.g.position.x, sz); faceTo(d2, d1.g.position.x, sz);
       for (let i = 0; i < 3; i++) {
-        ctx.sfx('bonk'); ctx.fx.sparks(xs - dir * 0.8, 1.4, sz, 6); ctx.fx.text('KLANG!', at(xs - dir * 0.8, 2.8, sz), { size: 18, color: '#ffd60a' });
+        ctx.sfx('bonk'); ctx.fx.sparks(xs - dir * 0.8, 1.1, sz, 6); ctx.fx.text('KLANG!', at(xs - dir * 0.8, 2.3, sz), { size: 18, color: '#ffd60a' });
         yield* all(hop(d1, 0.25, 0.28), hop(d2, 0.25, 0.28));
         yield* wait(0.1);
       }
@@ -2408,13 +2589,13 @@ G.fenderBender = {
       yield* waitUntil(() => cHit, 8);
       cam.track(c3, { hold: 2, lead: 1 });
       ctx.sfx('slam'); ctx.shake(0.4);
-      ctx.fx.text('TIK!', at(bx - dir * 1.8, 2.4, z), { size: 22, color: '#ffd60a' });
-      ctx.fx.sparks(bx - dir * 1.8, 0.8, z, 6);
+      ctx.fx.text('TIK!', at(bx - dir * (gap / 2), 2.4, z), { size: 22, color: '#ffd60a' });
+      ctx.fx.sparks(bx - dir * (gap / 2), 0.8, z, 6);
       R.run(go(ctx, b, b.g.position.x + dir * 0.5, z, 4));
       R.run((function* () { yield* wait(0.2); ctx.sfx('slam'); yield* go(ctx, a, a.g.position.x + dir * 0.45, z, 4); })());
       yield* all(doubleTake(ctx, d1, 'NOG EEN?!'), doubleTake(ctx, d2, 'WAT NU?!'));
       const d3 = makePerson(rnd, { kind: rnd.chance(0.4) ? 'chef' : 'civ' });
-      yield* R.enter(d3, bx - dir * 5.2, sz);
+      yield* R.enter(d3, bx - dir * (gap + 1.7), sz);
       d3.arms = 'fist'; d3.heading = dir > 0 ? E : W;
       yell(ctx, d3, 'JULLIE STONDEN STIL!', '#ffb4a2', 13);
       d1.drop(); d2.drop();
@@ -2450,7 +2631,7 @@ G.fenderBender = {
       const dest = [];
       for (let i = 0; i < 6; i++) {
         const pp = R.add(item.paper());
-        pp.position.set(src.g.position.x, 1.3, src.g.position.z);
+        pp.position.set(src.g.position.x, 1.0, src.g.position.z);
         const q = [xs + rnd.range(-5, 5), 0.03, z + rnd.range(-2.2, 2.2)];
         dest.push(q);
         R.run(arc(pp, q[0], q[1], q[2], rnd.range(1.5, 3), rnd.range(1.1, 1.7), rnd.range(-9, 9)));
@@ -2467,7 +2648,7 @@ G.fenderBender = {
         goEach(ctx, d3, other[0], sz, 5.5),
       );
       ctx.sfx('bonk'); ctx.shake(0.25);
-      ctx.fx.text('BONK!', at(target[0], 2.6, sz), { size: 24, color: '#ffd60a' });
+      ctx.fx.text('BONK!', at(target[0], 2.2, sz), { size: 24, color: '#ffd60a' });
       say(ctx, d1, '★ ★', { size: 14, color: '#ffe066', dur: 0.9 }); say(ctx, d2, '★ ★', { size: 14, color: '#ffe066', dur: 0.9 });
       yield* all(hop(d1, 0.3, 0.3), hop(d2, 0.3, 0.3));
       d3.arms = 'wave';
@@ -2481,8 +2662,8 @@ G.fenderBender = {
       say(ctx, bird, 'rrrk', { size: 11, color: '#cfe8ff' });
       ctx.sfx('squawk');
       if (lv >= 4) {
-        if (L.kind !== 'ped') R.run(R.police(-dir, z + (z > 0 ? -1.3 : 1.3), 10, 0.2));
-        if (lv >= 5) R.run(R.police(dir, z + (z > 0 ? 1.3 : -1.3), 12, 1.2));
+        if (L.kind !== 'ped') R.run(R.police(-dir, zIn, 10, 0.2));
+        if (lv >= 5) R.run(R.police(dir, zOut, 12, 1.2));
       }
       d1.arms = d2.arms = d3.arms = 'swing';
       yield* wait(0.5);
@@ -2531,12 +2712,12 @@ G.scuffle = {
       a.hold(item.phone()); a.arms = 'hold';
       b.hold(item.wafel()); b.arms = 'hold';
       yield* all(
-        (function* () { yield* R.enter(a, x - 9, z); yield* go(ctx, a, x - 0.9, z, 4.4); })(),
-        (function* () { yield* R.enter(b, x + 9, z); yield* go(ctx, b, x + 0.9, z, 4.4); })(),
+        (function* () { yield* R.enter(a, x - 9, z); yield* go(ctx, a, x - 0.65, z, 4.4); })(),
+        (function* () { yield* R.enter(b, x + 9, z); yield* go(ctx, b, x + 0.65, z, 4.4); })(),
       );
       a.heading = E; b.heading = W;
       ctx.sfx('thud'); ctx.shake(0.15);
-      ctx.fx.text('OEF!', at(x, 2.6, z), { size: 20, color: '#fff' });
+      ctx.fx.text('OEF!', at(x, 2.2, z), { size: 20, color: '#fff' });
       yield* all(hop(a, 0.2, 0.25), hop(b, 0.2, 0.25));
       a.drop(); b.drop();
       a.arms = b.arms = 'fist';
@@ -2551,7 +2732,7 @@ G.scuffle = {
         if (i >= 2) { // a shove
           const o = other.g.position, px0 = o.x, dd = other === a ? -1 : 1;
           ctx.sfx('thud'); ctx.shake(0.1 * i);
-          yield* tween(0.2, (t) => { o.x = px0 + dd * 0.4 * Math.sin(t * Math.PI); });
+          yield* tween(0.2, (t) => { o.x = px0 + dd * 0.3 * Math.sin(t * Math.PI); });
         }
         yield* wait(0.35);
       }
@@ -2584,7 +2765,7 @@ G.scuffle = {
       for (const [p, i] of spectators) {
         if (!p.alive) continue;
         faceTo(p, x, z); p.arms = i % 2 ? 'up' : 'hold';
-        ctx.fx.cash(p.g.position.x, 1.6, p.g.position.z, 2, 1.5, 2.5);
+        ctx.fx.cash(p.g.position.x, 1.2, p.g.position.z, 2, 1.5, 2.5);
       }
       ctx.sfx('coin');
       say(ctx, mob[0] || bookie, '10 OP DE CHEF!', { size: 13, color: '#b9fbc0' });
@@ -2593,7 +2774,7 @@ G.scuffle = {
       a.heading = E; b.heading = W;
       a.arms = b.arms = 'up';
       ctx.sfx('gasp');
-      yield* tween(0.8, (t) => { a.g.position.x = x - 0.9 + 0.35 * t; b.g.position.x = x + 0.9 - 0.35 * t; a.g.position.y = Math.abs(Math.sin(t * 14)) * 0.08; b.g.position.y = Math.abs(Math.sin(t * 14 + 1)) * 0.08; });
+      yield* tween(0.8, (t) => { a.g.position.x = x - 0.65 + 0.25 * t; b.g.position.x = x + 0.65 - 0.25 * t; a.g.position.y = Math.abs(Math.sin(t * 14)) * 0.08; b.g.position.y = Math.abs(Math.sin(t * 14 + 1)) * 0.08; });
       a.g.position.y = b.g.position.y = 0;
       yield* wait(0.5); // the hold before the payoff
       ctx.incident(2);
@@ -2623,16 +2804,16 @@ G.scuffle = {
           nxt = 0.14; k++;
           ctx.fx.smoke(cc.x + rnd.range(-0.7, 0.7), 0.4, cc.z + rnd.range(-0.5, 0.5), 5, ['#f1ede4', '#e4dccb', '#d8cfbd'], 0.8);
           if (k % 3 === 0) {
-            ctx.fx.text(rnd.pick(words), at(cc.x + rnd.range(-1.6, 1.6), rnd.range(1.6, 3), cc.z), { size: 19, color: rnd.pick(['#ffd60a', '#ff6b6b', '#ffffff']), dur: 0.7 });
+            ctx.fx.text(rnd.pick(words), at(cc.x + rnd.range(-1.6, 1.6), rnd.range(1.2, 2.4), cc.z), { size: 19, color: rnd.pick(['#ffd60a', '#ff6b6b', '#ffffff']), dur: 0.7 });
             ctx.sfx(rnd.pick(['thud', 'boing', 'pop', 'bonk']));
             ctx.shake(0.12);
           }
-          if (k % 4 === 1) ctx.fx.burst(cc.x, 1.2, cc.z, { n: 5, colors: ['#ffd60a', '#ffffff'], speed: 5, up: 6, glow: true, size: [0.1, 0.16], life: [0.4, 0.8] });
+          if (k % 4 === 1) ctx.fx.burst(cc.x, 0.9, cc.z, { n: 5, colors: ['#ffd60a', '#ffffff'], speed: 5, up: 6, glow: true, size: [0.1, 0.16], life: [0.4, 0.8] });
           // limbs poke out of the cloud (voxel arms and legs in skin tones and shirt colours)
-          if (k % 2 === 0) ctx.fx.burst(cc.x, 1.0, cc.z, { n: 3, colors: ['#f2c9a0', '#c98e62', '#e84a5f', '#457b9d', '#2b3a55'], speed: 6, up: 5, size: [0.16, 0.3], life: [0.3, 0.6] });
+          if (k % 2 === 0) ctx.fx.burst(cc.x, 0.8, cc.z, { n: 3, colors: ['#f2c9a0', '#c98e62', '#e84a5f', '#457b9d', '#2b3a55'], speed: 6, up: 5, size: [0.16, 0.3], life: [0.3, 0.6] });
           if ((k === 4 || k === 12) && shoes.length < 2) {
             const sh = R.add(item.shoe());
-            sh.position.set(cc.x, 1.2, cc.z);
+            sh.position.set(cc.x, 0.9, cc.z);
             shoes.push(sh);
             R.run(arc(sh, cc.x + rnd.range(-4, 4), 0.02, cc.z + rnd.range(-1.5, 1.5), 3.5, 1.0, rnd.range(-9, 9)));
           }
@@ -2645,7 +2826,7 @@ G.scuffle = {
 
       // 5. the cloud clears: both on the ground, dazed. Level decides who shows up
       a.g.visible = b.g.visible = true;
-      a.g.position.set(cc.x - 1.0, 0.32, cc.z); b.g.position.set(cc.x + 1.0, 0.32, cc.z);
+      a.g.position.set(cc.x - 0.9, 0.23, cc.z); b.g.position.set(cc.x + 0.9, 0.23, cc.z);
       a.air = b.air = true; a.pose = b.pose = 'sit'; a.arms = b.arms = 'up';
       a.heading = b.heading = 0;
       cam.two(a, b, { dist: 11, hold: 3 });
@@ -2670,7 +2851,7 @@ G.scuffle = {
       // the bets are settled: the granny backed a draw
       cam.low(bookie, { dist: 8, hold: 2.4 });
       ctx.sfx('coin');
-      ctx.fx.cash(bookie.g.position.x, 1.4, bookie.g.position.z, 22, 3, 6);
+      ctx.fx.cash(bookie.g.position.x, 1.05, bookie.g.position.z, 22, 3, 6);
       bookie.arms = 'up';
       yell(ctx, bookie, 'GELIJKSPEL! OMA WINT!', '#b9fbc0', 15);
       for (const [p] of spectators) if (p !== bookie && p.alive) { p.arms = 'fist'; say(ctx, p, 'ACH...', { size: 12, color: '#cfe8ff' }); }
@@ -2725,7 +2906,7 @@ G.shadyDeal = {
     yield* wait(1.3);
     ped.arms = 'hold';
     ctx.sfx('coin');
-    ctx.fx.cash(x, 1.3, z, 3, 1.5, 2.5);
+    ctx.fx.cash(x, 1.0, z, 3, 1.5, 2.5);
     ctx.incident();
     ctx.news(`Man sells "oregano" on ${ctx.st.name} at suspicious mark-up`);
     yield* wait(0.8);
@@ -2737,7 +2918,7 @@ G.shadyDeal = {
     dealer.b.remove(wares);
     dealer.arms = 'swing';
     say(ctx, dealer, 'NIKS!', { size: 15, color: '#ffffff' });
-    ctx.fx.burst(x, 1.1, z, { n: 10, colors: ['#5a8f3c', '#7cfc9a', '#3f6f2a'], speed: 3, up: 4, size: [0.05, 0.1] });
+    ctx.fx.burst(x, 0.85, z, { n: 10, colors: ['#5a8f3c', '#7cfc9a', '#3f6f2a'], speed: 3, up: 4, size: [0.05, 0.1] });
     ctx.wanted = dealer;
     ped.arms = 'swing';
     say(ctx, ped, '♪ la la la ♪', { size: 12, color: '#cfe8ff' });
@@ -2772,7 +2953,7 @@ G.phishing = {
       const hx = clamp(p.x + dir * 6, -16, 16), hz = back ? L.walkF[1] : L.walkB[0], hh = back ? Math.PI : 0;
       const vz = back ? [L.walkB[0], L.walkB[1]] : [L.walkF[0], L.walkF[1]], dz = hz + fz * 1.0;
       const hub = pt(hx, (hz + ped.lineZ) / 2);
-      const tipX = hx, tipY = 1.75, tipZ = hz + fz * 1.1;
+      const tipX = hx, tipY = 1.3, tipZ = hz + fz * 1.1;
 
       // 1. set-up: a phone zombie ambles in while a hooded figure carries in a folding desk
       cam.wide(hub, { dist: 26, hold: 5 });
@@ -2824,16 +3005,16 @@ G.phishing = {
       ln.visible = true;
       const px = p.x, pz = p.z;
       yield* tween(0.5, (t) => {
-        const x = lerp(tipX, px, t), y = lerp(tipY, 1.35, t) + Math.sin(t * Math.PI) * 0.9, z = lerp(tipZ, pz, t);
+        const x = lerp(tipX, px, t), y = lerp(tipY, 1.0, t) + Math.sin(t * Math.PI) * 0.65, z = lerp(tipZ, pz, t);
         hook.position.set(x, y, z);
         ln.aim(tipX, tipY, tipZ, x, y, z);
       }, ease.outQuad);
       ctx.sfx('boing');
-      ctx.fx.text('PHISHING!', at((hx + px) / 2, 3.2, (hz + pz) / 2), { size: 24, color: '#7cfc9a' });
+      ctx.fx.text('PHISHING!', at((hx + px) / 2, 2.6, (hz + pz) / 2), { size: 24, color: '#7cfc9a' });
       cam.close(ped, { hold: 1.4 });
       ped.arms = 'up';
       const wal = R.add(item.wallet());
-      wal.scale.setScalar(2); wal.position.set(px, 1.2, pz);
+      wal.scale.setScalar(2); wal.position.set(px, 0.9, pz);
       ctx.sfx('pop');
       yield* wait(0.5);
       // reel in, the victim gets dragged a few steps along
@@ -2844,7 +3025,7 @@ G.phishing = {
       yield* tween(0.95, (t) => {
         const k = ease.inQuad(t);
         p.z = pz - fz * 0.8 * Math.sin(t * Math.PI * 0.5);
-        const x = lerp(px, tipX, k), y = lerp(1.2, tipY, k), z = lerp(p.z, tipZ, k);
+        const x = lerp(px, tipX, k), y = lerp(0.9, tipY, k), z = lerp(p.z, tipZ, k);
         wal.position.set(x, y, z);
         hook.position.set(x, y + 0.12, z);
         ln.aim(tipX, tipY, tipZ, x, y, z);
@@ -2856,7 +3037,7 @@ G.phishing = {
       hk.armL.add(w2);
       hk.arms = 'hold';
       ctx.sfx('coin');
-      ctx.fx.cash(hx, 1.6, hz, 8, 2, 4);
+      ctx.fx.cash(hx, 1.2, hz, 8, 2, 4);
       say(ctx, hk, 'hehehe', { size: 14, color: '#b9fbc0' });
       ctx.incident();
       ctx.wanted = hk;
@@ -2886,8 +3067,8 @@ G.phishing = {
       const hp = hk.g.position;
       const reline = () => {
         const ax = hp.x, az = hp.z + fz * 1.1;
-        ln.aim(ax, tipY, az, v2.g.position.x, 1.3, v2.g.position.z); h2.position.set(v2.g.position.x, 1.35, v2.g.position.z);
-        ln2.aim(ax, tipY, az, v3.g.position.x, 1.3, v3.g.position.z); h3.position.set(v3.g.position.x, 1.35, v3.g.position.z);
+        ln.aim(ax, tipY, az, v2.g.position.x, 1.0, v2.g.position.z); h2.position.set(v2.g.position.x, 1.0, v2.g.position.z);
+        ln2.aim(ax, tipY, az, v3.g.position.x, 1.0, v3.g.position.z); h3.position.set(v3.g.position.x, 1.0, v3.g.position.z);
       };
       hk.arms = 'hold';
       cam.two(v2, v3, { hold: 2.4 });
@@ -2895,8 +3076,8 @@ G.phishing = {
       const a2 = v2.g.position.clone(), a3 = v3.g.position.clone();
       yield* tween(0.4, (t) => {
         const ax = hx, az = tipZ;
-        h2.position.set(lerp(ax, a2.x, t), lerp(tipY, 1.35, t) + Math.sin(t * Math.PI) * 0.8, lerp(az, a2.z, t));
-        h3.position.set(lerp(ax, a3.x, t), lerp(tipY, 1.35, t) + Math.sin(t * Math.PI) * 0.8, lerp(az, a3.z, t));
+        h2.position.set(lerp(ax, a2.x, t), lerp(tipY, 1.0, t) + Math.sin(t * Math.PI) * 0.6, lerp(az, a2.z, t));
+        h3.position.set(lerp(ax, a3.x, t), lerp(tipY, 1.0, t) + Math.sin(t * Math.PI) * 0.6, lerp(az, a3.z, t));
         ln.aim(ax, tipY, az, h2.position.x, h2.position.y, h2.position.z);
         ln2.aim(ax, tipY, az, h3.position.x, h3.position.y, h3.position.z);
       }, ease.outQuad);
@@ -2923,13 +3104,13 @@ G.phishing = {
       ctx.sfx('gasp');
       // the desk goes over, laptop and all
       ctx.sfx('slam'); ctx.shake(0.3);
-      ctx.fx.sparks(hx, 1.0, dz, 12);
+      ctx.fx.sparks(hx, 0.8, dz, 12);
       ctx.fx.text('ZZZT!', at(hx, 2.2, dz), { size: 20, color: '#7cfc9a' });
       yield* tween(0.35, (t) => { desk.rotation.z = 1.45 * ease.outBack(t); desk.position.y = 0.45 * t; desk.position.x = hx + 0.3 * t; });
       // the wallet flies out of his hand and lands at the first victim's feet
       hk.armL.remove(w2);
       const wf = R.add(item.wallet());
-      wf.scale.setScalar(2); wf.position.set(hx, 1.4, hz);
+      wf.scale.setScalar(2); wf.position.set(hx, 1.05, hz);
       const wx = p.x - dir * 1.8;
       yield* arc(wf, wx, 0.1, p.z, 1.6, 0.7, 6);
       ctx.sfx('coin');
@@ -2958,8 +3139,8 @@ G.phishing = {
         say(ctx, hk, '★ ★', { size: 16, color: '#ffe066', dur: 0.9 });
         yield* hop(hk, 0.25, 0.4);
         hk.pose = 'sit'; hk.air = true; hk.heading = 0;
-        hk.g.position.y = 0.32; hk.arms = 'swing';
-        ctx.fx.text('404', at(hx, 2.6, dz), { size: 26, color: '#7cfc9a' });
+        hk.g.position.y = 0.23; hk.arms = 'swing';
+        ctx.fx.text('404', at(hx, 2.2, dz), { size: 26, color: '#7cfc9a' });
         say(ctx, hk, '*zucht*', { size: 12, color: '#cfe8ff' });
         ctx.news('Phishing ring undone by its own knots; laptop says "404 Not Found"');
         yield* wait(0.7);
@@ -3020,7 +3201,7 @@ G.phishing = {
           say(ctx, hk, 'BUSTED!', { size: 24, color: '#7db8ff' });
           cam.close(hk, { hold: 1.8 });
           cam.freeze(0.6);
-          ctx.fx.burst(hk.g.position.x, 1.5, hk.g.position.z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
+          ctx.fx.burst(hk.g.position.x, 1.15, hk.g.position.z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
           ctx.news('Cybercrime unit lands the big phish: one bike, one bell, one desk');
           yield* wait(1.1);
           tow.visible = false;

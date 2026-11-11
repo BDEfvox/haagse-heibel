@@ -209,30 +209,36 @@ export function atm(v, gl, x, z, y = 0.15) {
   v.box(x, y + 0.7, z + 0.42, 0.6, 0.24, 0.06, '#9aa5ad');
   v.box(x + 0.34, y + 0.4, z + 0.41, 0.26, 0.08, 0.02, '#222');
 }
-/** Static parked bicycle drawn into a Vox (lying along x). */
+/** Bicycle scale shared by the ridden bike and the parked ones (about 1.85 m long, 0.67 m wheels). */
+const BK = 1.19;
+/** One bicycle drawn into a Vox. Frame runs along z (front = +z) if alongZ, else along x (front = +x). */
+function bikeBox(v, alongZ, x, y, z, col, dir = 1) {
+  const k = BK;
+  // (lateral, up, forward) -> box
+  const B = (f, up, h, w, l, c) => {
+    if (alongZ) v.box(x, y + up * k, z + dir * f * k, w * k, h * k, l * k, c);
+    else v.box(x + dir * f * k, y + up * k, z, l * k, h * k, w * k, c);
+  };
+  B(-0.5, 0, 0.56, 0.08, 0.56, '#1f1f1f');
+  B(0.5, 0, 0.56, 0.08, 0.56, '#1f1f1f');
+  B(0, 0.3, 0.1, 0.08, 0.9, col);
+  B(-0.25, 0.36, 0.46, 0.08, 0.08, col);
+  B(-0.25, 0.8, 0.08, 0.16, 0.3, '#2b2b2b');
+  B(0.4, 0.36, 0.62, 0.08, 0.08, col);
+  B(0.4, 0.96, 0.07, 0.5, 0.07, '#2b2b2b');
+}
+/** Static parked bicycle drawn into a Vox (lying along x), same size as the ridden one. */
 export function bikeStatic(v, x, z, col, y = 0.15) {
-  v.box(x - 0.42, y, z, 0.5, 0.5, 0.07, '#1f1f1f');
-  v.box(x + 0.42, y, z, 0.5, 0.5, 0.07, '#1f1f1f');
-  v.box(x, y + 0.28, z, 0.8, 0.09, 0.07, col);
-  v.box(x - 0.22, y + 0.34, z, 0.07, 0.42, 0.07, col);
-  v.box(x - 0.22, y + 0.74, z, 0.26, 0.07, 0.14, '#2b2b2b');
-  v.box(x + 0.34, y + 0.34, z, 0.07, 0.56, 0.07, col);
-  v.box(x + 0.34, y + 0.88, z, 0.07, 0.07, 0.4, '#2b2b2b');
+  bikeBox(v, false, x, y, z, col);
 }
 export function bikeRack(v, x, z, rnd, n = 4, y = 0.15) {
   for (let i = 0; i < n; i++) {
-    const px = x + (i - (n - 1) / 2) * 0.55;
-    v.box(px, y, z - 0.5, 0.06, 0.5, 0.06, '#9aa5ad');
+    const px = x + (i - (n - 1) / 2) * 0.8;
+    v.box(px, y, z - 0.6, 0.06, 0.6, 0.06, '#9aa5ad');
     if (rnd.chance(0.8)) {
-      // bikes parked perpendicular to the street
+      // bikes parked perpendicular to the street, front wheel toward -z, locked to the rack post
       const col = rnd.pick(['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#111', '#ff70a6', '#8ecae6']);
-      v.box(px, y, z - 0.35, 0.07, 0.5, 0.5, '#1f1f1f');
-      v.box(px, y, z + 0.45, 0.07, 0.5, 0.5, '#1f1f1f');
-      v.box(px, y + 0.28, z + 0.05, 0.07, 0.09, 0.8, col);
-      v.box(px, y + 0.34, z + 0.25, 0.07, 0.42, 0.07, col);
-      v.box(px, y + 0.74, z + 0.25, 0.14, 0.07, 0.26, '#2b2b2b');
-      v.box(px, y + 0.34, z - 0.3, 0.07, 0.56, 0.07, col);
-      v.box(px, y + 0.88, z - 0.3, 0.4, 0.07, 0.07, '#2b2b2b');
+      bikeBox(v, true, px, y, z + 0.55, col, -1);
     }
   }
 }
@@ -304,7 +310,10 @@ export function makeCar(rnd, type = 'car', night = false) {
   g.add(body);
   const col = type === 'police' ? '#f8f9fa' : type === 'van' ? '#30343f' : type === 'taxi' ? '#ffd60a' : rnd.pick(CARCOLS);
   const van = type === 'van';
+  // modelled at the old small size, then body is scaled up to a real car (4.4 x 1.85 x 1.5; van 5.2 x 2.0 x 2.2)
   const L = van ? 3.9 : 3.3, W = 1.6;
+  const SX = van ? 2.0 / W : 1.85 / W, SY = van ? 2.2 / 1.78 : 1.5 / 1.33, SZ = van ? 5.2 / L : 4.4 / L;
+  body.scale.set(SX, SY, SZ);
   const solid = new Vox(3), gl = new Vox(4);
   solid.box(0, 0.28, 0, W, van ? 0.75 : 0.55, L, col);
   if (van) {
@@ -335,13 +344,13 @@ export function makeCar(rnd, type = 'car', night = false) {
   gl.box(0.5, 0.5, -L / 2 - 0.01, 0.3, 0.14, 0.04, '#ff2d2d');
   body.add(solid.mesh());
   body.add(gl.mesh(MAT.glow));
-  const a = vehicleActor(g, { body, type, len: L });
+  const a = vehicleActor(g, { body, type, len: L * SZ, wid: W * SX, hgt: van ? 2.2 : 1.5 });
   if (type === 'police') {
     const red = sculpt((v) => v.box(-0.3, 1.43, -0.2, 0.36, 0.16, 0.26, '#ff2d2d'), MAT.glow);
     const blue = sculpt((v) => v.box(0.3, 1.43, -0.2, 0.36, 0.16, 0.26, '#2d7bff'), MAT.glow);
     body.add(red, blue);
     const light = new THREE.PointLight('#3b82ff', 0, 14, 1.6);
-    light.position.set(0, 2.2, 0);
+    light.position.set(0, 2.4, 0);
     g.add(light);
     a.siren = false;
     a.tick = function () {
@@ -360,32 +369,33 @@ export function makeTram(night = false) {
   const g = new THREE.Group(), body = new THREE.Group();
   g.add(body);
   const v = new Vox(5), gl = new Vox(6);
-  const seg = 4.6, n = 3, W = 1.9;
+  const seg = 5.2, n = 5, W = 2.4; // 5 segments, about 27.5 m long, 2.4 m wide, 3.3 m high
+  const win = night ? '#ffe9a8' : '#3b5b7a';
   for (let i = 0; i < n; i++) {
     const z = (i - (n - 1) / 2) * (seg + 0.3);
-    v.box(0, 0.3, z, W, 0.8, seg, '#c8102e');
-    v.box(0, 1.1, z, W, 1.2, seg, '#f3ecd9');
-    v.box(0, 2.3, z, W - 0.2, 0.16, seg - 0.2, '#8d99a6');
+    v.box(0, 0.3, z, W, 1.0, seg, '#c8102e');
+    v.box(0, 1.3, z, W, 1.8, seg, '#f3ecd9');
+    v.box(0, 3.1, z, W - 0.2, 0.2, seg - 0.2, '#8d99a6');
     for (const sx of [-1, 1]) {
-      for (let k = 0; k < 4; k++) (night ? gl : v).box(sx * (W / 2 + 0.005), 1.3, z - seg / 2 + 0.65 + k * 1.1, 0.03, 0.75, 0.8, night ? '#ffe9a8' : '#3b5b7a');
-      v.box(sx * (W / 2 + 0.005), 0.4, z, 0.03, 1.5, 0.7, '#f3ecd9'); // door
+      for (let k = 0; k < 4; k++) (night ? gl : v).box(sx * (W / 2 + 0.005), 1.65, z - seg / 2 + 0.7 + k * 1.2, 0.03, 1.0, 0.9, win);
+      v.box(sx * (W / 2 + 0.005), 0.4, z, 0.03, 2.2, 0.8, '#f3ecd9'); // door
     }
-    v.box(0, 0.05, z - 1.3, W - 0.3, 0.3, 0.9, '#222');
-    v.box(0, 0.05, z + 1.3, W - 0.3, 0.3, 0.9, '#222');
-    if (i < n - 1) v.box(0, 0.4, z + seg / 2 + 0.15, W - 0.5, 1.6, 0.3, '#333');
+    v.box(0, 0.05, z - 1.6, W - 0.4, 0.4, 1.0, '#222');
+    v.box(0, 0.05, z + 1.6, W - 0.4, 0.4, 1.0, '#222');
+    if (i < n - 1) v.box(0, 0.4, z + seg / 2 + 0.15, W - 0.6, 2.3, 0.3, '#333');
   }
   const front = ((n - 1) / 2) * (seg + 0.3) + seg / 2;
-  (night ? gl : v).box(0, 1.3, front + 0.01, W - 0.4, 0.8, 0.04, night ? '#ffe9a8' : '#3b5b7a');
-  (night ? gl : v).box(0, 1.3, -front - 0.01, W - 0.4, 0.8, 0.04, night ? '#ffe9a8' : '#3b5b7a');
-  gl.box(-0.6, 0.6, front + 0.02, 0.25, 0.16, 0.04, '#fff6c9');
-  gl.box(0.6, 0.6, front + 0.02, 0.25, 0.16, 0.04, '#fff6c9');
-  v.box(0, 2.46, 0, 0.1, 0.6, 1.4, '#444'); // pantograph
-  v.box(0, 3.06, 0, 1.2, 0.06, 0.1, '#444');
+  (night ? gl : v).box(0, 1.65, front + 0.01, W - 0.5, 1.0, 0.04, win);
+  (night ? gl : v).box(0, 1.65, -front - 0.01, W - 0.5, 1.0, 0.04, win);
+  gl.box(-0.75, 0.7, front + 0.02, 0.3, 0.2, 0.04, '#fff6c9');
+  gl.box(0.75, 0.7, front + 0.02, 0.3, 0.2, 0.04, '#fff6c9');
+  v.box(0, 3.3, 0, 0.12, 0.8, 1.6, '#444'); // pantograph
+  v.box(0, 4.1, 0, 1.4, 0.06, 0.1, '#444');
   body.add(v.mesh(), gl.mesh(MAT.glow));
-  const s = makeSign('HTM', 0.34, { bg: '#111', fg: '#ffb703', pad: 4 });
-  s.position.set(0, 2.1, front + 0.03);
+  const s = makeSign('HTM', 0.4, { bg: '#111', fg: '#ffb703', pad: 4 });
+  s.position.set(0, 2.8, front + 0.03);
   body.add(s);
-  return vehicleActor(g, { body, type: 'tram', len: n * (seg + 0.3) });
+  return vehicleActor(g, { body, type: 'tram', len: n * (seg + 0.3), wid: W, hgt: 3.3 });
 }
 
 /** Bicycle group (forward +z); rider optional. */
@@ -403,9 +413,11 @@ export function makeBike(rnd, rider = null, col = null) {
     v.box(0, 0.96, 0.4, 0.5, 0.07, 0.07, '#2b2b2b');
     v.box(0, 0.62, 0.62, 0.3, 0.2, 0.26, '#8d6e4c'); // crate
   }));
-  const a = vehicleActor(g, { body, type: 'bike' });
+  body.scale.setScalar(BK); // 1.86 m long, 0.67 m wheels, handlebar at 1.14 m; saddle top 1.05 m at z = -0.30
+  const a = vehicleActor(g, { body, type: 'bike', len: 1.86 });
   if (rider) {
-    rider.g.position.set(0, 0.25, -0.22);
+    // rider hip (model y 0.7 * 0.9 = 0.63 m, minus 0.045 m ride bob) rests 0.05 m above the saddle top
+    rider.g.position.set(0, 0.52, -0.28);
     rider.g.rotation.y = 0;
     rider.pose = 'ride';
     rider.heading = 0;
@@ -429,9 +441,11 @@ export function makeScooter(rnd, riders = []) {
     v.box(0, 1.1, 0.45, 0.7, 0.08, 0.08, '#222');
   }));
   body.add(sculpt((v) => v.box(0, 0.8, 0.53, 0.2, 0.14, 0.04, '#fff6c9'), MAT.glow));
-  const a = vehicleActor(g, { body, type: 'scooter' });
+  body.scale.setScalar(1.15); // 1.9 m long, seat top 0.94 m at z = -0.40
+  const a = vehicleActor(g, { body, type: 'scooter', len: 1.9 });
   riders.forEach((r, i) => {
-    r.g.position.set(0, 0.2, -0.15 - i * 0.5);
+    // seated hip = 0.25 m above the origin (sit pose); put it 0.05 m below the seat top (the seat box is thick)
+    r.g.position.set(0, 0.64, -0.35 - i * 0.5);
     r.g.rotation.y = 0;
     r.heading = 0;
     r.pose = 'sit';
@@ -459,6 +473,7 @@ export function makeHeli() {
   rotor.position.y = 1.9;
   rotor.castShadow = false;
   body.add(rotor);
+  body.scale.setScalar(1.4); // cabin tall enough for a 2 m person
   const tailRotor = sculpt((v) => v.box(0, -0.5, 0, 0.04, 1.0, 0.14, '#2b2b2b'));
   tailRotor.position.set(0.12, 1.2, -3.0);
   body.add(tailRotor);
@@ -507,9 +522,10 @@ export function makeBoat(rnd) {
     v.box(0, 0.3, 0, 1.0, 0.24, 2.4, '#d9c7a3');
     v.box(0, 0.5, -1.3, 0.3, 0.5, 0.3, '#444');
   }));
-  const skipper = makePerson(rnd, { scale: 0.9 });
+  body.scale.setScalar(1.4); // 4.2 x 1.8 m
+  const skipper = makePerson(rnd, { scale: 1.25 / 1.4 }); // body is scaled 1.4
   skipper.pose = 'sit';
-  skipper.g.position.set(0, 0.6, -0.6);
+  skipper.g.position.set(0, 0.5, -0.6);
   body.add(skipper.g);
   const a = vehicleActor(g, { body, type: 'boat' });
   a.tick = function (dt) {

@@ -76,7 +76,8 @@ const FACES = [
 
 /**
  * Collects coloured boxes and bakes them into one mesh. x/z = centre, y = bottom.
- * `tags`: also record a per-vertex `aB` attribute (centre x, centre z, height, half-depth) used by the cutaway shader.
+ * `tags`: also record a per-vertex `aB` attribute (centre x, centre z, height, half-depth) used by the cutaway shader,
+ * and `aW`, which lets the shader paint windows on plain walls (see setW).
  * `setT` places following boxes in a rotated/translated frame, so one mesh can hold things at any angle.
  */
 export class Vox {
@@ -87,6 +88,8 @@ export class Vox {
     this.nor = new Float32Array(this.cap * 3);
     this.col = new Float32Array(this.cap * 3);
     this.tag = tags ? new Float32Array(this.cap * 4) : null;
+    this.wtag = tags ? new Float32Array(this.cap) : null;
+    this.Wm = 0;
     this.idx = new Uint32Array((this.cap / 4) * 6);
     this.B = null;
     this.T = null;
@@ -100,6 +103,7 @@ export class Vox {
     this.nor = grow(this.nor, this.cap * 3);
     this.col = grow(this.col, this.cap * 3);
     if (this.tag) this.tag = grow(this.tag, this.cap * 4);
+    if (this.wtag) this.wtag = grow(this.wtag, this.cap);
     this.idx = grow(this.idx, (this.cap / 4) * 6);
   }
   _rand() {
@@ -116,6 +120,14 @@ export class Vox {
     this.B = cx === undefined ? null : [cx, cz, h, r];
     return this;
   }
+  /**
+   * Painted windows for the walls of following boxes: 0 none, 1 a grid of windows, 2 ribbons of glass (towers).
+   * Each wall vertex stores ±(wall length + 1000 × mode); the shader turns that into a position along the wall.
+   */
+  setW(mode = 0) {
+    this.Wm = mode;
+    return this;
+  }
   /** vary: random lightness jitter (0..1) to give flat colours a hand-placed feel. */
   box(x, y, z, w, h, d, color, vary = 0) {
     if (this.n + 24 > this.cap) this._grow();
@@ -123,6 +135,7 @@ export class Vox {
     if (vary) _c.multiplyScalar(1 + (this._rand() * 2 - 1) * vary);
     const X0 = x - w / 2, X1 = x + w / 2, Y1 = y + h, Z0 = z - d / 2, Z1 = z + d / 2;
     const T = this.T, B = this.B, pos = this.pos, nor = this.nor, col = this.col, tag = this.tag, idx = this.idx;
+    const wt = this.wtag, wm = wt ? this.Wm : 0;
     const r = _c.r, g = _c.g, bl = _c.b;
     let n = this.n;
     for (let fi = 0; fi < 6; fi++) {
@@ -130,8 +143,11 @@ export class Vox {
       let nx = f[4][0], nz = f[4][2];
       const ny = f[4][1];
       if (T) { const a = nx * T.c + nz * T.s; nz = -nx * T.s + nz * T.c; nx = a; }
+      // side walls only: faces 0 and 1 run along z, faces 4 and 5 along x
+      const wl = wm ? (fi < 2 ? d : fi > 3 ? w : 0) : 0, wv = wl > 0 ? wl + 1000 * wm : 0, wa = fi < 2 ? 2 : 0;
       for (let k = 0; k < 4; k++, n++) {
         const s = f[k];
+        if (wt) wt[n] = wv ? (s[wa] ? wv : -wv) : 0;
         let px = s[0] ? X1 : X0, py = s[1] ? Y1 : y, pz = s[2] ? Z1 : Z0;
         if (T) { const a = px * T.c + pz * T.s + T.x; pz = -px * T.s + pz * T.c + T.z; px = a; py += T.y; }
         const o = n * 3;
@@ -156,6 +172,7 @@ export class Vox {
     g.setAttribute('normal', new THREE.BufferAttribute(this.nor.slice(0, n * 3), 3));
     g.setAttribute('color', new THREE.BufferAttribute(this.col.slice(0, n * 3), 3));
     if (this.tag) g.setAttribute('aB', new THREE.BufferAttribute(this.tag.slice(0, n * 4), 4));
+    if (this.wtag) g.setAttribute('aW', new THREE.BufferAttribute(this.wtag.slice(0, n), 1));
     const ni = (n / 4) * 6;
     g.setIndex(new THREE.BufferAttribute(n > 65535 ? this.idx.slice(0, ni) : Uint16Array.from(this.idx.subarray(0, ni)), 1));
     return g;

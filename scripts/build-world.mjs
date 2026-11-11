@@ -569,11 +569,12 @@ async function treeRegister() {
 console.log('[2e] AHN terrain');
 const AHN_WCS = 'https://service.pdok.nl/rws/ahn/wcs/v1_0';
 const AHN_CH = 2000, AHN_PX = 4; // 2 km chunks at 4 m pixels (500 x 500)
-const TGW = W2 / 4, TGH = H2 / 4; // terrain grid = ground grid (8 m)
+const TCELL = 4; // terrain raster cell (m); the 8 m ground grid has 2x2 terrain cells per cell
+const TGW = (EXT[2] - EXT[0]) / TCELL, TGH = (EXT[3] - EXT[1]) / TCELL;
 // RD position of every pixel corner of the terrain grid (lattice (TGW+1) x (TGH+1)); pixel samples interpolate between them
 const LAT_X = new Float64Array((TGW + 1) * (TGH + 1)), LAT_Y = new Float64Array((TGW + 1) * (TGH + 1));
 for (let r = 0; r <= TGH; r++) for (let c = 0; c <= TGW; c++) {
-  const [rx, ry] = toRD(latOf(EXT[3] - r * 8), lonOf(EXT[0] + c * 8));
+  const [rx, ry] = toRD(latOf(EXT[3] - r * TCELL), lonOf(EXT[0] + c * TCELL));
   LAT_X[r * (TGW + 1) + c] = rx; LAT_Y[r * (TGW + 1) + c] = ry;
 }
 let AHN = null; // {mos, mw, mh, rx0, mtop}
@@ -587,7 +588,7 @@ let AHN = null; // {mos, mw, mh, rx0, mtop}
   const mos = new Float32Array(mw * mh).fill(NaN);
   // only chunks that contain a pixel of the grid
   const need = new Set();
-  for (let r = 0; r <= TGH; r += 2) for (let c = 0; c <= TGW; c += 2) {
+  for (let r = 0; r <= TGH; r += 2) for (let c = 0; c <= TGW; c += 2) { // 8 m lattice spacing
     const i = r * (TGW + 1) + c;
     need.add(Math.floor((LAT_X[i] - rx0) / AHN_CH) * 1000 + Math.floor((LAT_Y[i] - ry0) / AHN_CH));
   }
@@ -855,10 +856,13 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   console.log(`  city-height.png ${HW}x${HH}`);
 }
 
-// 5c. terrain raster (AHN DTM, 8 m cells, 8-bit: v <= 100 -> -6 + 0.1 v, else 4 + 0.36 (v - 100))
+// 5c. terrain raster (AHN DTM, 4 m cells, 8-bit: v <= 200 -> -4 + 0.05 v, else 6 + 0.4 (v - 200))
 {
   const GW = TGW, GH = TGH, N = GW * GH;
   const { mos, mw, mh, rx0, mtop } = AHN;
+  const GWG = GW / 2; // ground grid (8 m) width; terrain cell (r, c) lies in ground cell (r >> 1, c >> 1)
+  const GT = new Uint8Array(N); // ground class per terrain cell
+  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) GT[r * GW + c] = GROUND8[(r >> 1) * GWG + (c >> 1)];
   const mosAt = (x, y) => {
     const c = Math.floor((x - rx0) / AHN_PX), r = Math.floor((mtop - y) / AHN_PX);
     return c >= 0 && c < mw && r >= 0 && r < mh ? mos[r * mw + c] : NaN;
@@ -881,10 +885,10 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   }
   const SEA = 10;
   let holes = 0, seaHoles = 0;
-  for (let i = 0; i < N; i++) if (h[i] !== h[i]) { if (GROUND8[i] === SEA) { h[i] = 0; seaHoles++; } else holes++; }
+  for (let i = 0; i < N; i++) if (h[i] !== h[i]) { if (GT[i] === SEA) { h[i] = 0; seaHoles++; } else holes++; }
   // fill remaining holes by iterative neighbour averaging (dilation)
   let pass = 0;
-  for (let left = holes; left > 0 && pass < 1000; pass++) {
+  for (let left = holes; left > 0 && pass < 2000; pass++) {
     const nh = Float32Array.from(h);
     let filled = 0;
     for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
@@ -906,22 +910,26 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   let unfilled = 0;
   for (let i = 0; i < N; i++) if (h[i] !== h[i]) { h[i] = 0; unfilled++; }
   console.log(`  terrain: ${holes} land holes + ${seaHoles} sea holes, filled in ${pass} passes, ${unfilled} left`);
-  // 3x3 median, then a light [1 2 1] blur in both directions
+  // 5x5 median (20 m, was 3x3 at 8 m), then a light blur in both directions: four [1 2 1] passes (same spread in metres as one pass at 8 m)
   const at = (a, r, c) => a[Math.min(GH - 1, Math.max(0, r)) * GW + Math.min(GW - 1, Math.max(0, c))];
-  const med = new Float32Array(N), w9 = new Array(9);
+  const med = new Float32Array(N), w25 = new Float32Array(25);
   for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
     let k = 0;
-    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) w9[k++] = at(h, r + dr, c + dc);
-    w9.sort((a, b) => a - b);
-    med[r * GW + c] = w9[4];
+    for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) w25[k++] = at(h, r + dr, c + dc);
+    w25.sort();
+    med[r * GW + c] = w25[12];
   }
-  const tmp = new Float32Array(N), bl = new Float32Array(N);
-  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) tmp[r * GW + c] = (at(med, r, c - 1) + 2 * at(med, r, c) + at(med, r, c + 1)) / 4;
-  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) bl[r * GW + c] = (at(tmp, r - 1, c) + 2 * at(tmp, r, c) + at(tmp, r + 1, c)) / 4;
-  // sea = 0 m; land cells within BLEND cells of the sea fade towards 0 (chamfer distance in cells)
-  const BLEND = 4;
+  let bl = med;
+  for (let pass2 = 0; pass2 < 4; pass2++) {
+    const tmp = new Float32Array(N), nb = new Float32Array(N);
+    for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) tmp[r * GW + c] = (at(bl, r, c - 1) + 2 * at(bl, r, c) + at(bl, r, c + 1)) / 4;
+    for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) nb[r * GW + c] = (at(tmp, r - 1, c) + 2 * at(tmp, r, c) + at(tmp, r + 1, c)) / 4;
+    bl = nb;
+  }
+  // sea = 0 m; land cells within BLEND cells (32 m) of the sea fade towards 0 (chamfer distance in cells)
+  const BLEND = 8;
   const dist = new Float32Array(N);
-  for (let i = 0; i < N; i++) dist[i] = GROUND8[i] === SEA ? 0 : 99;
+  for (let i = 0; i < N; i++) dist[i] = GT[i] === SEA ? 0 : 99;
   const D1 = 1, D2 = Math.SQRT2;
   for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
     const i = r * GW + c;
@@ -941,10 +949,10 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   TERRAIN = new Float32Array(N);
   for (let i = 0; i < N; i++) {
     let v = bl[i];
-    if (GROUND8[i] === SEA) v = 0;
+    if (GT[i] === SEA) v = 0;
     else if (dist[i] < BLEND) v *= dist[i] / BLEND;
     TERRAIN[i] = v;
-    png8[i] = v <= 4 ? Math.max(0, Math.min(100, Math.round((v + 6) * 10))) : Math.min(255, 100 + Math.round((v - 4) / 0.36));
+    png8[i] = v <= 6 ? Math.max(0, Math.min(200, Math.round((v + 4) / 0.05))) : Math.min(255, 200 + Math.round((v - 6) / 0.4));
   }
   const png = new PNG({ width: GW, height: GH, colorType: 0, inputColorType: 0, inputHasAlpha: false });
   png.data = Buffer.from(png8.buffer);
@@ -958,7 +966,7 @@ const index = {
   extent: EXT, tile: TILE, tiles: tileList,
   ground: { file: 'city-ground.png', cell: 8, w: W2 / 4, h: H2 / 4 },
   height: { file: 'city-height.png', cell: 16, w: W2 / 8, h: H2 / 8 },
-  terrain: { file: 'city-terrain.png', cell: 8, w: W2 / 4, h: H2 / 4, enc: [-6, 0.1, 100, 4, 0.36] },
+  terrain: { file: 'city-terrain.png', cell: TCELL, w: TGW, h: TGH, enc: [-4, 0.05, 200, 6, 0.4] },
   sources: [
     { name: '3DBAG (TU Delft / Kadaster) building footprints and heights, WFS', url: 'https://data.3dbag.nl/' },
     { name: 'OpenStreetMap contributors via Overpass API (ODbL)', url: 'https://overpass-api.de/' },

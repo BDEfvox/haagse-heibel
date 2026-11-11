@@ -89,12 +89,19 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
 ## How the street scenes work
 
 - `src/voxel/world.js` — loads the map tiles around a street and builds the scene: relief from the
-  height model with a pixel-grid ground on it, water lying below its banks with quay walls, real
-  building footprints as voxel blocks (street-facing ones get full house fronts) and trees
+  height model (4 m cells) with a stepped pixel-grid ground on it (pavements stand on kerbs, grass and
+  dunes lie higher and uneven), water lying below its banks with quay walls, real building footprints
+  as voxel blocks (street-facing ones get full house fronts, the rest get windows painted on by the
+  shader) and three kinds of tree
 - Level of detail, also in `world.js`: the whole city is always there as a relief map with plain
   building blocks (16 m cells near the camera, 32 m further out, chosen in the shader). Close to the
-  ground, 256 m tiles with real outlines, ground, water and trees are streamed in around the camera
-  and dropped again when it moves on; high up they step aside for the blocks
+  ground, 256 m tiles with real outlines, ground, water and trees are streamed in around the camera.
+  A tile is built once in its own coordinates and kept in memory, so it is reused when the focus moves
+  to another street; high up the tiles step aside for the blocks
+- `src/voxel/crowd.js` — background life on every street around the camera: walkers, cyclists, moving
+  and parked cars and lamp posts as instanced meshes, following lanes derived from the road map
+- Roaming onto another street while zoomed in moves the focus there (`Stage.show` with `keep`,
+  `shiftFocus` in `main.js`): the camera stays put, the street under it becomes the one that is open
 - `src/voxel/geo.js` — paths you can walk along, the ground raster, footprint boxes
 - `src/voxel/street.js` — lanes and pavements fitted between the real fronts, street furniture, and
   the 48 m "spots" where gags play
