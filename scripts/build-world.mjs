@@ -907,6 +907,58 @@ for (const b of BLD) {
 }
 const nearTagged = (code, x, y, d) => (TAGGED[code] || []).some((b) => x >= b.bb[0] - d && x <= b.bb[2] + d && y >= b.bb[1] - d && y <= b.bb[3] + d && (pipRing(x, y, b.ring) || distRing(x, y, b.ring) <= d));
 
+// ---- which way each building faces (bf): the compass direction, in steps of 10 degrees, from the building to the
+// nearest street it can see (no other building in between), or -1. Every tile draws house fronts from this, so a front
+// is the same whichever street happens to be open.
+{
+  const RG = new Map(); // street segments, 40 m cells
+  const RC = 40;
+  for (const r of ROADS) {
+    if (r.cls > 8 || r.cls === 1 || r.flags & 4) continue; // real streets (pedestrian ones included), not motorways, not tunnels
+    for (let i = 0; i + 1 < r.pts.length; i++) {
+      const [ax, ay] = r.pts[i], [bx, by] = r.pts[i + 1];
+      for (let ci = Math.floor(Math.min(ax, bx) / RC); ci <= Math.floor(Math.max(ax, bx) / RC); ci++) for (let cj = Math.floor(Math.min(ay, by) / RC); cj <= Math.floor(Math.max(ay, by) / RC); cj++) {
+        const k = gk(ci, cj);
+        (RG.get(k) || RG.set(k, []).get(k)).push([ax, ay, bx, by]);
+      }
+    }
+  }
+  const inOther = (x, y, self) => {
+    const l = BGRID.get(gk(Math.floor(x / GC), Math.floor(y / GC)));
+    if (l) for (const e of l) if (e !== self && x >= e.bb[0] && x <= e.bb[2] && y >= e.bb[1] && y <= e.bb[3] && pipRing(x, y, e.ring)) return true;
+    return false;
+  };
+  dstats.bf = 0;
+  for (const e of BLD) {
+    e.bf = -1;
+    let best = 46, qx = 0, qy = 0;
+    const ci = Math.floor(e.cx / RC), cj = Math.floor(e.cy / RC);
+    for (let i = ci - 2; i <= ci + 2; i++) for (let j = cj - 2; j <= cj + 2; j++) {
+      const l = RG.get(gk(i, j));
+      if (!l) continue;
+      for (const [ax, ay, bx, by] of l) {
+        const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+        let t = l2 ? ((e.cx - ax) * dx + (e.cy - ay) * dy) / l2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const px = ax + t * dx, py = ay + t * dy, d = Math.hypot(px - e.cx, py - e.cy);
+        if (d < best) { best = d; qx = px; qy = py; }
+      }
+    }
+    if (best >= 46 || best < 0.5) continue;
+    const ux = (qx - e.cx) / best, uy = (qy - e.cy) / best;
+    // walk from the building to the street: how far is the front from it, and is the way clear?
+    let out = -1, clear = true;
+    for (let d = 0; d < best - 0.5; d += 1) {
+      const x = e.cx + ux * d, y = e.cy + uy * d;
+      if (out < 0) { if (!pipRing(x, y, e.ring)) out = d; else continue; }
+      if (inOther(x, y, e)) { clear = false; break; }
+    }
+    if (!clear || out < 0 || best - out > 24) continue;
+    e.bf = Math.round(((Math.atan2(ux, uy) * 180) / Math.PI + 360) / 10) % 36;
+    dstats.bf++;
+  }
+}
+
 // ---- building parts (q) and bp
 const PARTS = []; // {P (outer, holes, bb)}
 await eachSub('bparts', (el) => {
@@ -1268,7 +1320,7 @@ for (const k of [...tiles.keys()].sort()) {
   const hasNew = t.q.length || t.x.length || t.f.length;
   if (!Object.keys(o).length && !hasNew) continue;
   if (t.names.size) o.n = [...t.names.keys()];
-  if (t.b.length) { o.bt = t.bl.map((e) => e.bt); o.bp = t.bl.map((e) => e.bp); }
+  if (t.b.length) { o.bt = t.bl.map((e) => e.bt); o.bp = t.bl.map((e) => e.bp); o.bf = t.bl.map((e) => e.bf); }
   if (t.q.length) o.q = t.q;
   if (t.x.length) o.x = t.x;
   if (t.f.length) o.f = t.f;
@@ -1527,6 +1579,7 @@ const index = {
   landmarks: LANDMARKS,
   tileKeys: {
     b: '[height_m, roof(0 flat,1 slanted), year, x0,y0,...] 3DBAG footprint', bt: 'per building (parallel to b): 0 nothing special, 1..25 type code', bp: 'per building (parallel to b): 1 = drawn from q parts instead of as a block',
+    bf: 'per building (parallel to b): compass direction / 10 (0..35) towards the street it fronts, -1 = none',
     q: '[height_dm, min_height_dm, roofShape(0 flat,1 gabled,2 hipped,3 pyramidal,4 dome,5 onion,6 cone/round,7 skillion,8 other), roofHeight_dm, wallRGB|-1, roofRGB|-1, x0,y0,...] OSM building parts, tile of centroid, not clipped',
     x: '[kind(1 wall,2 fence,3 hedge,4 city/retaining wall), height_dm, x0,y0,...] barriers clipped per tile', f: '[type, x, y, a, b, c] point features, see HANDOFF.md',
   },
@@ -1542,6 +1595,6 @@ console.log(`3DBAG raw features ${stats.bagRaw} (dups ${stats.bagDup}); building
 console.log('ground polygons per class', JSON.stringify(stats.ground));
 console.log('roads per class', JSON.stringify(stats.roads));
 console.log('rails per kind', JSON.stringify(stats.rails));
-console.log(`bt per code ${JSON.stringify(dstats.bt)}; bp=1 ${dstats.bp}; parts ${dstats.parts} per roof shape ${JSON.stringify(dstats.q)}; barrier pieces per kind ${JSON.stringify(dstats.x)} (fences+hedges ${(dstats.softBytes / 1e6).toFixed(1)} MB, long-only filter ${dstats.softFilter}); features per type ${JSON.stringify(dstats.f)}; fuel ${JSON.stringify(dstats.fuel)}; prisons ${JSON.stringify(dstats.prisons)} (walls raised ${dstats.prisonWalls}); landmarks ${LANDMARKS.length}`);
+console.log(`fronts (bf) ${dstats.bf} of ${BLD.length}; bt per code ${JSON.stringify(dstats.bt)}; bp=1 ${dstats.bp}; parts ${dstats.parts} per roof shape ${JSON.stringify(dstats.q)}; barrier pieces per kind ${JSON.stringify(dstats.x)} (fences+hedges ${(dstats.softBytes / 1e6).toFixed(1)} MB, long-only filter ${dstats.softFilter}); features per type ${JSON.stringify(dstats.f)}; fuel ${JSON.stringify(dstats.fuel)}; prisons ${JSON.stringify(dstats.prisons)} (walls raised ${dstats.prisonWalls}); landmarks ${LANDMARKS.length}`);
 console.log(`trees in tiles ${stats.trees} (OSM ${stats.treesOsm}, register ${stats.treesRegister}); pois (world) per kind ${JSON.stringify(stats.pois)}`);
 console.log(`tiles written ${tileList.length}; tile json ${(tilesBytes / 1e6).toFixed(1)} MB; largest ${largest.k} ${(largest.size / 1e6).toFixed(2)} MB; world dir total ${(total / 1e6).toFixed(1)} MB`);

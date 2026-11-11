@@ -4,6 +4,7 @@ import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piec
 import { makePerson, makeDog, makeCat, makeBird, item } from './cast.js';
 import { makeCar, makeBike, makeScooter, makeHeli, makeBoat } from './props.js';
 import { SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
+import * as S from './setting.js';
 
 const X0 = -24, X1 = 24, EX0 = X0 + 0.5, EX1 = X1 - 0.5;
 const E = Math.PI / 2, W = -Math.PI / 2; // headings: +x, −x
@@ -58,14 +59,29 @@ function* popOut(ctx, a) {
   ctx.despawn(a);
 }
 function* enter(ctx, a, x, z, y) {
+  if (!y) { const q = S.nudge(ctx, x, z); x = q.x; z = q.z; } // never pop in on a tree or a wall
   ctx.spawn(a, x, z, y);
   a.g.scale.setScalar(0.001);
   yield* popIn(ctx, a);
 }
 const edgeOf = (a) => (a.g.position.x < 0 ? EX0 : EX1);
+/** Where a walker on this line gets to when heading for x: the end of the clear ground if that comes first. */
+function* walkOff(ctx, a, tx, speed, z0 = a.g.position.z) {
+  const p = a.g.position, d = Math.sign(tx - p.x), full = Math.abs(tx - p.x);
+  let bx = tx, bz = z0, best = -1;
+  if (d) {
+    // the line itself first, then lines a little to either side (round a tree trunk), keeping the longest
+    for (const off of [0, 0.7, -0.7, 1.4, -1.4]) {
+      const e = S.runway(ctx, p.x, z0 + off, d, full), len = Math.abs(e - p.x);
+      if (len > best + 0.01) { best = len; bx = e; bz = z0 + off; }
+      if (len >= full - 0.01) break;
+    }
+  }
+  yield* go(ctx, a, bx, bz, speed);
+}
 function* leave(ctx, a, speed = a.speed, toX = null) {
   if (!a.alive) return;
-  yield* go(ctx, a, toX ?? edgeOf(a), a.g.position.z, speed);
+  yield* walkOff(ctx, a, toX ?? edgeOf(a), speed);
   yield* popOut(ctx, a);
 }
 function* hop(a, h = 0.6, dur = 0.3) {
@@ -84,6 +100,30 @@ const camFor = (ctx, name) => (ctx.cam && ctx.cam(name)) || NOCAM;
 const pt = (x, z) => ({ x, z }); // a street-space point the camera can follow (mutate it to move the shot)
 const faceTo = (a, x, z) => { a.heading = Math.atan2(x - a.g.position.x, z - a.g.position.z); };
 const yell = (ctx, a, str, color = '#ff6b6b', size = 15) => { ctx.sfx('hey'); say(ctx, a, str, { size, color }); };
+
+// ---------------------------------------------------------------- the setting (see setting.js)
+// The four walking lines of the cross-section, as the REAL pavement runs at x (L.walkAt); the nominal lines are the fallback.
+// B = house side (z < 0), F = camera side; 0 = the line further from the road... except F0/B1 which hug the kerb side.
+const WALKS = { walkB0: [-1, 0.7], walkB1: [-1, 0.3], walkF0: [1, 0.3], walkF1: [1, 0.7] };
+const padZ = (ctx, k, x = 0) => (ctx.L.walkAt ? ctx.L.walkAt(WALKS[k][0], WALKS[k][1], ctx.sc + x) : ctx.L[k.slice(0, 5)][+k[5]]);
+/**
+ * Remember a terrain question about `obj` (a spot, a rack, a car) for a while: the director asks every gag's `avail`
+ * every few seconds, and the ground does not change under it. Entries are recomputed after a number of asks (no clock, so runs stay repeatable) so tiles that stream in later are seen.
+ */
+const ASKED = new WeakMap();
+function once(obj, key, fn, calls = 40) {
+  let m = ASKED.get(obj);
+  if (!m) ASKED.set(obj, (m = new Map()));
+  const hit = m.get(key);
+  if (hit && ++hit.n < calls) return hit.v;
+  const v = fn();
+  m.set(key, { v, n: 0 });
+  return v;
+}
+/** A clear spot near (x, z) for something that must happen anyway: nudged if needed, the point itself if nothing is clear. */
+const spotNear = (ctx, x, z, r = 0.6) => S.spotOr(ctx, x, z, r, 10);
+/** A clear spot on the given pavement line near x (null if the pavement is blocked there). */
+const padSpot = (ctx, k, x, r = 0.6, tries = 10) => S.findSpot(ctx, x, padZ(ctx, k, x), r, tries);
 
 /** Put a borrowed or scripted person back into neutral. */
 function tidy(a) {
@@ -117,11 +157,14 @@ function rig(ctx) {
   let closed = false, policeClosed = false, cops = 0;
   const R = {
     spawn(a, x, z, y) { ctx.spawn(a, x, z, y); actors.add(a); return a; },
-    *enter(a, x, z, y) { R.spawn(a, x, z, y); a.g.scale.setScalar(0.001); yield* popIn(ctx, a); },
+    *enter(a, x, z, y) {
+      if (!y) { const q = S.nudge(ctx, x, z); x = q.x; z = q.z; }
+      R.spawn(a, x, z, y); a.g.scale.setScalar(0.001); yield* popIn(ctx, a);
+    },
     *out(a) { if (a.alive) yield* popOut(ctx, a); actors.delete(a); },
     *leave(a, speed, toX) { yield* leave(ctx, a, speed, toX); actors.delete(a); },
     /** walk a few metres in one direction, then pop away (a short exit that does not need the street edge) */
-    *away(a, dx, speed = 3.6) { if (!a.alive) return; yield* go(ctx, a, clamp(a.g.position.x + dx, EX0, EX1), a.g.position.z, speed); yield* R.out(a); },
+    *away(a, dx, speed = 3.6) { if (!a.alive) return; yield* walkOff(ctx, a, clamp(a.g.position.x + dx, EX0, EX1), speed); yield* R.out(a); },
     gone(a) { if (a.alive) ctx.despawn(a); actors.delete(a); },
     add(o) { ctx.world.add(o); objs.add(o); return o; },
     rm(o) { if (objs.delete(o)) ctx.world.remove(o); },
@@ -137,7 +180,7 @@ function rig(ctx) {
     /** A police car crosses. It closes the road to ambient traffic first, unless someone else holds it (then it skips). */
     *police(fromDir, z, speed = 11, delay = 0) {
       yield* wait(delay);
-      if (L.kind === 'ped') return;
+      if (L.kind === 'ped' || !S.roadHere(ctx, z)) return;
       if (!closed && ctx.road.closed > 0) return;
       if (!closed) { policeClosed = true; yield* R.close(); }
       cops++;
@@ -165,7 +208,7 @@ function rig(ctx) {
         R.run((function* () {
           p.arms = 'up';
           if (rnd.chance(0.4)) say(ctx, p, rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
-          yield* go(ctx, p, p.g.position.x < x ? EX0 : EX1, p.lineZ, 7.5);
+          yield* walkOff(ctx, p, p.g.position.x < x ? EX0 : EX1, 7.5, p.lineZ);
           yield* R.out(p);
         })());
       }
@@ -203,6 +246,123 @@ function gather(ctx, R, x, n, xr = 14) {
   return out;
 }
 const filmIt = (p, tx, tz) => { faceTo(p, tx, tz); p.hold(item.phone()); p.arms = 'hold'; };
+
+// ---------------------------------------------------------------- module: somebody who lives or sits here
+/**
+ * "Somebody notices, and later turns up in person." Variants say what they need at this spot; the first whose needs
+ * are met is played, and the surroundings decide the order (houses: the balcony first; shops: the shopkeeper first;
+ * park, square, beach...: the bench first). `passerby` needs nothing and is always possible.
+ *   balcony   a real house front with a window within 9 m of x      appears on a little balcony, comes out of the door later
+ *   shop      a real shop door within 10 m                          the shopkeeper steps out of the door
+ *   bench     a free bench within 9 m                               the person sitting there jumps up
+ *   door      a real house or shop door within 12 m (no notice)     somebody comes out of the door
+ *   passerby  nothing                                               a walker from the crowd (or a new one) stops and shouts
+ * Generators: notice(line), calm(line), rush(line, to(), { speed, size }), home(). `owner` is who notices, `second`
+ * who rushes in later (the same person for a passer-by). o.at = { x, z } is the thing being looked at, o.allow the variants.
+ */
+const PREF = { balcony: ['houses'], shop: ['shops'], bench: ['park', 'square', 'beach', 'water', 'open'], door: ['houses', 'shops'], passerby: [] };
+function resident(ctx, R, x, look, o = {}) {
+  const { rnd } = ctx, allow = o.allow || ['balcony', 'shop', 'bench', 'passerby'];
+  const far = S.surroundings(ctx).far;
+  const fits = {
+    balcony: () => { const h = S.houseNear(ctx, x, 9, { tower: false }); return h && Math.abs(h.door.x - x) <= 16 ? { h } : null; },
+    shop: () => { const h = S.houseNear(ctx, x, 10, { door: true, shop: true }); return h ? { h } : null; },
+    bench: () => { const b = S.benchNear(ctx, x, 9); return b ? { b } : null; },
+    door: () => { const h = S.houseNear(ctx, x, 12, { door: true, tower: false }); return h ? { h } : null; },
+    passerby: () => ({}),
+  };
+  const order = allow.slice().sort((p, q) => (PREF[p].includes(far) ? 0 : 1) - (PREF[q].includes(far) ? 0 : 1));
+  let kind = 'passerby', spec = {};
+  for (const k of order) { const f = fits[k](); if (f) { kind = k; spec = f; break; } }
+  const person = (chef) => makePerson(rnd, chef ? { kind: 'chef' } : look || {});
+  const tgt = o.at || { x, z: padZ(ctx, 'walkB0', x) };
+  const res = { kind, spec, owner: person(kind === 'shop'), second: null, borrowed: false, cleanup() {} };
+  res.second = kind === 'passerby' ? res.owner : person(kind === 'shop');
+  const door = spec.h ? spec.h.door : null;
+  let balcony = null, acquired = false;
+  if (kind === 'bench') { spec.b.taken = true; res.cleanup = () => { spec.b.taken = false; }; }
+
+  /** passer-by: borrow a walker nearby, or send a new one in along the pavement nearest the thing */
+  const acquire = function* () {
+    if (acquired) return;
+    acquired = true;
+    const p = takePed(ctx, 14, null, x);
+    if (p) { R.borrow(p); res.owner = res.second = p; res.borrowed = true; return; }
+    const a = res.owner, side = rnd.sign(), sx = clamp(x + side * 6, EX0, EX1), nm = tgt.z < 0 ? 'walkB0' : 'walkF0';
+    yield* R.enter(a, sx, padZ(ctx, nm, sx));
+    const to = spotNear(ctx, x + side * 2.6, padZ(ctx, nm, x + side * 2.6));
+    yield* go(ctx, a, to.x, to.z, 3.4);
+  };
+  res.notice = function* (line) {
+    yield* wait(0.6);
+    if (kind === 'balcony') {
+      const h = spec.h, a = res.owner;
+      // a little balcony to stand on, so nobody hovers in front of their own window
+      balcony = R.add(piece((v) => {
+        const bx = h.win.x, by = h.win.y - 0.42, bz = h.win.z + 0.45;
+        v.box(bx, by, bz, 1.5, 0.12, 0.9, '#d6d0c2');
+        v.box(bx, by + 0.12, bz + 0.42, 1.5, 1.0, 0.07, '#2f3640'); // 1 m railing for a 2 m person
+        v.box(bx - 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
+        v.box(bx + 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
+      }));
+      a.air = true;
+      yield* R.enter(a, h.win.x, h.win.z + 0.35, h.win.y - 0.3);
+      a.heading = 0; a.arms = 'fist';
+    } else if (kind === 'shop') {
+      yield* R.enter(res.owner, door.x, door.z, 0.001); // (a hair above the ground: the door is where it is, never nudged)
+      res.owner.heading = 0; res.owner.arms = 'fist';
+    } else if (kind === 'bench') {
+      const a = res.owner, b = spec.b;
+      a.air = true; a.pose = 'sit';
+      yield* R.enter(a, b.x, b.z + 0.12, 0.32);
+      a.heading = 0;
+      yield* wait(0.35);
+      a.pose = null; a.air = false; a.g.position.set(b.x, 0, b.z + 0.8);
+      a.arms = 'fist';
+      ctx.sfx('boing');
+      yield* hop(a, 0.4, 0.25);
+    } else {
+      yield* acquire();
+      faceTo(res.owner, tgt.x, tgt.z);
+      res.owner.arms = 'fist';
+      yield* hop(res.owner, 0.3, 0.24);
+    }
+    yell(ctx, res.owner, line, '#ff6b6b', o.size || 15);
+  };
+  res.calm = function* (line) {
+    const a = res.owner;
+    say(ctx, a, line, { size: 12, color: '#cfe8ff' });
+    a.arms = 'swing';
+    yield* wait(0.5);
+    if (kind === 'passerby') return;
+    yield* R.out(a);
+    if (balcony) { R.rm(balcony); balcony = null; }
+  };
+  res.rush = function* (line, to, ro = {}) {
+    if (kind === 'passerby') yield* acquire();
+    else if (kind === 'bench') yield* R.enter(res.second, spec.b.x, spec.b.z + 0.9);
+    else yield* R.enter(res.second, door.x, door.z, 0.001);
+    const b = res.second;
+    b.arms = 'up';
+    yell(ctx, b, line, '#ff6b6b', ro.size || 17);
+    const t = to();
+    yield* goEach(ctx, b, t.x, t.z, ro.speed || 6.2);
+    b.arms = 'swing';
+  };
+  res.home = function* () {
+    const a = res.second;
+    if (!a || !a.alive) return;
+    if (kind === 'passerby') {
+      if (res.borrowed) { R.give(a); return; }
+      yield* R.away(a, (a.g.position.x < x ? -1 : 1) * 6, 3.6);
+      return;
+    }
+    const h = kind === 'bench' ? { x: spec.b.x, z: spec.b.z + 0.9 } : door;
+    yield* go(ctx, a, h.x, h.z, 4.5);
+    yield* R.out(a);
+  };
+  return res;
+}
 
 function* lookAround(a, amp = 1.1, beat = 0.4) {
   const h = a.heading;
@@ -433,7 +593,7 @@ function panic(ctx, x, r = 16) {
     ctx.run((function* () {
       a.arms = 'up';
       if (Math.random() < 0.4) say(ctx, a, ctx.rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
-      yield* go(ctx, a, a.g.position.x < x ? EX0 : EX1, a.lineZ, 7.5);
+      yield* walkOff(ctx, a, a.g.position.x < x ? EX0 : EX1, 7.5, a.lineZ);
       a.arms = 'swing';
       if (!ctx.demote || !ctx.demote(a)) yield* popOut(ctx, a);
     })());
@@ -475,15 +635,16 @@ function* pigeons(ctx) {
   const { L, rnd } = ctx;
   const birds = [];
   for (let i = 0; i < 3; i++) {
-    const b = makeBird(rnd, 'pigeon');
-    ctx.spawn(b, rnd.range(-18, 18), L.walkF[0] - 0.4 + rnd.range(-0.2, 0.2));
+    const b = makeBird(rnd, 'pigeon'), px = rnd.range(-18, 18), q = spotNear(ctx, px, padZ(ctx, 'walkF0', px) - 0.4 + rnd.range(-0.2, 0.2), 0.3);
+    ctx.spawn(b, q.x, q.z);
     b.face(rnd.range(0, TAU));
     birds.push(b);
   }
   for (;;) {
     yield* wait(rnd.range(1.5, 4));
     const b = rnd.pick(birds);
-    yield* go(ctx, b, clamp(b.g.position.x + rnd.range(-2.5, 2.5), -21, 21), L.walkF[0] - 0.4 + rnd.range(-0.25, 0.25), 1.6);
+    const nx = clamp(b.g.position.x + rnd.range(-2.5, 2.5), -21, 21), q = S.findSpot(ctx, nx, padZ(ctx, 'walkF0', nx) - 0.4 + rnd.range(-0.25, 0.25), 0.3, 4);
+    if (q) yield* go(ctx, b, q.x, q.z, 1.6);
   }
 }
 function* heli(ctx) {
@@ -520,6 +681,7 @@ const openRoad = (ctx) => { ctx.road.closed = Math.max(0, ctx.road.closed - 1); 
 
 function* policeRun(ctx, fromDir, z, speed = 11, delay = 0) {
   yield* wait(delay);
+  if (!S.roadHere(ctx, z)) return; // no road here: no police car
   const car = makeCar(ctx.rnd, 'police', ctx.L.night);
   car.siren = true;
   ctx.sfx('siren', 3);
@@ -546,27 +708,41 @@ const G = {};
 
 G.napCat = {
   w: [3, 2, 1, 0, 0], need: ['benches'],
+  avail: (ctx) => ctx.L.benches.some((b) => !b.taken),
   *run(ctx) {
-    const { L, rnd } = ctx, b = rnd.pick(L.benches), cat = makeCat(rnd);
+    const { L, rnd } = ctx, b = rnd.pick(L.benches.filter((q) => !q.taken)), cat = makeCat(rnd);
     cat.speed = 2.6;
-    yield* enter(ctx, cat, rnd.chance(0.5) ? EX0 : EX1, L.walkB[0]);
-    yield* go(ctx, cat, b.x + 1.5, b.z + 0.5);
-    cat.pose = 'sleep';
-    ctx.focus(b.x, b.z, 0.62, 4);
-    ctx.news('Cat begins scheduled 16-hour nap');
-    for (let i = 0; i < 5; i++) { say(ctx, cat, 'Z', { size: 13 + i * 3, color: '#cfe8ff', off: 0.7, rise: 1.8, dur: 1.5 }); ctx.sfx('zzz'); yield* wait(1.0); }
-    cat.pose = null;
-    yield* leave(ctx, cat);
+    b.taken = true;
+    try {
+      const ex = rnd.chance(0.5) ? EX0 : EX1, nap = spotNear(ctx, b.x + 1.5, b.z + 0.5, 0.4);
+      yield* enter(ctx, cat, ex, padZ(ctx, 'walkB0', ex));
+      yield* go(ctx, cat, nap.x, nap.z);
+      cat.pose = 'sleep';
+      ctx.focus(b.x, b.z, 0.62, 4);
+      ctx.news('Cat begins scheduled 16-hour nap');
+      for (let i = 0; i < 5; i++) { say(ctx, cat, 'Z', { size: 13 + i * 3, color: '#cfe8ff', off: 0.7, rise: 1.8, dur: 1.5 }); ctx.sfx('zzz'); yield* wait(1.0); }
+      cat.pose = null;
+      yield* leave(ctx, cat);
+    } finally { b.taken = false; }
   },
 };
 
 G.pigeonLady = {
   w: [3, 2, 1, 0.4, 0], need: ['benches'],
+  avail: (ctx) => ctx.L.benches.some((b) => !b.taken),
   *run(ctx) {
-    const { L, rnd } = ctx, b = rnd.pick(L.benches);
+    const { L, rnd } = ctx, b = rnd.pick(L.benches.filter((q) => !q.taken));
+    b.taken = true;
+    try { yield* pigeonLadyAt(ctx, b); } finally { b.taken = false; }
+  },
+};
+function* pigeonLadyAt(ctx, b) {
+  {
+    const { L, rnd } = ctx;
     const gran = makePerson(rnd, { kind: 'granny' });
     gran.speed = 1.9;
-    yield* enter(ctx, gran, rnd.chance(0.5) ? EX0 : EX1, L.walkB[0]);
+    const ex = rnd.chance(0.5) ? EX0 : EX1;
+    yield* enter(ctx, gran, ex, padZ(ctx, 'walkB0', ex));
     yield* go(ctx, gran, b.x, b.z + 0.7);
     gran.air = true; gran.pose = 'sit'; gran.heading = 0;
     gran.g.position.set(b.x, L.yAt(b.z) + 0.32, b.z + 0.12);
@@ -596,17 +772,20 @@ G.pigeonLady = {
     gran.pose = null; gran.air = false; gran.arms = 'swing';
     gran.g.position.set(b.x, L.yAt(b.z), b.z + 0.8);
     yield* leave(ctx, gran);
-  },
-};
+  }
+}
 
 G.boredCop = {
   w: [3, 2, 1, 0, 0],
+  avail: (ctx) => !!padSpot(ctx, 'walkF0', 0, 0.7, 12),
   *run(ctx) {
     const { L, rnd } = ctx, cop = makePerson(rnd, { kind: 'cop' });
     cop.speed = 1.8;
     const dir = rnd.sign();
-    yield* enter(ctx, cop, dir > 0 ? EX0 : EX1, L.walkF[0]);
-    yield* go(ctx, cop, rnd.range(-6, 6), L.walkF[0]);
+    const stand = padSpot(ctx, 'walkF0', rnd.range(-6, 6), 0.7, 12);
+    if (!stand) return;
+    yield* enter(ctx, cop, dir > 0 ? EX0 : EX1, padZ(ctx, 'walkF0', dir > 0 ? EX0 : EX1));
+    yield* go(ctx, cop, stand.x, stand.z);
     cop.heading = 0;
     cop.hold(item.wafel());
     cop.arms = 'hold';
@@ -624,14 +803,16 @@ G.boredCop = {
 
 G.balloonKid = {
   w: [2, 2, 1, 0.4, 0],
+  avail: (ctx) => !!padSpot(ctx, 'walkF1', 0, 0.7, 12),
   *run(ctx) {
     const { L, rnd } = ctx, kid = makePerson(rnd, { kind: 'kid' });
-    const dir = rnd.sign(), z = L.walkF[1];
+    const dir = rnd.sign(), stop = padSpot(ctx, 'walkF1', rnd.range(-5, 5), 0.7, 12);
+    if (!stop) return;
     const bal = item.balloon(rnd.pick(['#ff4d6d', '#ffd60a', '#4cc9f0', '#b5179e']));
     kid.b.add(bal);
     bal.position.set(0.62, 0.8, 0);
-    yield* enter(ctx, kid, dir > 0 ? EX0 : EX1, z);
-    yield* go(ctx, kid, rnd.range(-5, 5), z, 2.4);
+    yield* enter(ctx, kid, dir > 0 ? EX0 : EX1, padZ(ctx, 'walkF1', dir > 0 ? EX0 : EX1));
+    yield* go(ctx, kid, stop.x, stop.z, 2.4);
     // balloon escapes
     const wp = new THREE.Vector3();
     bal.getWorldPosition(wp);
@@ -766,7 +947,7 @@ G.seagullFries = {
         ctx.sfx('squawk');
       }
       flock.push(scout);
-      const flee = pt(clamp(px + toMid * 8, -18, 18), p.z);
+      const flee = pt(S.runway(ctx, px, p.z, toMid, 8), p.z); // runs along the pavement as far as it is clear
       flock.forEach((g, i) => R.run((function* () {
         const ph = rnd.range(0, TAU), r = rnd.range(3.5, 6), y = rnd.range(5, 8);
         // circle overhead...
@@ -837,7 +1018,8 @@ G.seagullFries = {
       }
       // the pigeon, patient and unremarkable, walks off with the one chip that is left
       const pig = makeBird(rnd, 'pigeon');
-      R.spawn(pig, px + side * 5, pz + 1.4, 0);
+      const pg = spotNear(ctx, px + side * 5, pz + 1.4, 0.3);
+      R.spawn(pig, pg.x, pg.z, 0);
       pig.face(side > 0 ? W : E);
       const lx = last.position.x, lz = last.position.z;
       cam.low(pt(lx, lz), { dist: 7, hold: 2.2 });
@@ -869,14 +1051,14 @@ G.seagullFries = {
 
 G.doorbell = {
   w: [0, 3, 2, 1, 0.5], crime: 1,
-  avail: (ctx) => ctx.L.houses.some((h) => !h.shop && !h.tower),
+  avail: (ctx) => S.housesNear(ctx, 0, 18, { door: true, shop: false, tower: false }).length > 0, // needs a real front door
   *run(ctx) {
     const { L, rnd } = ctx;
-    const h = rnd.pick(L.houses.filter((hh) => !hh.shop && !hh.tower && Math.abs(hh.door.x) < 18));
+    const h = rnd.pick(S.housesNear(ctx, 0, 18, { door: true, shop: false, tower: false }));
     if (!h) return;
     const kid = makePerson(rnd, { kind: 'kid' });
     const dir = h.door.x > 0 ? -1 : 1;
-    yield* enter(ctx, kid, dir > 0 ? EX0 : EX1, L.walkB[0]);
+    yield* enter(ctx, kid, dir > 0 ? EX0 : EX1, padZ(ctx, 'walkB0', dir > 0 ? EX0 : EX1));
     kid.gait = 'sneak'; kid.arms = 'sneak';
     yield* go(ctx, kid, h.door.x, h.door.z, 3);
     kid.heading = Math.PI;
@@ -891,7 +1073,7 @@ G.doorbell = {
     ctx.run(leave(ctx, kid, 7.5, dir > 0 ? EX0 : EX1));
     yield* wait(1.0);
     const owner = makePerson(rnd, { kind: rnd.pick(['civ', 'granny']) });
-    yield* enter(ctx, owner, h.door.x, h.door.z);
+    yield* enter(ctx, owner, h.door.x, h.door.z, 0.001);
     owner.heading = 0;
     say(ctx, owner, '?!', { size: 20, color: '#fff' });
     yield* wait(0.6); owner.heading = E; yield* wait(0.6); owner.heading = W; yield* wait(0.6); owner.heading = 0;
@@ -905,41 +1087,47 @@ G.doorbell = {
 
 G.parkingTicket = {
   w: [0, 2, 2, 1, 0], crime: 1,
-  avail: (ctx) => ctx.L.parked.length > 0 && ctx.L.houses.length > 0,
+  avail: (ctx) => ctx.L.parked.length > 0,
   *run(ctx) {
-    const { L, rnd } = ctx, car = rnd.pick(L.parked), cop = makePerson(rnd, { kind: 'cop' });
-    const z = L.hw + L.bw + 0.75;
-    yield* enter(ctx, cop, car.x > 0 ? EX1 : EX0, L.walkF[0]);
-    yield* go(ctx, cop, car.x, z, 2.6);
-    cop.heading = Math.PI; cop.arms = 'hold';
-    say(ctx, cop, '*krabbel*', { size: 12, color: '#cfe8ff' });
-    yield* wait(1.3);
-    const t = item.ticket();
-    t.position.set(car.x + 1.05, 0.97, car.z); // on the bonnet by the windscreen of the 4.4 m car
-    ctx.world.add(t);
-    ctx.sfx('coin');
-    ctx.fx.text('BON! €109', at(car.x, 2.4, car.z), { size: 18, color: '#ffe066' });
-    ctx.incident();
-    ctx.news('Parking fine issued. Motorist "was only gone for a minute"');
-    cop.arms = 'swing';
-    const owner = makePerson(rnd, {});
-    const h = L.houses.reduce((a, b) => (Math.abs(b.door.x - car.x) < Math.abs(a.door.x - car.x) ? b : a));
-    yield* enter(ctx, owner, h.door.x, h.door.z);
-    owner.arms = 'up';
-    say(ctx, owner, 'NEEE! IK STA ER NET!', { size: 13, color: '#ff6b6b' });
-    ctx.sfx('hey');
-    yield* go(ctx, owner, car.x + 1.2, z + 0.3, 6);
-    owner.heading = W;
-    yield* wait(0.4);
-    say(ctx, cop, 'helaas', { size: 12, color: '#cfe8ff' });
-    yield* wait(1.2);
-    ctx.run(leave(ctx, cop, 2.4));
-    owner.arms = 'fist';
-    yield* wait(1.6);
-    owner.arms = 'swing';
-    yield* go(ctx, owner, h.door.x, h.door.z, 2.6);
-    yield* popOut(ctx, owner);
-    ctx.world.remove(t);
+    const { L, rnd } = ctx, R = rig(ctx), car = rnd.pick(L.parked), cop = makePerson(rnd, { kind: 'cop' });
+    let res = null, done = false;
+    try {
+      const z = L.hw + L.bw + 0.75;
+      // who owns the car: somebody from the nearest real door, or (no door in reach) a walker who spots the cop
+      res = resident(ctx, R, car.x, null, { allow: ['door', 'passerby'], at: { x: car.x, z } });
+      const cx = car.x > 0 ? EX1 : EX0;
+      yield* R.enter(cop, cx, padZ(ctx, 'walkF0', cx));
+      yield* go(ctx, cop, car.x, z, 2.6);
+      cop.heading = Math.PI; cop.arms = 'hold';
+      say(ctx, cop, '*krabbel*', { size: 12, color: '#cfe8ff' });
+      yield* wait(1.3);
+      const t = R.add(item.ticket());
+      t.position.set(car.x + 1.05, 0.97, car.z); // on the bonnet by the windscreen of the 4.4 m car
+      ctx.sfx('coin');
+      ctx.fx.text('BON! €109', at(car.x, 2.4, car.z), { size: 18, color: '#ffe066' });
+      ctx.incident();
+      ctx.news('Parking fine issued. Motorist "was only gone for a minute"');
+      cop.arms = 'swing';
+      R.run(res.rush('NEEE! IK STA ER NET!', () => ({ x: car.x + 1.2, z: z + 0.3 }), { speed: 6, size: 13 }));
+      yield* wait(0.6);
+      yield* R.settle(8);
+      const owner = res.second;
+      owner.heading = W;
+      yield* wait(0.4);
+      say(ctx, cop, 'helaas', { size: 12, color: '#cfe8ff' });
+      yield* wait(1.2);
+      R.run(R.leave(cop, 2.4));
+      owner.arms = 'fist';
+      yield* wait(1.6);
+      owner.arms = 'swing';
+      yield* res.home();
+      R.rm(t);
+      yield* R.settle(8);
+      done = true;
+    } finally {
+      if (res) res.cleanup();
+      R.free(done);
+    }
   },
 };
 
@@ -950,7 +1138,7 @@ G.herringHeist = {
     const { L, rnd } = ctx, s = rnd.pick(L.stalls), dog = makeDog(rnd);
     const dir = s.x > 0 ? -1 : 1, zz = Math.min(s.z, L.s0 - 0.6);
     dog.speed = 4;
-    yield* enter(ctx, dog, dir > 0 ? EX0 : EX1, L.walkF[1]);
+    yield* enter(ctx, dog, dir > 0 ? EX0 : EX1, padZ(ctx, 'walkF1', dir > 0 ? EX0 : EX1));
     yield* go(ctx, dog, s.x, zz, 4);
     dog.heading = 0;
     yield* hop(dog, 0.6, 0.3);
@@ -968,7 +1156,7 @@ G.herringHeist = {
     chef.arms = 'fist';
     say(ctx, chef, rnd.pick(['KOM TERUG!', 'MIJN HARING!', 'HÉ! HOND!']), { size: 15, color: '#ff6b6b' });
     ctx.sfx('hey');
-    yield* go(ctx, chef, dir > 0 ? EX1 - 6 : EX0 + 6, L.walkF[1], 5);
+    yield* go(ctx, chef, S.runway(ctx, s.x + 0.8, zz, dir, 14), zz, 5);
     chef.arms = 'swing';
     say(ctx, chef, '*zucht*', { size: 12, color: '#cfe8ff' });
     yield* wait(1);
@@ -977,25 +1165,36 @@ G.herringHeist = {
   },
 };
 
+/** How far (metres) one can ride away from this rack, best direction first: { dir, edge }. Null if neither way has room. */
+const escapeFrom = (ctx, r, prefer) => once(r, 'esc' + prefer, () => escapeFrom0(ctx, r, prefer));
+function escapeFrom0(ctx, r, prefer) {
+  const lane = r.z + 0.9, a = S.runway(ctx, r.x, lane, prefer, 24, 0.6), b = S.runway(ctx, r.x, lane, -prefer, 24, 0.6);
+  const la = Math.abs(a - r.x), lb = Math.abs(b - r.x);
+  if (la >= 10 && (la >= lb || lb < 10)) return { dir: prefer, edge: a - prefer * 0.6, len: la }; // ~9 m is what the chase and the fall need
+  if (lb >= 10) return { dir: -prefer, edge: b + prefer * 0.6, len: lb };
+  return null;
+}
 G.bikeThief = {
   w: [0, 0, 3, 2, 2], crime: 1, need: ['racks'],
+  // a rack with room to ride off along it (no tree, wall or water within a few metres), else this gag is not played here
+  avail: (ctx) => ctx.L.racks.some((r) => escapeFrom(ctx, r, r.x > 0 ? -1 : 1)),
   *run(ctx) {
-    const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'bikeThief'), R = rig(ctx), r = rnd.pick(L.racks);
-    let done = false;
+    const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'bikeThief'), R = rig(ctx);
+    const racks = L.racks.filter((q) => escapeFrom(ctx, q, q.x > 0 ? -1 : 1)), r = rnd.pick(racks.length ? racks : L.racks);
+    let done = false, res = null;
     try {
-      const dir = r.x > 0 ? -1 : 1; // he comes from the far side and escapes across the street
-      const rz = r.z + 0.35, edge = dir > 0 ? EX1 - 0.6 : EX0 + 0.6;
-      const home = L.houses.length
-        ? L.houses.reduce((a, b) => (Math.abs(b.door.x - r.x) < Math.abs(a.door.x - r.x) ? b : a))
-        : { win: { x: clamp(r.x - dir * 4, EX0, EX1), y: 3, z: L.zH }, door: { x: clamp(r.x - dir * 4, EX0, EX1), z: L.walkB[1] } };
+      const esc = escapeFrom(ctx, r, r.x > 0 ? -1 : 1) || { dir: r.x > 0 ? -1 : 1, edge: r.x > 0 ? EX0 + 0.6 : EX1 - 0.6 };
+      const dir = esc.dir, rz = r.z + 0.35, edge = esc.edge; // he comes from the far side and escapes along the pavement
       const look = { shirt: rnd.pick(['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d']), hair: rnd.pick(['#2b1d14', '#c58b3c', '#a33b20']), skin: rnd.pick(['#f2c9a0', '#c98e62', '#7a4f33']) };
       const th = makePerson(rnd, { kind: rnd.chance(0.6) ? 'raccoon' : 'robber' });
 
       // 1. casing the rack: walks past, looks around, doubles back
       cam.wide(pt(r.x, r.z), { dist: 22, hold: 4 });
-      yield* R.enter(th, clamp(r.x - dir * 10, EX0, EX1), L.walkB[0]);
+      const sx = clamp(r.x - dir * 10, EX0, EX1), px2 = clamp(r.x + dir * 2.5, EX0, EX1);
+      yield* R.enter(th, sx, padZ(ctx, 'walkB0', sx));
       th.gait = 'sneak'; th.arms = 'sneak';
-      yield* go(ctx, th, r.x + dir * 2.5, L.walkB[0], 3.2);
+      const pass = spotNear(ctx, px2, padZ(ctx, 'walkB0', px2));
+      yield* go(ctx, th, pass.x, pass.z, 3.2);
       th.heading = Math.PI;
       yield* lookAround(th, 1.0, 0.3);
       yield* go(ctx, th, r.x, rz, 3.2);
@@ -1022,32 +1221,18 @@ G.bikeThief = {
       ctx.fx.text('KNIP!', at(r.x, 2.2, r.z), { size: 18, color: '#ffe08a' });
       const kid = makeBike(rnd, null, '#ff70a6');
       kid.body.scale.setScalar(0.55 * 1.19); // makeBike's own body scale is 1.19
-      yield* R.enter(kid, r.x - dir * 0.9, rz + 0.55, 0);
+      yield* R.enter(kid, r.x - dir * 0.9, rz + 0.55, 0.001); // (a hair above the ground: parked at the rack, never nudged away)
       kid.face(dir > 0 ? E : W);
       mount(kid, th, 0.12);
       ctx.sfx('bell');
       say(ctx, th, 'YOINK!', { size: 20, color: '#ffd60a' });
       ctx.incident();
-      // someone upstairs has noticed
-      const owner = makePerson(rnd, look);
-      owner.air = true;
-      let balcony = null;
-      R.run((function* () {
-        yield* wait(0.6);
-        // a little balcony to stand on, so nobody hovers in front of their own window
-        balcony = R.add(piece((v) => {
-          const bx = home.win.x, by = home.win.y - 0.42, bz = home.win.z + 0.45;
-          v.box(bx, by, bz, 1.5, 0.12, 0.9, '#d6d0c2');
-          v.box(bx, by + 0.12, bz + 0.42, 1.5, 1.0, 0.07, '#2f3640'); // 1 m railing for a 2 m person
-          v.box(bx - 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
-          v.box(bx + 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
-        }));
-        yield* R.enter(owner, home.win.x, home.win.z + 0.35, home.win.y - 0.3);
-        owner.heading = 0; owner.arms = 'fist';
-        yell(ctx, owner, 'HÉ! MIJN KINDERFIETS!', '#ff6b6b', 15);
-      })());
+      // someone has noticed: a balcony, a shop door, a bench or a passer-by, whatever this spot really has
+      res = resident(ctx, R, r.x, look, { at: { x: r.x, z: r.z } });
+      const noticed = R.run(res.notice('HÉ! MIJN KINDERFIETS!'));
       yield* rideTo(ctx, kid, th, r.x + dir * 3.6, rz + 0.55, 2.6, null, 0.12);
-      cam.ots(th, owner, { hold: 2.6 });
+      yield* waitUntil(() => noticed.done, 4); // a passer-by needs a moment to walk up and shout; the others are there already
+      cam.ots(th, res.owner, { hold: 2.6 });
       yield* doubleTake(ctx, th, '?!');
       dismount(th, kid.g.position.x - dir * 0.6, kid.g.position.z);
       th.arms = 'up'; th.heading = 0;
@@ -1058,11 +1243,7 @@ G.bikeThief = {
       th.arms = 'hold';
       say(ctx, th, 'sorry...', { size: 12, color: '#cfe8ff' });
       yield* wait(0.5);
-      say(ctx, owner, 'nou, goed', { size: 12, color: '#cfe8ff' });
-      owner.arms = 'swing';
-      yield* wait(0.5);
-      yield* R.out(owner);
-      if (balcony) R.rm(balcony);
+      yield* res.calm('nou, goed');
 
       // 4. the real bike
       th.heading = Math.PI;
@@ -1074,7 +1255,7 @@ G.bikeThief = {
       ctx.fx.text('KNIP!', at(r.x, 2.2, r.z), { size: 22, color: '#ffe08a' });
       ctx.shake(0.15);
       const bike = makeBike(rnd);
-      yield* R.enter(bike, r.x - dir * 0.6, rz + 0.55, 0);
+      yield* R.enter(bike, r.x - dir * 0.6, rz + 0.55, 0.001);
       bike.face(dir > 0 ? E : W);
       const chain = chainObj(R, 6);
       chain.place(bike.g.position.x, 0.3, bike.g.position.z);
@@ -1085,14 +1266,8 @@ G.bikeThief = {
       ctx.news(`Bike stolen on ${ctx.st.name}. Witnesses: "ja, dat gebeurt"`);
 
       // 5. the getaway, with the cut lock still dragging sparks. The owner comes out of the front door
-      const own2 = makePerson(rnd, look);
-      R.run((function* () {
-        yield* R.enter(own2, home.door.x, home.door.z);
-        own2.arms = 'up';
-        yell(ctx, own2, 'MIJN ECHTE FIETS!!', '#ff6b6b', 17);
-        yield* goEach(ctx, own2, kid.g.position.x + dir * 5.5, L.walkB[1], 6.2);
-        own2.arms = 'swing';
-      })());
+      const own2 = res.second;
+      R.run(res.rush('MIJN ECHTE FIETS!!', () => { const tx = clamp(kid.g.position.x + dir * 5.5, EX0, EX1); return { x: tx, z: padZ(ctx, 'walkB1', tx) }; }, { size: 17, speed: 6.2 }));
       cam.track(th, { hold: 4, lead: 3 });
       let spark = 0, rattle = 0, snag = false, tow = 0;
       yield* rideTo(ctx, bike, th, edge, rz + 0.55, 8.2, (dt) => {
@@ -1175,8 +1350,7 @@ G.bikeThief = {
         yield* wait(0.3);
         R.run(R.away(th, dir * 6, 3.2));
         R.run(R.out(bike)); R.run(R.out(kid));
-        yield* go(ctx, own2, home.door.x, home.door.z, 4.5);
-        yield* R.out(own2);
+        yield* res.home();
       } else {
         // the walk of shame: owner wheels the bike home, the kid's bike still rattling along on the chain
         yield* wait(0.3);
@@ -1204,8 +1378,7 @@ G.bikeThief = {
         R.run(R.away(th, -dir * 6, 3.6));
         own2.arms = 'swing';
         R.run(R.out(bike)); R.run(R.out(kid));
-        yield* go(ctx, own2, home.door.x, home.door.z, 4.5);
-        yield* R.out(own2);
+        yield* res.home();
       }
       cam.wide(pt(r.x, r.z), { dist: 24, hold: 2 });
       yield* R.settle(10);
@@ -1213,6 +1386,7 @@ G.bikeThief = {
       done = true;
     } finally {
       cam.release();
+      if (res) res.cleanup();
       R.free(done);
     }
   },
@@ -1220,16 +1394,38 @@ G.bikeThief = {
 
 const TAG = ['111 111 111', '1 1   1 1 1', '1 1  1  1 1', '1 1 1   1 1', '111 1   111']; // "070"
 const UNDER = ['11111111111']; // the critic's "improvement": a gold underline
+/**
+ * What the tag goes on (the module's "wall" choice): the transformer box with room left, else a plain house wall
+ * (a real front, no shop sign, clear of its own door and window, pavement in front). { x, z (the wall's face), y, tags, wall }.
+ */
+function canvasFor(ctx) {
+  const L = ctx.L;
+  if (L.box && (L.box.tags || 0) < 3) return L.box;
+  const hs = L.houses.filter((h) => !h.shop && !h.tower && h.w >= 5 && Math.abs(h.x) < 14 && ((h.canvas && h.canvas.tags) || 0) < 3).sort((p, q) => Math.abs(p.x) - Math.abs(q.x));
+  for (const h of hs) {
+    // along the wall in 0.6 m steps from the middle outwards, clear of the front door and the window
+    for (let k = 0; k <= 12; k++) {
+      const off = (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 0.6, x = h.x + off;
+      if (Math.abs(off) > h.w / 2 - 1.0 || Math.abs(x - h.door.x) < 1.4 || Math.abs(x - h.win.x) < 1.4 || Math.abs(x) > 15) continue;
+      if (!S.housesNear(ctx, h.win.x, 0.2, { balcony: false }).includes(h)) continue; // a real wall
+      if (!S.clearSpot(ctx, x, h.z + 0.9, 0.7)) continue; // room to stand in front of it
+      return (h.canvas ||= { x, z: h.z, y: 0, tags: 0, wall: true, house: h });
+    }
+  }
+  return null;
+}
 G.graffiti = {
   w: [0, 0, 3, 2, 1.5], crime: 1,
-  avail: (ctx) => !!ctx.L.box && (ctx.L.box.tags || 0) < 3,
+  avail: (ctx) => !!canvasFor(ctx),
   *run(ctx) {
-    const { L, rnd } = ctx, lv = ctx.level, bx = L.box, cam = camFor(ctx, 'graffiti'), R = rig(ctx);
+    const { L, rnd } = ctx, lv = ctx.level, bx = canvasFor(ctx), cam = camFor(ctx, 'graffiti'), R = rig(ctx);
+    if (!bx) return;
     const n = bx.tags || 0, col = ['#ff006e', '#3a86ff', '#ffbe0b'][n];
     let done = false, counted = false;
     try {
       bx.tags = n + 1; counted = true;
       const dir = rnd.sign(), spot = pt(bx.x, bx.z);
+      const walk = bx.wall ? 'walkB1' : 'walkF1'; // the pavement the cast walks on: the house side for a wall, the camera side for the box
       const sz = bx.z + 0.75, lookX = clamp(bx.x + dir * 6.5, EX0 + 1, EX1 - 1), px = 0.15, by = bx.y || 0;
       const x0 = bx.x - (11 * px) / 2 + px / 2 + n * 0.08, y0 = by + 1.3 - n * 0.1, tz = bx.z + 0.03 + n * 0.02;
       const kid = makePerson(rnd, { kind: 'hoodie', shirt: rnd.pick(['#3a3a3a', '#5a189a', '#1b4332']) });
@@ -1241,15 +1437,17 @@ G.graffiti = {
       // 1. set-up: a lookout takes position; the tagger creeps in from the other side
       cam.wide(spot, { dist: 22, hold: 4.5 });
       R.run((function* () {
-        yield* R.enter(lookout, clamp(bx.x + dir * 14, EX0, EX1), L.walkF[1]);
-        yield* go(ctx, lookout, lookX, L.walkF[1], 3);
+        const lx0 = clamp(bx.x + dir * 14, EX0, EX1), look = spotNear(ctx, lookX, padZ(ctx, walk, lookX));
+        yield* R.enter(lookout, lx0, padZ(ctx, walk, lx0));
+        yield* go(ctx, lookout, look.x, look.z, 3);
         lookout.heading = dir > 0 ? E : W; lookout.arms = 'sneak';
         say(ctx, lookout, '♪ doe-niks ♪', { size: 12, color: '#cfe8ff' });
         for (let i = 0; i < 3; i++) yield* lookAround(lookout, 0.7, 0.3);
       })());
-      yield* R.enter(kid, clamp(bx.x - dir * 13, EX0, EX1), L.walkF[1]);
+      const kx0 = clamp(bx.x - dir * 13, EX0, EX1), kpos = spotNear(ctx, bx.x - 1.3, sz);
+      yield* R.enter(kid, kx0, padZ(ctx, walk, kx0));
       kid.gait = 'sneak'; kid.arms = 'sneak';
-      yield* go(ctx, kid, bx.x - 1.3, sz, 3.4);
+      yield* go(ctx, kid, kpos.x, kpos.z, 3.4);
 
       // 2. reveal and warm-up: face to the lens, shake the can
       kid.gait = 'walk'; kid.heading = 0;
@@ -1289,18 +1487,19 @@ G.graffiti = {
         R.run(tween(1.4 + i * 0.3, (t) => { d.scale.y = Math.max(0.001, (0.25 + i * 0.12) * t); }, ease.outQuad));
       }
       const pud = R.add(sculpt((v) => v.box(0, 0, 0, 0.9, 0.02, 0.5, col)));
-      pud.position.set(bx.x + 0.4, 0.02, bx.z + 1.15);
+      const pp = spotNear(ctx, bx.x + 0.4, bx.z + 1.15, 0.5);
+      pud.position.set(pp.x, 0.02, pp.z);
       pud.scale.setScalar(0.001);
       R.run(tween(0.7, (t) => pud.scale.setScalar(Math.max(0.001, t)), ease.outQuad));
       // a critic wanders in from the side while he steps back to admire his work (straight through the puddle)
       const critic = takePed(ctx, 9, null, bx.x - dir * 4);
       let cr = critic;
-      const vx = bx.x - dir * 2.3, vz = bx.z + 2.2;
+      const vs = spotNear(ctx, bx.x - dir * 2.3, bx.z + 2.2), vx = vs.x, vz = vs.z;
       let crHere = false;
       if (critic) R.borrow(critic);
       else cr = makePerson(rnd, { kind: 'civ' });
       R.run((function* () {
-        if (!critic) yield* R.enter(cr, clamp(bx.x - dir * 8, EX0, EX1), L.walkF[0]);
+        if (!critic) { const cx0 = clamp(bx.x - dir * 8, EX0, EX1); yield* R.enter(cr, cx0, padZ(ctx, walk, cx0)); }
         yield* go(ctx, cr, vx, vz, 3.6);
         crHere = true;
       })());
@@ -1318,7 +1517,8 @@ G.graffiti = {
           prints.push(f);
         }
       };
-      yield* goEach(ctx, kid, bx.x + 0.1, bx.z + 1.9, 1.6, track);
+      const back = spotNear(ctx, bx.x + 0.1, bx.z + 1.9);
+      yield* goEach(ctx, kid, back.x, back.z, 1.6, track);
       kid.heading = Math.PI; kid.arms = 'swing';
       yield* waitUntil(() => crHere, 5);
 
@@ -1360,7 +1560,8 @@ G.graffiti = {
 
       // 5. the law arrives, and the lookout was looking the wrong way
       const cop = makePerson(rnd, { kind: 'cop' });
-      yield* R.enter(cop, clamp(bx.x + dir * 11, EX0, EX1), L.walkF[1]);
+      const cx1 = clamp(bx.x + dir * 11, EX0, EX1);
+      yield* R.enter(cop, cx1, padZ(ctx, walk, cx1));
       ctx.sfx('whistle');
       say(ctx, cop, 'FWEEET! HÉ JIJ!', { size: 15, color: '#7db8ff' });
       yell(ctx, lookout, 'AGENT!!!', '#b9fbc0', 16);
@@ -1375,7 +1576,7 @@ G.graffiti = {
       cam.top(spot, { dist: 24, hold: 3.4 });
       let sk = 0;
       const flee = R.run((function* () {
-        yield* goEach(ctx, kid, kidOut, L.walkF[1], 7.4, (dt) => {
+        yield* goEach(ctx, kid, S.runway(ctx, kid.g.position.x, kid.g.position.z, kidOut > 0 ? 1 : -1, 24), padZ(ctx, walk, kidOut), 7.4, (dt) => {
           const q = kid.g.position;
           if (prints.length < 22 && Math.hypot(q.x - lastPx, q.z - lastPz) > 0.38) {
             lastPx = q.x; lastPz = q.z; flip = -flip;
@@ -1481,11 +1682,11 @@ function* raceChase(ctx, ped, thief) {
 
 G.burglar = {
   w: [0, 0, 0, 3, 2], crime: 2,
-  avail: (ctx) => ctx.L.houses.some((h) => !h.tower && Math.abs(h.x) < 19),
+  avail: (ctx) => S.housesNear(ctx, 0, 19, { tower: false }).length > 0, // needs a real window to climb out of
   *run(ctx) {
     const { L, rnd } = ctx;
-    const pool = L.houses.filter((h) => !h.tower && Math.abs(h.x) < 15);
-    const h = rnd.pick(pool.length ? pool : L.houses.filter((hh) => !hh.tower && Math.abs(hh.x) < 19));
+    const pool = S.housesNear(ctx, 0, 15, { tower: false });
+    const h = rnd.pick(pool.length ? pool : S.housesNear(ctx, 0, 19, { tower: false }));
     const zH = h.z;
     const dir = h.x > 0 ? -1 : 1;
     // alarm lamp
@@ -1518,7 +1719,8 @@ G.burglar = {
     if (L.kind !== 'ped' && ctx.road.closed === 0) ctx.run((function* () { yield* closeRoad(ctx); yield* policeRun(ctx, dir, L.chaseZ, 9, 0); openRoad(ctx); })());
     rob.arms = 'swing';
     if (busted) {
-      yield* go(ctx, rob, h.x + dir * 12, L.walkB[1], 6);
+      const bx1 = S.runway(ctx, rob.g.position.x, rob.g.position.z, dir, 12);
+      yield* go(ctx, rob, bx1, padZ(ctx, 'walkB1', bx1), 6);
       ctx.sfx('slam');
       ctx.fx.puff(rob.g.position.x, 0.8, rob.g.position.z, '#ffe08a');
       ctx.fx.burst(rob.g.position.x, 1.15, rob.g.position.z, { n: 12, colors: ['#ffd60a', '#fff'], speed: 5, up: 7, glow: true, size: [0.1, 0.18] });
@@ -1550,16 +1752,32 @@ const cartProp = () => sculpt((v) => {
   for (const sx of [-0.4, 0.4]) for (const sz of [-0.25, 0.25]) v.box(sx, 0, sz, 0.1, 0.24, 0.1, '#1c1c1c');
 });
 
+/** Shops with a real door and room along the pavement for the getaway; each with the direction the cart runs. */
+const heistShops = (ctx) => once(ctx, 'heist', () => heistShops0(ctx));
+function heistShops0(ctx) {
+  const out = [];
+  for (const s of S.housesNear(ctx, 0, 24, { door: true, shop: true })) {
+    if (s.shop === 'BANK') continue;
+    const dzr = s.door.z, cz = Math.min(dzr + 1.3, padZ(ctx, 'walkB1', s.door.x)), want = s.x > 0 ? -1 : 1;
+    const a = S.runway(ctx, s.door.x, cz, want, 14, 0.7), b = S.runway(ctx, s.door.x, cz, -want, 14, 0.7);
+    const la = Math.abs(a - s.door.x), lb = Math.abs(b - s.door.x);
+    if (la >= 9 && (la >= lb || lb < 9)) out.push({ s, dir: want, edge: a, cz });
+    else if (lb >= 9) out.push({ s, dir: -want, edge: b, cz });
+  }
+  return out;
+}
 G.shopHeist = {
   w: [0, 0, 0, 3, 2], crime: 2,
-  avail: (ctx) => ctx.L.shops.some((s) => s.shop !== 'BANK'),
+  avail: (ctx) => heistShops(ctx).length > 0,
   *run(ctx) {
-    const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'shopHeist'), R = rig(ctx), s = rnd.pick(L.shops.filter((x) => x.shop !== 'BANK'));
+    const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'shopHeist'), R = rig(ctx), spots = heistShops(ctx);
+    if (!spots.length) return;
+    const pickd = rnd.pick(spots), s = pickd.s;
     let done = false;
     try {
-      const dir = s.x > 0 ? -1 : 1, hd = dir > 0 ? E : W;
-      const dx = s.door.x, dzr = s.door.z, gz = dzr + 0.55, cz = Math.min(dzr + 1.3, L.walkB[1]), cx = clamp(dx + dir * 2.0, EX0 + 1, EX1 - 1);
-      const door = pt(dx, dzr + 0.6), edge = dir > 0 ? EX1 : EX0;
+      const dir = pickd.dir, hd = dir > 0 ? E : W;
+      const dx = s.door.x, dzr = s.door.z, gz = dzr + 0.55, cz = pickd.cz, cx = clamp(dx + dir * 2.0, EX0 + 1, EX1 - 1);
+      const door = pt(dx, dzr + 0.6), edge = pickd.edge;
       const rob = makePerson(rnd, { kind: 'robber' }), keeper = makePerson(rnd, { kind: 'chef' });
       const gate = R.add(gateProp());
       gate.position.set(dx, 0.001, gz);
@@ -1591,7 +1809,8 @@ G.shopHeist = {
         say(ctx, keeper, '*veeg veeg*', { size: 12, color: '#cfe8ff' });
         for (;;) { yield* tween(1.2, (u) => { keeper.g.position.x = dx - dir * (2.3 + 0.5 * Math.sin(u * Math.PI * 2)); }); }
       })());
-      yield* R.enter(rob, clamp(dx - dir * 14, EX0, EX1), L.walkB[1]);
+      const rx0 = clamp(dx - dir * 14, EX0, EX1);
+      yield* R.enter(rob, rx0, padZ(ctx, 'walkB1', rx0));
       rob.gait = 'sneak'; rob.arms = 'sneak';
       yield* go(ctx, rob, cx - dir * 1.4, cz, 3.2);
       rob.gait = 'walk'; rob.heading = 0;
@@ -1758,11 +1977,20 @@ G.shopHeist = {
   },
 };
 
+/** Which sides can host a scooter run: a real bike lane or road to ride on (not a square, park, beach or pedestrian street) and a pavement for the victim. */
+const scooterSides = (ctx) => once(ctx, 'scooter', () => scooterSides0(ctx));
+const scooterSides0 = (ctx) => ({
+  okF: ctx.L.kind !== 'ped' && S.roadHere(ctx, ctx.L.bikeF) && !!padSpot(ctx, 'walkF0', 0, 0.7, 12),
+  okB: ctx.L.kind !== 'ped' && S.roadHere(ctx, ctx.L.bikeB) && !!padSpot(ctx, 'walkB1', 0, 0.7, 12),
+});
 G.scooterSnatch = {
   w: [0, 0, 0, 3, 2], crime: 2,
+  avail: (ctx) => { const q = scooterSides(ctx); return q.okF || q.okB; },
   *run(ctx) {
-    const { L, rnd } = ctx, dir = rnd.sign();
-    const z = dir > 0 ? L.bikeF : L.bikeB, wz = dir > 0 ? L.walkF[0] : L.walkB[1];
+    const { L, rnd } = ctx;
+    const { okF, okB } = scooterSides(ctx);
+    const dir = okF && okB ? rnd.sign() : okF ? 1 : -1;
+    const z = dir > 0 ? L.bikeF : L.bikeB, wz = dir > 0 ? padZ(ctx, 'walkF0', 0) : padZ(ctx, 'walkB1', 0);
     const vic = makePerson(rnd, { kind: 'granny' });
     const purse = vic.hold(item.purse());
     yield* enter(ctx, vic, dir > 0 ? EX1 : EX0, wz);
@@ -1816,9 +2044,9 @@ G.fireworks = {
   w: [0, 0, 0.6, 2, 2.5], crime: 1, need: ['bins'],
   *run(ctx) {
     const { L, rnd } = ctx, bin = rnd.pick(L.bins), kid = makePerson(rnd, { kind: 'hoodie', scale: 1.05 });
-    const dir = rnd.sign();
-    yield* enter(ctx, kid, dir > 0 ? EX0 : EX1, L.walkF[0]);
-    yield* go(ctx, kid, bin.x - dir * 0.9, bin.z + 0.9, 4);
+    const dir = rnd.sign(), stand = spotNear(ctx, bin.x - dir * 0.9, bin.z + 0.9);
+    yield* enter(ctx, kid, dir > 0 ? EX0 : EX1, padZ(ctx, 'walkF0', dir > 0 ? EX0 : EX1));
+    yield* go(ctx, kid, stand.x, stand.z, 4);
     kid.heading = Math.atan2(dir, -1);
     kid.arms = 'hold';
     const rocket = sculpt((v) => { v.box(0, 0, 0, 0.16, 0.6, 0.16, '#e63946'); v.box(0, 0.6, 0, 0.2, 0.2, 0.2, '#ffd60a'); }, MAT.glow);
@@ -1827,7 +2055,7 @@ G.fireworks = {
     yield* wait(0.5);
     ctx.sfx('fuse');
     kid.arms = 'swing';
-    ctx.run(go(ctx, kid, bin.x - dir * 5, L.walkF[1], 6.5));
+    { const fx = S.runway(ctx, kid.g.position.x, padZ(ctx, 'walkF1', bin.x - dir * 5), -dir, 5.5); ctx.run(go(ctx, kid, fx, padZ(ctx, 'walkF1', fx), 6.5)); }
     for (let i = 0; i < 12; i++) { ctx.fx.sparks(bin.x, 1.15, bin.z, 2); yield* wait(0.1); }
     kid.heading = Math.atan2(dir, 0); kid.arms = 'up';
     for (let k = 0; k < 3; k++) {
@@ -1858,7 +2086,7 @@ G.fireworks = {
 
 G.carChase = {
   w: [0, 0, 0.4, 1.2, 3], crime: 3, lock: 'road',
-  avail: (ctx) => ctx.L.hw >= 2.2,
+  avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2 && S.roadHere(ctx, ctx.L.chaseZ, -22, 22, 0.8), // needs a real road along the whole stretch
   *run(ctx) {
     const { L, rnd } = ctx;
     yield* closeRoad(ctx);
@@ -1896,29 +2124,37 @@ G.carChase = {
   },
 };
 
+/** The chase loop of bennyHill for one running direction, as points; ok when every leg is open ground. */
+const bennyLoop = (ctx, dir) => once(ctx, 'benny' + dir, () => bennyLoop0(ctx, dir));
+function bennyLoop0(ctx, dir) {
+  const a = dir > 0 ? EX0 : EX1, b = dir > 0 ? EX1 - 1.5 : EX0 + 1.5, a6 = a + dir * 6, b1 = b + dir * 1;
+  const pts = [[a, padZ(ctx, 'walkF1', a)], [b, padZ(ctx, 'walkF1', b)], [b, padZ(ctx, 'walkB1', b)], [a6, padZ(ctx, 'walkB1', a6)], [a6, padZ(ctx, 'walkF0', a6)], [b1, padZ(ctx, 'walkF0', b1)]];
+  let ok = true;
+  for (let i = 1; i < pts.length && ok; i++) ok = S.lineClear(ctx, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+  return { pts, ok, a };
+}
 G.bennyHill = {
   w: [0, 0, 0, 1, 2.5], crime: 1,
+  avail: (ctx) => bennyLoop(ctx, 1).ok || bennyLoop(ctx, -1).ok, // needs both pavements and the road between them open
   *run(ctx) {
-    const { L, rnd } = ctx, dir = rnd.sign();
+    const { L, rnd } = ctx;
+    let dir = rnd.sign(), lp = bennyLoop(ctx, dir);
+    if (!lp.ok) { dir = -dir; lp = bennyLoop(ctx, dir); }
     const cast = [makePerson(rnd, { kind: 'robber' }), makePerson(rnd, { kind: 'cop' }), makeDog(rnd), makePerson(rnd, { kind: 'chef' }), makePerson(rnd, { kind: 'cop' })];
     cast[0].hold(item.sack(), 'back');
     cast[3].arms = 'fist';
     ctx.wanted = cast[0];
     ctx.news('Chase enters third lap; nobody remembers who is chasing whom');
     ctx.incident();
-    const a = dir > 0 ? EX0 : EX1, b = dir > 0 ? EX1 - 1.5 : EX0 + 1.5;
+    const [p0, ...rest] = lp.pts, a = lp.a;
     const path = function* (m, delay) {
       yield* wait(delay);
-      yield* enter(ctx, m, a, L.walkF[1]);
-      yield* go(ctx, m, b, L.walkF[1], 6.8);
-      yield* go(ctx, m, b, L.walkB[1], 6.8);
-      yield* go(ctx, m, a + dir * 6, L.walkB[1], 6.8);
-      yield* go(ctx, m, a + dir * 6, L.walkF[0], 6.8);
-      yield* go(ctx, m, b + dir * 1, L.walkF[0], 6.8);
+      yield* enter(ctx, m, p0[0], p0[1]);
+      for (const q of rest) yield* go(ctx, m, q[0], q[1], 6.8);
       yield* popOut(ctx, m);
     };
     ctx.sfx('whistle');
-    say(ctx, at(a, 2.4, L.walkF[1]), '♪ ♫ ♪', { size: 18, color: '#ffe08a' });
+    say(ctx, at(a, 2.4, p0[1]), '♪ ♫ ♪', { size: 18, color: '#ffe08a' });
     yield* all(...cast.map((m, i) => path(m, i * 0.36)));
   },
 };
@@ -1933,9 +2169,10 @@ G.plofkraak = {
     const r1 = makePerson(rnd, { kind: 'robber' }), r2 = makePerson(rnd, { kind: 'robber' });
     r1.gait = r2.gait = 'sneak'; r1.arms = 'carry'; r2.arms = 'sneak';
     r1.hold(item.bomb(), 'front');
-    ctx.spawn(r2, dir > 0 ? EX0 : EX1, L.walkB[1]); r2.g.scale.setScalar(0.001);
+    const ex = dir > 0 ? EX0 : EX1, q2 = S.nudge(ctx, ex, padZ(ctx, 'walkB1', ex));
+    ctx.spawn(r2, q2.x, q2.z); r2.g.scale.setScalar(0.001);
     ctx.run(popIn(ctx, r2));
-    yield* enter(ctx, r1, dir > 0 ? EX0 : EX1, L.walkB[0]);
+    yield* enter(ctx, r1, ex, padZ(ctx, 'walkB0', ex));
     ctx.wanted = r1;
     ctx.news('Two men in striped shirts "just looking" at ATM');
     yield* all(go(ctx, r1, A.x - 0.2, A.z - 0.1, 3.8), go(ctx, r2, A.x + dir * 1.6, A.z + 0.5, 3.8));
@@ -1949,8 +2186,7 @@ G.plofkraak = {
     ctx.focus(A.x, A.z + 1, 0.5, 5.4, 3);
     ctx.sfx('fuse');
     r1.gait = r2.gait = 'walk'; r1.arms = r2.arms = 'swing';
-    ctx.run(go(ctx, r1, A.x - dir * 7, L.walkB[1], 7.5));
-    ctx.run(go(ctx, r2, A.x - dir * 8.2, L.walkB[0], 7.5));
+    { const f1 = S.runway(ctx, r1.g.position.x, r1.g.position.z, -dir, 7), f2 = S.runway(ctx, r2.g.position.x, r2.g.position.z, -dir, 8.2); ctx.run(go(ctx, r1, f1, r1.g.position.z, 7.5)); ctx.run(go(ctx, r2, f2, r2.g.position.z, 7.5)); }
     for (let i = 0; i < 18; i++) {
       ctx.fx.sparks(A.x, L.yAt(A.z) + 0.85, A.z - 0.75, 3);
       if (i % 6 === 0) ctx.fx.text(['3', '2', '1'][i / 6], at(A.x, 3.2, A.z), { size: 30, color: '#ffe08a', dur: 0.6, rise: 0.4 });
@@ -1986,8 +2222,9 @@ G.plofkraak = {
       const c = makePerson(rnd, {});
       ctx.run((function* () {
         yield* wait(0.4 + i * 0.4);
-        yield* enter(ctx, c, i % 2 ? EX1 : EX0, L.walkB[1]);
-        yield* go(ctx, c, A.x + rnd.range(-3.5, 3.5), A.z + rnd.range(0.6, 2), 6.5);
+        const cx0 = i % 2 ? EX1 : EX0, cs = spotNear(ctx, A.x + rnd.range(-3.5, 3.5), A.z + rnd.range(0.6, 2));
+        yield* enter(ctx, c, cx0, padZ(ctx, 'walkB1', cx0));
+        yield* go(ctx, c, cs.x, cs.z, 6.5);
         c.arms = 'up'; c.heading = 0;
         if (i === 0) say(ctx, c, 'GRATIS GELD!', { size: 16, color: '#b9fbc0' });
         for (let k = 0; k < 5; k++) { yield* hop(c, 0.5, 0.3); ctx.sfx('coin'); }
@@ -2004,7 +2241,7 @@ G.plofkraak = {
     yield* waitUntil(() => ctx.road.vehicles.size === 0, 6);
     // getaway
     const road = L.kind !== 'ped';
-    const vz = road ? L.chaseZ : L.walkB[1] + 1.4;
+    const vz = road ? L.chaseZ : padZ(ctx, 'walkB1', A.x) + 1.4;
     const van = makeCar(rnd, 'van', L.night);
     ctx.sfx('skid');
     yield* enter(ctx, van, dir > 0 ? X0 + 2.6 : X1 - 2.6, vz, 0);
@@ -2044,13 +2281,30 @@ const alarmLights = (x, z) => {
   m.position.set(x, 0.001, z);
   return m;
 };
+/** Room along the kerb for the raid on this car: which way he walks, where he comes in from and where he runs off to. Null if there is none. */
+const breakPlan = (ctx, car) => once(car, 'plan', () => breakPlan0(ctx, car));
+function breakPlan0(ctx, car) {
+  const z = ctx.L.hw + ctx.L.bw + 0.75, pref = car.x > 0 ? -1 : 1;
+  let best = null;
+  for (const dir of [pref, -pref]) {
+    const e = S.runway(ctx, car.x, z, dir, 24, 0.6), b = S.runway(ctx, car.x, z, -dir, 15, 0.6), fwd = Math.abs(e - car.x), back = Math.abs(b - car.x);
+    if (fwd < 8 || back < 6) continue;
+    const sc = Math.min(fwd, 16) + Math.min(back, 15) + (dir === pref ? 3 : 0);
+    if (!best || sc > best.sc) best = { dir, z, sc, edge: e, start: b };
+  }
+  return best;
+}
 G.carBreakIn = {
   w: [0, 0.6, 2.5, 2.5, 2], crime: 2, need: ['parked'],
+  avail: (ctx) => ctx.L.parked.some((c) => breakPlan(ctx, c)),
   *run(ctx) {
-    const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'carBreakIn'), R = rig(ctx), car = rnd.pick(L.parked);
+    const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'carBreakIn'), R = rig(ctx);
+    const cars = L.parked.filter((c) => breakPlan(ctx, c));
+    if (!cars.length) return;
+    const car = rnd.pick(cars);
     let done = false;
     try {
-      const dir = car.x > 0 ? -1 : 1, z = L.hw + L.bw + 0.75, edge = dir > 0 ? EX1 : EX0;
+      const plan = breakPlan(ctx, car), dir = plan.dir, z = plan.z, edge = plan.edge;
       // the cars he will try first: those before the target, in his direction of travel
       const row = L.parked.filter((c) => c !== car && dir * (car.x - c.x) > 2.5 && dir * (car.x - c.x) < 13).sort((p, q) => dir * (p.x - q.x));
       const decoys = row.slice(-2);
@@ -2074,7 +2328,7 @@ G.carBreakIn = {
       // 1. set-up: a quiet row of parked cars; one of them snores
       cam.wide(pt(car.x - dir * 3, z), { dist: 26, hold: 4.2 });
       const snore = R.run((function* () { for (;;) { ctx.sfx('zzz'); ctx.fx.text('Z', at(car.x, 2.3, car.z), { size: 15, color: '#cfe8ff', rise: 1.2, dur: 1.6 }); yield* wait(1.5); } })());
-      yield* R.enter(thief, clamp(car.x - dir * 15, EX0, EX1), L.walkF[0]);
+      yield* R.enter(thief, plan.start, padZ(ctx, 'walkF0', plan.start));
       thief.gait = 'sneak'; thief.arms = 'sneak';
       const firstX = (decoys[0] || car).x;
       yield* go(ctx, thief, firstX - dir * 2.5, z, 3.2);
@@ -2259,7 +2513,7 @@ G.carBreakIn = {
 
 G.fenderBender = {
   w: [0, 1.2, 2, 2, 2], crime: 1, lock: 'road',
-  avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2,
+  avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2 && S.roadHere(ctx, ctx.L.laneF ?? ctx.L.chaseZ, -22, 22, 0.8) && S.roadHere(ctx, ctx.L.laneB ?? ctx.L.chaseZ, -22, 22, 0.8),
   *run(ctx) {
     const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'fenderBender'), R = rig(ctx);
     let done = false;
@@ -2280,7 +2534,8 @@ G.fenderBender = {
       // 1. set-up: a pigeon in no hurry, one driver on the phone, one humming along to the radio
       cam.wide(spot, { dist: 30, hold: 4.6 });
       const bird = makeBird(rnd, 'pigeon');
-      R.spawn(bird, xs + dir * 3.2, L.hw + L.bw + 0.6); // placed at the kerb, then wanders into the lane
+      const bq = spotNear(ctx, xs + dir * 3.2, L.hw + L.bw + 0.6, 0.3);
+      R.spawn(bird, bq.x, bq.z); // placed at the kerb, then wanders into the lane
       R.run(go(ctx, bird, xs + dir * 3.2, z, 1.5));
       R.run((function* () {
         yield* wait(1.7);
@@ -2488,13 +2743,30 @@ G.fenderBender = {
   },
 };
 
+/** Places on the pavement with room for the ring of onlookers and the rolling dust cloud; each with the directions the cloud can roll. */
+const scuffleSpots = (ctx) => once(ctx, 'scuffle', () => scuffleSpots0(ctx));
+function scuffleSpots0(ctx) {
+  const out = [];
+  for (const nm of ['walkF0', 'walkB1']) {
+    for (const x of [0, -5, 5, -8, 8, -3, 3]) {
+      const z = padZ(ctx, nm, x);
+      if (!S.lineClear(ctx, x - 4, z, x + 4, z, 0.5) || !S.clearSpot(ctx, x, z + (nm === 'walkF0' ? 1.5 : -1.5), 0.8, { ground: 'open' })) continue;
+      const sides = [-1, 1].filter((sd) => Math.abs(S.runway(ctx, x, z, sd, 9, 0.5) - x) >= 7);
+      if (sides.length) out.push({ x, z, sides });
+    }
+  }
+  return out;
+}
 G.scuffle = {
   w: [0, 0, 1.4, 2.4, 2.6], crime: 2,
+  avail: (ctx) => scuffleSpots(ctx).length > 0,
   *run(ctx) {
     const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'scuffle'), R = rig(ctx);
+    const spotsAt = scuffleSpots(ctx);
+    if (!spotsAt.length) return;
     let done = false;
     try {
-      const x = rnd.range(-8, 8), z = rnd.pick([L.walkF[0], L.walkB[1]]), side = rnd.sign();
+      const sp0 = rnd.pick(spotsAt), x = sp0.x + rnd.range(-0.5, 0.5), z = sp0.z, side = rnd.pick(sp0.sides);
       const cc = pt(x, z); // the camera follows this point; it rolls along with the dust cloud later
       const a = makePerson(rnd, {}), b = makePerson(rnd, { kind: rnd.chance(0.3) ? 'chef' : 'civ' });
 
@@ -2531,7 +2803,8 @@ G.scuffle = {
       // 3. word gets round: spectators gather, and a granny takes bets
       const mob = gather(ctx, R, x, 2, 15);
       const bookie = makePerson(rnd, { kind: 'granny' });
-      const spots = [[-3.0, 1.5], [3.1, 1.4], [-1.2, -1.7], [1.6, -1.6]];
+      // where the onlookers stand (relative to the fight), each nudged to ground that is really clear
+      const spots = [[-3.0, 1.5], [3.1, 1.4], [-1.2, -1.7], [1.6, -1.6]].map(([dx, dz]) => { const q = spotNear(ctx, x + dx, z + dz); return [q.x - x, q.z - z]; });
       const spectators = [];
       R.run((function* () {
         yield* R.enter(bookie, clamp(x + side * 11, EX0, EX1), z + 1.0);
@@ -2677,8 +2950,11 @@ G.scuffle = {
 
 G.shadyDeal = {
   w: [0, 0, 1.4, 2, 2], crime: 1,
+  avail: (ctx) => !!padSpot(ctx, 'walkF1', 0, 1.0, 14),
   *run(ctx) {
-    const { L, rnd } = ctx, z = L.walkF[1], x = rnd.range(-7, 7), dir = rnd.sign();
+    const { L, rnd } = ctx, dir = rnd.sign(), spot = padSpot(ctx, 'walkF1', rnd.range(-7, 7), 1.0, 14);
+    if (!spot) return;
+    const x = spot.x, z = spot.z;
     const dealer = makePerson(rnd, { kind: 'hoodie', shirt: '#4a3b2a' });
     yield* enter(ctx, dealer, clamp(x - dir * 9, EX0, EX1), z);
     dealer.gait = 'sneak';
@@ -2688,7 +2964,8 @@ G.shadyDeal = {
     const ped = yield* needPed(ctx, 12);
     if (!ped) { yield* leave(ctx, dealer, 3, clamp(x + dir * 9, EX0, EX1)); return; }
     const left = ped.g.position.x < x;
-    yield* go(ctx, ped, x + (left ? -1.1 : 1.1), z - 0.2, 2.6);
+    const ps = spotNear(ctx, x + (left ? -1.1 : 1.1), z - 0.2);
+    yield* go(ctx, ped, ps.x, ps.z, 2.6);
     ped.heading = left ? E : W; dealer.heading = left ? W : E;
     const wares = sculpt((v) => { for (let i = 0; i < 3; i++) v.box(-0.22 + i * 0.22, 0.95 + (i % 2) * 0.22, 0.26, 0.14, 0.16, 0.05, ['#7cfc9a', '#ffe066', '#ff8fab'][i]); }, MAT.glow);
     dealer.b.add(wares);
@@ -2702,7 +2979,8 @@ G.shadyDeal = {
     ctx.news(`Man sells "oregano" on ${ctx.st.name} at suspicious mark-up`);
     yield* wait(0.8);
     const cop = makePerson(rnd, { kind: 'cop' });
-    yield* enter(ctx, cop, clamp(x + dir * 10, EX0, EX1), L.walkF[0]);
+    const cx = clamp(x + dir * 10, EX0, EX1);
+    yield* enter(ctx, cop, cx, padZ(ctx, 'walkF0', cx));
     ctx.sfx('whistle');
     say(ctx, cop, 'HÉ! WAT IS DAT DAAR?', { size: 15, color: '#7db8ff' });
     yield* wait(0.35);
@@ -2733,6 +3011,8 @@ const hookProp = () => sculpt((v) => v.box(0, 0, 0, 0.13, 0.13, 0.13, '#ffd60a')
 
 G.phishing = {
   w: [0, 1.4, 2, 2, 1.6], crime: 1,
+  // the hacker sets up on the pavement opposite his victim, so both pavements need a clear stretch
+  avail: (ctx) => !!padSpot(ctx, 'walkF1', 0, 1.2, 14) && !!padSpot(ctx, 'walkB0', 0, 1.2, 14),
   *run(ctx) {
     const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'phishing'), R = rig(ctx);
     let done = false;
@@ -2741,8 +3021,10 @@ G.phishing = {
       if (!ped) return;
       R.borrow(ped);
       const p = ped.g.position, back = ped.lineZ < 0, dir = ped.dir, fz = back ? -1 : 1;
-      const hx = clamp(p.x + dir * 6, -16, 16), hz = back ? L.walkF[1] : L.walkB[0], hh = back ? Math.PI : 0;
-      const vz = back ? [L.walkB[0], L.walkB[1]] : [L.walkF[0], L.walkF[1]], dz = hz + fz * 1.0;
+      const hn = back ? 'walkF1' : 'walkB0', hs = padSpot(ctx, hn, clamp(p.x + dir * 6, -16, 16), 1.2, 14);
+      if (!hs) return; // nowhere clear to set up a desk: the victim is handed back by the cleanup
+      const hx = hs.x, hz = hs.z, hh = back ? Math.PI : 0;
+      const vz = back ? [padZ(ctx, 'walkB0', hx), padZ(ctx, 'walkB1', hx)] : [padZ(ctx, 'walkF0', hx), padZ(ctx, 'walkF1', hx)], dz = hz + fz * 1.0;
       const hub = pt(hx, (hz + ped.lineZ) / 2);
       const tipX = hx, tipY = 1.3, tipZ = hz + fz * 1.1;
 

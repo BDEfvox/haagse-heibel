@@ -558,7 +558,7 @@ export class Stage {
       };
       for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y + W.hAt(p[0], p[1]), p[1], ...rest); };
       const ctx = {
-        id, sc, L, st, level, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
+        id, sc, L, st, level, W, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
         world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
         spawn(a, x, z, y) {
@@ -966,7 +966,7 @@ export class Stage {
     this.scene.fog.near = r.dist * 1.6 + 180;
     this.scene.fog.far = r.dist * 7 + 2400;
     this.fx.zoom = r.dist;
-    W.lod(r.tx, r.tz, r.dist, this.mode !== 'drop' && this.mode !== 'leave', r.az);
+    W.lod(r.tx, r.tz, r.dist, this.mode !== 'drop' && this.mode !== 'leave', r.az, this.mode);
     this._brief();
     this.crowd.update(dt, r.tx, r.tz, r.dist);
 

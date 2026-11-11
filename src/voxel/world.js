@@ -1,12 +1,13 @@
 // Builds the voxel world around one street from real map data: ground, roads, buildings, trees,
 // plus a low-detail model of the whole city for the horizon and the sky drop.
 import * as THREE from 'three';
-import { Vox, clamp, makeRng, hashStr } from './kit.js';
+import { Vox, MAT, clamp, makeRng, hashStr } from './kit.js';
 import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
 import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } from './landmarks.js';
 import { SPECIAL_PARTS } from './special-parts.js';
+import { furnishTile } from './furnish.js';
 
 const ROOT = './data/world/';
 const TILE = 256;
@@ -34,9 +35,9 @@ const PAL = {
   10: { c: '#6f9aa2', alt: '#dcebea', speck: 0.012 },
   11: { c: '#5f636c' }, 12: { c: '#b79a90' }, 13: { c: '#8d8577' },
   20: { c: '#4e5259', alt: '#484c53', speck: 0.2 },
-  21: { c: '#9b6b5d', alt: '#906153', check: 1 },
+  21: { c: '#8f7169', alt: '#866860', check: 1 },
   22: { c: '#6c7078', alt: '#666a72', speck: 0.2 },
-  23: { c: '#b25040', alt: '#a8493a', speck: 0.15 },
+  23: { c: '#a65c4f', alt: '#9d5549', speck: 0.15 },
   24: { c: '#c6bfae', alt: '#bcb4a2', check: 1 },
   25: { c: '#c3b59d', alt: '#b8a98f', check: 1.5 },
   26: { c: '#cbb98e', alt: '#bfac80', speck: 0.25 },
@@ -45,7 +46,7 @@ const PAL = {
   30: { c: '#b4b4ae', alt: '#a9a9a3', check: 1 },
   31: { c: '#cdcabf' },
   32: { c: '#ecece6' },
-  34: { c: '#b25040', alt: '#a8493a', speck: 0.15 },
+  34: { c: '#a65c4f', alt: '#9d5549', speck: 0.15 },
   40: { c: '#9a958a' },
 };
 const LUT = (() => {
@@ -380,13 +381,15 @@ export function cutWeight(x, z, r = 5) {
 // The Hague by building age: white and cream stucco among dark brick before 1905, red-brown brick with orange
 // tiled roofs up to the war, the yellow-brown brick of the Haagse School in the thirties, yellow and grey
 // brick flats after 1945, and white, grey and anthracite since 2000.
+// Wall and roof colours by building age. The Hague is brown, sand and grey far more than it is red: muted brown brick,
+// yellow-brown brick from the 1920s on, pale stucco in the old centre; roofs are dull orange tile, grey tile or dark felt.
 const ERA = [
-  { to: 1905, wall: ['#ece6d8', '#e3d8be', '#d5d2c8', '#8f4a3a', '#7a4638', '#b08a5a', '#ece6d8'], roofs: ['#4a4e57', '#8a3b2e', '#6b7078'] },
-  { to: 1930, wall: ['#9a4f3c', '#a8553e', '#7f4f3f', '#b5694a', '#94523f', '#e6dfcf'], roofs: ['#c1583b', '#a44a3f', '#4a4e57'] },
-  { to: 1946, wall: ['#c09a62', '#b88b58', '#96543f', '#a86a48', '#c9a56c'], roofs: ['#c1583b', '#a44a3f', '#5d646d'] },
-  { to: 1976, wall: ['#cdb07c', '#d6c095', '#bfb6a3', '#c9c5bb', '#9c5a44', '#c4a66e'], roofs: ['#5d646d', '#6b7078', '#a44a3f'] },
-  { to: 2001, wall: ['#9e5b45', '#c9a873', '#85543f', '#e3e1da', '#b3785a'], roofs: ['#4a4e57', '#b0553c', '#5d646d'] },
-  { to: 9999, wall: ['#e9e9e4', '#cfd3d6', '#4a4f57', '#a05540', '#d7c9b8', '#9fb4c2'], roofs: ['#3d434c', '#5a6068'] },
+  { to: 1905, wall: ['#ece6d8', '#e3d8be', '#d5d2c8', '#8a5f50', '#775a50', '#a98c68', '#ece6d8'], roofs: ['#4a4e57', '#8f6252', '#6b7078', '#5a5f66'] },
+  { to: 1930, wall: ['#8c6252', '#96695a', '#7c5c50', '#a58066', '#b39a78', '#e6dfcf', '#8a6658'], roofs: ['#a06a56', '#8a6254', '#4a4e57', '#5f6268'] },
+  { to: 1946, wall: ['#bfa06e', '#b3925f', '#8e6858', '#a47e60', '#c9ad7c'], roofs: ['#a06a56', '#5d646d', '#4f545c', '#8a6254'] },
+  { to: 1976, wall: ['#cdb07c', '#d6c095', '#bfb6a3', '#c9c5bb', '#946e60', '#c4a66e'], roofs: ['#5d646d', '#6b7078', '#4f545c', '#98695a'] },
+  { to: 2001, wall: ['#936c5e', '#c9a873', '#806052', '#e3e1da', '#ad886e'], roofs: ['#4a4e57', '#96665a', '#5d646d'] },
+  { to: 9999, wall: ['#e9e9e4', '#cfd3d6', '#4a4f57', '#966c5e', '#d7c9b8', '#9fb4c2'], roofs: ['#3d434c', '#5a6068'] },
 ];
 const eraOf = (year) => ERA.find((e) => (year || 1950) < e.to) || ERA[2];
 const TOWER = ['#cfd8dc', '#b8c4cc', '#e3ded3', '#9fb0ba', '#d7c9b8', '#8fa3ad', '#5f6f7d', '#e8eef1'];
@@ -481,6 +484,105 @@ function drawHero(v, gl, u, rnd, night) {
     out.sign = info.sign;
   }
   return out;
+}
+
+// ---------------------------------------------------------------- house fronts, the same on every street
+// Which buildings get a detailed street front (door, windows, shop, gable), and how wide each front is, follows from the
+// map data alone: `bf` says which way a building faces. So a front is the same whichever street is open; the tiles draw
+// the detailed version for the cells near the camera (see Streamer._detail), and the open street only reads where the
+// doors and windows are.
+const CELL = 64, CELLS = TILE / CELL;
+const cellOf = (x, z) => Math.min(CELLS - 1, Math.max(0, Math.floor(x / CELL))) + CELLS * Math.min(CELLS - 1, Math.max(0, Math.floor(z / CELL)));
+const _fronts = new WeakMap();
+/** The street fronts of a tile, in tile coordinates (x east, z south). { units, byB: building index -> its units } */
+function frontsOf(key, t) {
+  let F = _fronts.get(t);
+  if (F) return F;
+  F = { units: [], byB: new Map() };
+  _fronts.set(t, F);
+  if (!t.bf || !t.b) return F;
+  t.b.forEach((e, bi) => {
+    const bf = t.bf[bi];
+    if (!(bf >= 0) || e[0] < 3.2) return;
+    // a church stays a church: buildings with a type or a landmark's own shape keep their own drawer
+    if ((t.bp && t.bp[bi]) || (t.bt && TYPED.has(t.bt[bi])) || specialOf(key, t, bi)) return;
+    const ring = [];
+    for (let i = 3; i + 1 < e.length; i += 2) ring.push([e[i] / 10, TILE - e[i + 1] / 10]);
+    if (ring.length < 3) return;
+    const area = ringArea(ring);
+    if (area < 18) return;
+    const o = obbOf(ring), b = { ring, h: e[0], roof: e[1], year: e[2], o, area };
+    // which side of its bounding box looks at the street?
+    const a = (bf * 10 * Math.PI) / 180, nx = Math.sin(a), nz = -Math.cos(a);
+    const dU = o.ux * nx + o.uz * nz, dP = -o.uz * nx + o.ux * nz;
+    if (Math.max(Math.abs(dU), Math.abs(dP)) < 0.8) return; // it stands askew to its street
+    let fnx, fnz, fd, fw;
+    if (Math.abs(dU) >= Math.abs(dP)) { fd = o.w; fw = o.d; fnx = Math.sign(dU) * o.ux; fnz = Math.sign(dU) * o.uz; }
+    else { fd = o.d; fw = o.w; fnx = Math.sign(dP) * -o.uz; fnz = Math.sign(dP) * o.ux; }
+    if (fw < 2.8) return;
+    const ax = -fnz, az = fnx, fcx = o.cx + (fnx * fd) / 2, fcz = o.cz + (fnz * fd) / 2;
+    const look = lookOf(key, bi, b), tower = b.h >= 22;
+    const n = fw > (tower ? 34 : 11) ? Math.round(fw / (tower ? 22 : 6.5)) : 1, uw = fw / n;
+    const depth = clamp(area / fw, 3.4, fd), ci = cellOf(o.cx, o.cz), mine = [];
+    // an L- or U-shaped building is more than its front slab: what lies behind the slab is kept as plain blocks
+    const backs = [];
+    if (!boxy(o)) {
+      const alongU = Math.abs(dU) >= Math.abs(dP), sg = alongU ? Math.sign(dU) : Math.sign(dP), half = (alongU ? o.w : o.d) / 2;
+      for (const r of rectsOf(ring, o)) {
+        const c = alongU ? r.x : r.z, size = alongU ? r.w : r.d, near = half - (sg * c + size / 2), far = near + size;
+        if (far < depth + 1.5) continue;
+        const t0 = Math.max(near, depth), len = far - t0, mid = sg * (half - t0 - len / 2);
+        backs.push(alongU ? { x: mid, z: r.z, w: len, d: r.d } : { x: r.x, z: mid, w: r.w, d: len });
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      const off = (i + 0.5 - n / 2) * uw, ux0 = fcx + ax * off, uz0 = fcz + az * off;
+      // is there really building behind this stretch of the front?
+      let hit = 0;
+      for (const q of [-0.3, 0, 0.3]) if (inRing(ux0 + ax * q * uw - fnx * 1.2, uz0 + az * q * uw - fnz * 1.2, ring)) hit++;
+      if (hit < 2) continue;
+      mine.push({ key, bi, i, ci, cx: ux0 - (fnx * depth) / 2, cz: uz0 - (fnz * depth) / 2, nx: fnx, nz: fnz, w: uw, d: depth, h: b.h, roof: b.roof, year: b.year, tower, wall: tower ? null : look.wall, roofCol: look.roof, shop: null, atm: false, side: -1 });
+    }
+    if (mine.length >= Math.max(1, n * 0.6)) {
+      if (backs.length) mine[0].backs = { list: backs, th: Math.atan2(-o.uz, o.ux), cx: o.cx, cz: o.cz, rad: Math.min(o.w, o.d) / 2, h: b.h, wall: look.wall };
+      F.byB.set(bi, mine); F.units.push(...mine);
+    }
+  });
+  const dice = (u, salt) => hashStr(salt + '|' + key + '|' + u.bi + '|' + u.i);
+  // shops: real points of interest claim the nearest front
+  for (const p of t.p || []) {
+    const list = POI_SHOP[p[0]];
+    if (!list) continue;
+    const px = p[1] / 10, pz = TILE - p[2] / 10;
+    let best = null, bd = 16;
+    for (const u of F.units) { if (u.shop || u.tower) continue; const d = Math.hypot(u.cx - px, u.cz - pz) - u.d / 2; if (d < bd) { bd = d; best = u; } }
+    if (best) best.shop = list[dice(best, 'shop') % list.length];
+  }
+  // cash machines: on the bank, otherwise on a blank wall now and then
+  for (const u of F.units) u.atm = !u.tower && (u.shop === 'BANK' || (!u.shop && u.w >= 4.4 && dice(u, 'atm') % 13 === 0));
+  return F;
+}
+const unitRng = (u) => makeRng(hashStr('u|' + u.key + '|' + u.bi + '|' + u.i));
+let _dry = null;
+/** Where a front's door, window, sign and chimney are, without drawing it: u is the unit in whatever coordinates the answer should be in. */
+function frontInfo(u, night) {
+  _dry ||= { v: new Vox(1, true), gl: new Vox(1, true) };
+  _dry.v.n = 0; _dry.gl.n = 0;
+  const hi = drawHero(_dry.v, _dry.gl, u, unitRng(u), night);
+  _dry.v.setT(); _dry.gl.setT(); _dry.v.setB(); _dry.gl.setB(); _dry.v.n = 0; _dry.gl.n = 0;
+  if (hi.sign) { hi.sign.geometry.dispose(); hi.sign.material.dispose(); hi.sign = null; }
+  return hi;
+}
+/** Is a tree trunk within r metres of this point (map metres)? Only knows the tiles that are built. */
+export function treeNearMap(mx, my, r) {
+  const t0x = Math.floor((mx - r) / TILE), t1x = Math.floor((mx + r) / TILE), t0y = Math.floor((my - r) / TILE), t1y = Math.floor((my + r) / TILE);
+  for (let tx = t0x; tx <= t1x; tx++) for (let ty = t0y; ty <= t1y; ty++) {
+    const c = _byNum.get(tileNum(tx, ty));
+    if (!c || !c.trees) continue;
+    const lx = mx - c.ox, lz = c.oy + TILE - my, a = c.trees;
+    for (let i = 0; i + 2 < a.length; i += 3) if (Math.abs(a[i] - lx) < r && Math.abs(a[i + 1] - lz) < r && Math.hypot(a[i] - lx, a[i + 1] - lz) < r) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- the whole city, far away
@@ -1109,56 +1211,13 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   const sA = polyLen([spine[0], ...extA]);
   const path = new Path([...extA.slice().reverse(), ...spine, ...extB], sA, sA + streetLen);
 
-  // ---- buildings: boxes, how they face the street, which fronts get the full treatment
-  const units = [];
+  // ---- buildings: where they stand along the street (the tiles draw them, house fronts included)
   for (const b of bld) {
     b.area = ringArea(b.ring);
-    b.look = lookOf(b.key, b.bi, b);
-    // a church stays a church: buildings with a type or a landmark's own parts are drawn by the tiles, not as house fronts here
-    b.ext = !!((b.t.bp && b.t.bp[b.bi]) || (b.t.bt && TYPED.has(b.t.bt[b.bi])) || specialOf(b.key, b.t, b.bi));
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(b.ring, b.o);
-    const o = b.o, pr = path.project(o.cx, o.cz);
+    const pr = path.project(b.o.cx, b.o.cz);
     b.s = pr.s; b.v = pr.v; b.dist = pr.d;
-    if (b.ext || pr.d > 70 || pr.d < 0.5 || b.h < 3.2 || b.area < 18 || pr.s < path.sA - 8 || pr.s > path.sB + 8) continue;
-    // which side of its bounding box looks at the street?
-    const fp = path.xz(pr.s, 0), nx = (fp[0] - o.cx) / pr.d, nz = (fp[1] - o.cz) / pr.d;
-    const dU = o.ux * nx + o.uz * nz, dP = -o.uz * nx + o.ux * nz;
-    let fnx, fnz, fd, fw;
-    if (Math.abs(dU) >= Math.abs(dP)) { fd = o.w; fw = o.d; fnx = Math.sign(dU) * o.ux; fnz = Math.sign(dU) * o.uz; }
-    else { fd = o.d; fw = o.w; fnx = Math.sign(dP) * -o.uz; fnz = Math.sign(dP) * o.ux; }
-    const ax = -fnz, az = fnx; // along the facade
-    const fcx = o.cx + fnx * fd / 2, fcz = o.cz + fnz * fd / 2;
-    const gp = path.project(fcx, fcz);
-    const tg = path.at(gp.s);
-    if (gp.d > 22 || gp.d < 0.8 || Math.abs(fnx * tg.tx + fnz * tg.tz) > 0.6 || fw < 2.8) continue;
-    const tower = b.h >= 22;
-    const n = fw > (tower ? 34 : 11) ? Math.round(fw / (tower ? 22 : 6.5)) : 1, uw = fw / n;
-    const depth = clamp(b.area / fw, 3.4, fd), wall = tower ? null : b.look.wall;
-    const mine = [];
-    for (let i = 0; i < n; i++) {
-      const off = (i + 0.5 - n / 2) * uw, ux0 = fcx + ax * off, uz0 = fcz + az * off;
-      // is there really building behind this stretch of the front?
-      let hit = 0;
-      for (const t of [-0.3, 0, 0.3]) if (inRing(ux0 + ax * t * uw - fnx * 1.2, uz0 + az * t * uw - fnz * 1.2, b.ring)) hit++;
-      if (hit < 2) continue;
-      const up = path.project(ux0, uz0);
-      if (up.d < 0.8 || up.d > 22) continue;
-      mine.push({ b, i, roofCol: b.look.roof, cx: ux0 - fnx * depth / 2, cz: uz0 - fnz * depth / 2, nx: fnx, nz: fnz, w: uw, d: depth, h: b.h, roof: b.roof, year: b.year, tower, wall, s: up.s, gap: up.d, side: up.v < 0 ? -1 : 1 });
-    }
-    if (mine.length >= Math.max(1, n * 0.6)) { b.units = mine; units.push(...mine); }
   }
-  // fronts hidden behind a nearer building stay plain
-  units.sort((a, b) => a.gap - b.gap);
-  const heroes = [];
-  const dropped = new Set();
-  for (const u of units) {
-    if (dropped.has(u.b)) continue;
-    const hidden = heroes.some((h) => h.b !== u.b && h.side === u.side && Math.abs(h.s - u.s) < (h.w + u.w) * 0.3 && h.gap < u.gap - 1.5);
-    if (hidden) { dropped.add(u.b); continue; }
-    heroes.push(u);
-  }
-  for (const b of bld) if (b.units && !dropped.has(b)) b.hero = true;
-  const heroUnits = heroes.filter((u) => !dropped.has(u.b));
 
   // how much room is there really between the fronts? scan outwards from the centre line
   const bgrid = new Grid(R.x0, R.z0, Math.ceil((R.x1 - R.x0) / 1), Math.ceil((R.z1 - R.z0) / 1), 1);
@@ -1180,25 +1239,6 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   // the road as it is painted for everyone (see paintBase): its width, and whether it carries cycle lanes
   const own = roads.filter((r) => r.name === st.name && r.cls <= 9 && !(r.flags & 4)), widths = own.map((r) => r.w).sort((a, b) => a - b);
   const L = crossSection(st, clearB, clearF, night, own.length ? { w: widths[widths.length >> 1], bike: own.filter((r) => r.flags & 8).length * 2 > own.length } : null);
-
-  // shops: real points of interest claim the nearest street-facing front
-  for (const p of pois) {
-    if (!POI_SHOP[p.kind]) continue;
-    let best = null, bd = 16;
-    for (const u of heroUnits) { if (u.shop || u.tower) continue; const d = Math.hypot(u.cx - p.x, u.cz - p.z) - u.d / 2; if (d < bd) { bd = d; best = u; } }
-    if (best) { const list = POI_SHOP[p.kind]; best.shop = list[Math.floor(best.b.look.rnd() * list.length) % list.length]; }
-  }
-  // cash machines: on the bank if there is one, otherwise on a wall every so often
-  {
-    const back = heroUnits.filter((u) => u.side < 0 && !u.tower).sort((a, b) => a.s - b.s);
-    for (const u of back) if (u.shop === 'BANK') u.atm = true;
-    let last = -1e9;
-    for (const u of back) {
-      if (u.atm) { last = u.s; continue; }
-      if (u.shop || u.w < 4.4 || u.s - last < 110 || back.some((o) => o.atm && Math.abs(o.s - u.s) < 110)) continue;
-      u.atm = true; last = u.s;
-    }
-  }
 
   // ---- the ground comes from the tiles, painted the same way for every street. The tiles along this street are
   // built now, at the finest level, because the street's furniture and walking lines are fitted to the painted ground
@@ -1258,8 +1298,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     };
     for (const b of bld) {
       if (b.dist > 90) continue;
-      if (b.hero) for (const u of b.units) add(u.cx, u.cz, Math.atan2(u.nx, u.nz), 0, 0, u.w, u.d, u.h + 2);
-      else for (const r of b.rects) add(b.o.cx, b.o.cz, Math.atan2(-b.o.uz, b.o.ux), r.x, r.z, r.w, r.d, b.h + 1);
+      for (const r of b.rects) add(b.o.cx, b.o.cz, Math.atan2(-b.o.uz, b.o.ux), r.x, r.z, r.w, r.d, b.h + 1);
     }
     boxes.sort((p, q) => p[0] - q[0]);
     for (const [top, q] of boxes) solid.fill([q], Math.min(250, Math.max(1, Math.round((top - solid.y0) * 2))));
@@ -1270,33 +1309,52 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   const group = new THREE.Group();
   const disposables = [];
 
-  // buildings, merged into chunks
-  const chunks = new Map(), CH = 110;
-  const chunkOf = (x, z) => {
-    const k = Math.floor(x / CH) + ',' + Math.floor(z / CH);
-    let c = chunks.get(k);
-    if (!c) chunks.set(k, (c = { v: new Vox(rnd.int(1, 9999), true), gl: new Vox(rnd.int(1, 9999), true) }));
-    return c;
-  };
-  const heroInfo = [], signs = [];
-  for (const b of bld) {
-    if (b.ext) continue;
-    if (b.hero) {
-      for (const u of b.units) {
-        const c = chunkOf(u.cx, u.cz), hi = drawHero(c.v, c.gl, u, makeRng(hashStr('u|' + b.key + '|' + b.bi + '|' + u.i)), night);
-        const gy = landY(u.cx, u.cz);
-        heroInfo.push(hi);
-        if (hi.chimney) hi.chimney.y += gy;
-        if (hi.sign) { hi.sign.position.y += gy; group.add(hi.sign); signs.push({ m: hi.sign, x: u.cx, z: u.cz }); }
+  // ---- house fronts along this street: the tiles draw them (the same for every street), here we only work out where
+  // their doors, windows and signs are, for the people who will ring, climb and loiter there
+  const heroInfo = [];
+  const props = [];
+  {
+    const cand = [];
+    for (const [key, t] of tiles) {
+      if (!t) continue;
+      const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
+      const pt = (x, z) => f.S(ox + x, oy + TILE - z);
+      const o0 = pt(0, 0), ex = pt(1, 0), ez = pt(0, 1); // the tile's east and south, in this street's frame
+      const dir = (dx, dz) => [dx * (ex[0] - o0[0]) + dz * (ez[0] - o0[0]), dx * (ex[1] - o0[1]) + dz * (ez[1] - o0[1])];
+      for (const u of frontsOf(key, t).units) {
+        const c = pt(u.cx, u.cz), n = dir(u.nx, u.nz), fx = c[0] + (n[0] * u.d) / 2, fz = c[1] + (n[1] * u.d) / 2;
+        const pr = path.project(fx, fz);
+        if (pr.d > 24 || pr.d < 0.8 || pr.s < path.sA - 8 || pr.s > path.sB + 8) continue;
+        const tg = path.at(pr.s), q = path.xz(pr.s, 0);
+        // it has to look at this street, not at the one round the corner
+        if (Math.abs(n[0] * tg.tx + n[1] * tg.tz) > 0.6 || n[0] * (q[0] - fx) + n[1] * (q[1] - fz) < 0) continue;
+        cand.push({ ...u, cx: c[0], cz: c[1], nx: n[0], nz: n[1], s: pr.s, gap: pr.d, side: pr.v < 0 ? -1 : 1 });
       }
-    } else { const c = chunkOf(b.o.cx, b.o.cz); drawGeneric(c.v, c.gl, b, b.look, night); }
-  }
-  // the shader lifts buildings onto the terrain, so their chunks are a little bigger than their geometry says
-  const roomy = (m) => { m.geometry.computeBoundingSphere(); m.geometry.boundingSphere.radius += 45; return m; };
-  for (const c of chunks.values()) {
-    c.v.setT(); c.gl.setT();
-    if (!c.v.empty) { const m = roomy(c.v.mesh(CUT.solid)); m.customDepthMaterial = CUT.depth; group.add(m); }
-    if (!c.gl.empty) { const m = roomy(new THREE.Mesh(c.gl.geometry(), CUT.glow)); group.add(m); }
+      // street furniture stands in the tiles too: list what is near this street, in this street's coordinates
+      const built = _built.get(key);
+      if (built && built.props) for (const q of built.props) {
+        const c = pt(q.x, q.z);
+        if (!inR(c[0], c[1])) continue;
+        const a = dir(q.ax, q.az), n = dir(q.nx, q.nz);
+        props.push({ ...q, x: c[0], z: c[1], ax: a[0], az: a[1], nx: n[0], nz: n[1] });
+      }
+    }
+    // fronts hidden behind a nearer building are not this street's
+    cand.sort((a, b) => a.gap - b.gap);
+    const kept = [], dropped = new Set();
+    for (const u of cand) {
+      const id = u.key + '#' + u.bi;
+      if (dropped.has(id)) continue;
+      if (kept.some((h) => (h.key !== u.key || h.bi !== u.bi) && h.side === u.side && Math.abs(h.s - u.s) < (h.w + u.w) * 0.3 && h.gap < u.gap - 1.5)) { dropped.add(id); continue; }
+      kept.push(u);
+    }
+    for (const u of kept) {
+      if (dropped.has(u.key + '#' + u.bi)) continue;
+      let hi;
+      try { hi = frontInfo(u, night); } catch (err) { console.error('front failed', u.key, u.bi, err); continue; }
+      if (hi.chimney) hi.chimney.y += landY(u.cx, u.cz);
+      heroInfo.push(hi);
+    }
   }
   await breathe();
 
@@ -1307,7 +1365,11 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
 
   const W = {
     group, path, clsAt, corridor, solid, frame: f, region: R, clip, L, st, rnd, night, lite, hAt, landY,
-    heroes: heroInfo, signs, pois, roads, rails, tramLines, sideRoads, builtAt, city, inClip: inC, classAt,
+    heroes: heroInfo, props, pois, roads, rails, tramLines, sideRoads, builtAt, city, inClip: inC, classAt,
+    /** Shop signs of the detailed fronts on screen: [{ m, x, z }] in scene coordinates. */
+    get signs() { return W.stream ? W.stream.signs() : []; },
+    /** Is a tree trunk within r metres of this scene position? */
+    treeNear: (x, z, r = 1.2) => { const m = f.M(x, z); return treeNearMap(m[0], m[1], r); },
     anchors: { houses: [], shops: [], racks: [], benches: [], bins: [], parked: [], lamps: [], stalls: [], chimneys: [], atms: [], boxes: [] },
     northAz: Math.atan2(-f.dy, f.dx),
     toScene: (lon, lat) => f.S((lon - ix.proj.lon0) * ix.proj.kx, (lat - ix.proj.lat0) * ix.proj.ky),
@@ -1321,7 +1383,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   /** Put this world on screen: point the shared shaders and the whole-city model at its frame, start streaming tiles. */
   W.activate = () => {
     frameTerrain(city, f);
-    U.uClip.value.set(clip.x0, clip.z0, clip.x1, clip.z1);
+    U.uClip.value.set(1e9, 1e9, -1e9, -1e9); // nothing is the street's own any more: the tiles draw every building
     U.uNear.value = lite ? 520 : 1300;
     U.uFar.value = lite ? 5200 : 1e9;
     U.uNight.value = night ? 1 : 0;
@@ -1330,7 +1392,14 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     W.stream = new Streamer(W, city);
   };
   /** Per frame: draw the right amount of city for where the camera is. */
-  W.lod = (x, z, dist, live, az) => { W.back.userData.lod(x, z); if (live) W.stream.update(x, z, dist, az); };
+  // (while the camera drops in or rises out, only the place it is heading for is kept up, house fronts included)
+  // phase: 'drop' while the camera comes down (the place it is heading for is made ready, house fronts included),
+  // 'leave' while it rises out (nothing new is built for a view that is about to close)
+  W.lod = (x, z, dist, live, az, phase = '') => {
+    W.back.userData.lod(x, z);
+    if (live) W.stream.update(x, z, dist, az);
+    else if (phase === 'drop') W.stream.update(x, z, Math.min(dist, 500), az, true);
+  };
   W.ms = { fetch: Math.round(t1 - t0), build: Math.round(performance.now() - t1) };
   W.dispose = () => {
     if (W.stream) W.stream.dispose();
@@ -1368,6 +1437,15 @@ export const tileOf = (key) => _built.get(key) || null;
 /** Let go of all but the `keep` most recently used tiles (called when the street view closes: the map page needs the memory). */
 export function trimTiles(keep) {
   for (const key of [..._built.keys()]) { if (_built.size <= keep) break; dropTile(key); }
+  // the tiles that stay give up their detailed house fronts: those are heavy, and are rebuilt in a moment when needed
+  for (const c of _built.values()) if (c.cells) for (const cell of c.cells) { cell.job = null; if (cell.detail) plainCell(c, cell); }
+}
+/** Swap a cell's detailed fronts back for its plain blocks. */
+function plainCell(c, cell) {
+  for (const m of cell.detail.meshes) { c.g.remove(m); m.geometry.dispose(); }
+  for (const sg of cell.detail.signs) { c.g.remove(sg.m); sg.m.geometry.dispose(); sg.m.material.dispose(); }
+  for (const m of cell.plain) m.visible = true;
+  cell.detail = null;
 }
 /** Height of the surface at a point in map metres, away from any street's detailed area. */
 function surfaceAt(city, mx, my) {
@@ -1406,6 +1484,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   // that stand between buildings (walls, masts, fountains) go into a mesh of their own: they are never handed over to a
   // street's detailed area, so they look the same whether or not their street is open
   const vx = new Vox(rnd.int(1, 9999), true), glx = new Vox(rnd.int(1, 9999), true);
+  const F = lod === 0 ? frontsOf(key, t) : null, cellVox = F ? new Map() : null;
   (t.b || []).forEach((e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
@@ -1426,6 +1505,14 @@ function buildTile(city, key, t, night, lite, lod = 1) {
       if (done) return;
       vx.n = n0; glx.n = g0; // it declined: a plain block after all (drawn here too, so it never changes with the focus)
       drawGeneric(vx, glx, b, look, night, lod === 2);
+      return;
+    }
+    // buildings with a street front go into a mesh per 64 m cell: near the camera that cell swaps to the detailed fronts
+    if (cellVox && F.byB.has(bi)) {
+      const ci = cellOf(b.o.cx, b.o.cz);
+      let cv = cellVox.get(ci);
+      if (!cv) cellVox.set(ci, (cv = { v: new Vox(rnd.int(1, 9999), true), gl: new Vox(rnd.int(1, 9999), true) }));
+      drawGeneric(cv.v, cv.gl, b, look, night, false);
       return;
     }
     drawGeneric(v, gl, b, look, night, lod === 2);
@@ -1485,8 +1572,31 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   };
   const trees = treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
   if (trees) g.add(trees);
+  // street furniture: every street has it, placed by the same rules from the tile's own data (see furnish.js)
+  let props = null;
+  if (lod === 0) {
+    const fv = new Vox(rnd.int(1, 9999)), fgl = new Vox(rnd.int(1, 9999)), fg = new THREE.Group();
+    try {
+      props = furnishTile({ key, grid, C, roads, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite }).props || [];
+      fv.setT(); fgl.setT();
+      if (!fv.empty) g.add(fv.mesh());
+      if (!fgl.empty) g.add(fgl.mesh(MAT.glow));
+      if (fg.children.length) g.add(fg);
+    } catch (err) { props = []; console.error('furniture failed', key, err); }
+  }
+  // the cells of buildings with street fronts: their plain version now, the detailed one on demand
+  const cells = [];
+  if (cellVox) for (const [ci, cv] of cellVox) {
+    cv.v.setT(); cv.gl.setT();
+    const plain = [], ccx = ((ci % CELLS) + 0.5) * CELL, ccz = (Math.floor(ci / CELLS) + 0.5) * CELL;
+    // a cell is small: give it its own bounding sphere, so cells out of view cost nothing
+    const snug = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(ccx, 25, ccz), 95); return m; };
+    if (!cv.v.empty) { const m = snug(cv.v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add(m); plain.push(m); }
+    if (!cv.gl.empty) { const m = snug(new THREE.Mesh(cv.gl.geometry(), CUTT.glow)); g.add(m); plain.push(m); }
+    cells.push({ ci, cx: ccx, cz: ccz, plain, units: F.units.filter((u) => u.ci === ci), detail: null, job: null });
+  }
   return {
-    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [],
+    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night,
     dispose() {
       g.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
@@ -1554,19 +1664,21 @@ class Streamer {
     placeTile(c, this.W.frame);
     this.group.add(c.g);
     this._mask(key, 255);
+    this._signs = null;
     if (this.onTile) this.onTile(c, true);
   }
   _detach(key) {
     const c = this.live.get(key);
     this.live.delete(key);
+    this._signs = null;
     if (c) { this.group.remove(c.g); this._mask(key, 0); if (this.onTile) this.onTile(c, false); }
   }
   /** x, z: what the camera looks at; dist: how far away it is; az: the side it stands on. */
-  update(x, z, dist, az = 0) {
+  update(x, z, dist, az = 0, warm = false) {
     if (this.dead) return;
     const f = this.W.frame, ix = this.city.ix, now = performance.now();
     // three rings: the finest ground under a low camera, full tiles around it, plain far tiles out to the edge of the view
-    const r1 = clamp(dist * 0.9 + 320, 440, this.rmax), r0 = dist < 700 ? 280 : -1e9, r2 = Math.max(r1, Math.min(dist * 0.62 + 260, this.far));
+    const r1 = clamp(dist * 0.9 + 320, 440, this.rmax), r0 = dist < 700 || warm ? 280 : -1e9, r2 = Math.max(r1, Math.min(dist * 0.62 + 260, this.far));
     // the camera looks across what it is aimed at: there is more to see beyond the target than in front of it
     const lead = Math.min(r1 * 0.3, dist * 0.8), m = f.M(x - Math.sin(az) * lead, z - Math.cos(az) * lead), cx = Math.floor(m[0] / TILE), cy = Math.floor(m[1] / TILE);
     const sig = cx + ',' + cy + ',' + Math.round(r2 / 60) + ',' + Math.round(r1 / 40) + ',' + (r0 > 0) + ',' + Math.round(m[0] / 64) + ',' + Math.round(m[1] / 64);
@@ -1626,6 +1738,7 @@ class Streamer {
       this.last = performance.now();
       this.ms = this.last - now;
     }
+    { const tm = f.M(x, z); this._detail(tm[0], tm[1], warm ? Math.min(dist, 140) : dist); }
     // too much in memory: let go of the farthest tiles that are not wanted right now
     let load = 0;
     for (const c of _built.values()) load += WEIGHT[c.lod];
@@ -1638,6 +1751,71 @@ class Streamer {
       }
       if (worst) { this._detach(worst); dropTile(worst); }
     }
+  }
+  /**
+   * Detailed house fronts for the cells near what the camera looks at, whichever street they are on. One cell at a
+   * time, a few fronts per frame; a cell swaps from plain to detailed when it is complete and back when the camera
+   * has moved on.
+   */
+  _detail(mx, my, dist) {
+    const lite = this.W.lite, R = lite ? 45 : 70, lim = lite ? 170 : 270;
+    // on below the limit, off only well above it: a camera hovering at the limit must not rebuild fronts all the time
+    const on = (this._detOn = this._detOn ? dist < lim + 60 : dist < lim);
+    let best = null, bd = Infinity;
+    for (const c of this.live.values()) {
+      if (c.lod !== 0 || !c.cells) continue;
+      for (const cell of c.cells) {
+        const d = Math.hypot(c.ox + cell.cx - mx, c.oy + TILE - cell.cz - my);
+        if (!on || d > R + 45) {
+          cell.job = null;
+          if (cell.detail && (!on || d > R + 80)) this._plain(c, cell);
+          continue;
+        }
+        if (!cell.detail && cell.units.length && d < bd) { bd = d; best = [c, cell]; }
+      }
+    }
+    if (!best) return;
+    const [c, cell] = best, t0 = performance.now(), city = this.city;
+    const job = (cell.job ||= { v: new Vox(1 + cell.ci, true), gl: new Vox(7 + cell.ci, true), i: 0, signs: [] });
+    while (job.i < cell.units.length && performance.now() - t0 < 5) {
+      const u = cell.units[job.i++];
+      let hi;
+      try { hi = drawHero(job.v, job.gl, u, unitRng(u), c.night); } catch (err) { console.error('front failed', u.key, u.bi, err); continue; }
+      if (hi.sign) { hi.sign.position.y += city.landAt(c.ox + u.cx, c.oy + TILE - u.cz); job.signs.push({ m: hi.sign, x: u.cx, z: u.cz }); }
+      if (u.backs) {
+        const k = u.backs, v = job.v;
+        v.setT(k.th, k.cx, k.cz); v.setB(k.cx, k.cz, k.h + 2, k.rad);
+        for (const r of k.list) {
+          v.setW(k.h > 3.4 ? 1 : 0); v.box(r.x, 0, r.z, r.w, k.h, r.d, k.wall, 0.035); v.setW(0);
+          v.box(r.x, k.h, r.z, r.w + 0.15, 0.3, r.d + 0.15, '#efe9dc');
+          if (Math.min(r.w, r.d) > 2) v.box(r.x, k.h + 0.3, r.z, r.w - 0.5, 0.08, r.d - 0.5, '#4a4e57');
+        }
+      }
+    }
+    if (job.i < cell.units.length) return;
+    job.v.setT(); job.gl.setT(); job.v.setB(); job.gl.setB();
+    const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(cell.cx, 20, cell.cz), 90); return m; };
+    const meshes = [];
+    if (!job.v.empty) { const m = roomy(job.v.mesh(CUT.solid)); m.customDepthMaterial = CUT.depth; meshes.push(m); }
+    if (!job.gl.empty) meshes.push(roomy(new THREE.Mesh(job.gl.geometry(), CUT.glow)));
+    for (const m of meshes) c.g.add(m);
+    for (const sg of job.signs) c.g.add(sg.m);
+    for (const m of cell.plain) m.visible = false;
+    cell.detail = { meshes, signs: job.signs };
+    cell.job = null;
+    this._signs = null;
+  }
+  _plain(c, cell) { plainCell(c, cell); this._signs = null; }
+  /** The shop signs of the detailed fronts on screen, in scene coordinates. */
+  signs() {
+    if (this._signs && this._signsFrame === this.W.frame) return this._signs;
+    const out = [], v = new THREE.Vector3();
+    for (const c of this.live.values()) {
+      if (!c.cells) continue;
+      for (const cell of c.cells) if (cell.detail) for (const sg of cell.detail.signs) { v.set(sg.x, 0, sg.z).applyMatrix4(c.g.matrixWorld); out.push({ m: sg.m, x: v.x, z: v.z }); }
+    }
+    this._signs = out; this._signsFrame = this.W.frame;
+    return out;
   }
   /** Leave the scene. The tiles themselves stay in memory for the next street. */
   dispose() {

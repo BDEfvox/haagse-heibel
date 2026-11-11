@@ -1,9 +1,7 @@
 // The street's cross-section (lanes, pavements, walking lines), its furniture, and the per-spot
 // layouts the gag scripts play on. Everything here is in street coords: s along the street, v across it
 // (negative v = the far side from the camera, where the house fronts are).
-import * as THREE from 'three';
-import { Vox, MAT, clamp } from './kit.js';
-import * as P from './props.js';
+import { clamp } from './kit.js';
 
 /** Lanes and pavements for this street, squeezed to fit between the real building fronts. */
 export function crossSection(st, clearB, clearF, night, road = null) {
@@ -42,28 +40,12 @@ export function crossSection(st, clearB, clearF, night, road = null) {
   return L;
 }
 
-const STALLS = { HARING: ['#21468b', '#ffffff'], FRIET: ['#e63946', '#ffd166'], BLOEM: ['#ff70a6', '#ffffff'] };
-
 /** Street furniture at believable spots along the real street, and the anchors the gags use. */
 export function dress(W) {
-  const { path, L, st, rnd, night, group, C } = W, G = { get: W.clsAt };
+  const { path, L, C } = W, G = { get: W.clsAt };
   const A = W.anchors, hb = L.hw + L.bw;
-  const v = new Vox(rnd.int(1, 9999)), gl = new Vox(rnd.int(1, 9999));
-  const fr = {};
-  /** Point the builders at a spot on the street: local x runs along it, local z across it. */
-  const at = (s, off, flip = false) => {
-    path.at(s, fr);
-    const X = fr.x - fr.tz * off, Z = fr.z + fr.tx * off, th = Math.atan2(-fr.tz, fr.tx) + (flip ? Math.PI : 0);
-    const y = W.hAt(X, Z);
-    v.setT(th, X, Z, y); gl.setT(th, X, Z, y);
-    return { X, Z, th, y };
-  };
-  const holder = (f) => { const g = new THREE.Group(); g.position.set(f.X, f.y, f.Z); g.rotation.y = f.th; group.add(g); return g; };
-  const okT = new Uint8Array(256);
-  for (const c of [C.WALK, C.LAND, C.PLAZA, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.PARKING, C.CURB, C.FOOT, C.DIRT, C.PED]) okT[c] = 1;
   const cls = (s, off) => { const p = path.xz(s, off); return G.get(p[0], p[1]); };
-  const free = (s, off) => okT[cls(s, off)] === 1;
-  const sA = path.sA, sB = path.sB, len = sB - sA;
+  const sA = path.sA, sB = path.sB;
 
   // ---- where the pavement really is: scanned from the painted ground every 2 m, on both sides, along the whole path
   // (also round the corner at both ends, where the street's own cross-section is not drawn)
@@ -128,156 +110,40 @@ export function dress(W) {
   }
   A.houses.sort((a, b) => a.s - b.s);
   A.houses.forEach((h, i) => { h.idx = i; });
-  const doorNear = (s, r) => A.houses.some((h) => Math.abs(h.door.s - s) < r);
-  const houseAt = (s) => A.houses.find((h) => Math.abs(h.s - s) < h.w / 2);
 
   // (lamp posts and parked cars are the city's: see crowd.js. The stage lists the ones along this street in A.lamps and A.parked.)
-  const zCurbB = -(hb + 0.45), zCurbF = hb + 0.5;
 
-  // ---- block by block: racks, benches, bins, a transformer box, a stall, the name sign
-  const busy = ((st.shops || 0) + (st.food || 0) + (st.bars || 0)) / Math.max(0.6, len / 100);
-  let block = 0;
-  for (let b0 = sA; b0 < sB; b0 += 48, block++) {
-    const b1 = Math.min(sB, b0 + 48);
-    if (b1 - b0 < 10) break;
-    const pickS = (pad = 3) => rnd.range(b0 + pad, Math.max(b0 + pad + 0.1, b1 - pad));
-    // bike rack against a house front (or the back of the pavement)
-    for (let k = 0; k < (W.builtAt((b0 + b1) / 2, -1) ? 2 : block % 3 === 0 ? 1 : 0); k++) {
-      let s = pickS(), off = L.zH + 0.7;
-      const h = houseAt(s);
-      if (h) { if (h.shop || h.w < 4) continue; s = h.s + (h.door.s > h.s ? -1 : 1) * Math.min(h.w / 2 - 1.3, 1.7); off = h.z + 0.7; }
-      if (doorNear(s, 1.4) || A.racks.some((r) => Math.abs(r.s - s) < 5) || !free(s, off) || !free(s, off + 1)) continue;
-      at(s, off);
-      P.bikeRack(v, 0, 0, rnd, 4, 0);
-      A.racks.push({ s, z: off + 1.7 });
+  // ---- furniture is part of the map tiles (furnish.js); here we only look up what stands along this street and hand the
+  // cutscene scripts their anchors. Racks and benches count on the far side (v < 0), bins, boxes and stalls on the camera side.
+  const fr = {};
+  const last = { rack: -1e9, bench: -1e9, bin: -1e9, box: -1e9, stall: -1e9 };
+  const gap = { rack: 5, bench: 6, bin: 3, box: 8, stall: 30 };
+  const list = (W.props || []).map((p) => ({ p, pr: path.project(p.x, p.z) })).sort((a, b) => a.pr.s - b.pr.s);
+  for (const { p, pr } of list) {
+    if (!(p.kind in last) || pr.s < sA + 2 || pr.s > sB - 2 || pr.d > 20) continue; // (the facing test below keeps a parallel street's things out)
+    path.at(pr.s, fr);
+    if (Math.abs(p.ax * fr.tx + p.az * fr.tz) <= 0.85) continue; // another street
+    if (pr.d > 1) { // the prop must face this street's centre line, not a parallel street's
+      const q = path.xz(pr.s, 0);
+      if (((q[0] - p.x) * p.nx + (q[1] - p.z) * p.nz) / pr.d < 0.6) continue;
     }
-    // benches, backs to the houses, facing the street
-    for (let k = 0; k < (W.builtAt((b0 + b1) / 2, -1) ? 2 : block % 2); k++) {
-      for (let t = 0; t < 8; t++) {
-        const s = pickS(4), h = houseAt(s), off = (h ? h.z : L.zH) + 0.45;
-        if (off > -hb - 0.7) continue;
-        if (doorNear(s, 1.7) || A.racks.some((r) => Math.abs(r.s - s) < 2.6) || A.benches.some((r) => Math.abs(r.s - s) < 6) || A.atms.some((r) => Math.abs(r.s - s) < 2.2) || !free(s, off)) continue;
-        at(s, off);
-        P.bench(v, 0, 0, 0);
-        A.benches.push({ s, z: off });
-        break;
-      }
-    }
-    for (let k = 0; k < 3; k++) {
-      const s = b0 + ((k + 0.5) * (b1 - b0)) / 3 + rnd.range(-4, 4), off = zCurbF + 0.1;
-      if (!free(s, off) || L.zebras.some((z) => Math.abs(z - s) < 2.5)) continue;
-      at(s, off);
-      P.bin(v, 0, 0, 0);
-      A.bins.push({ s, z: off });
-    }
-    if (block % 2 === 0) { const s = pickS(), off = zCurbB + 0.1; if (free(s, off)) { at(s, off); P.mailbox(v, 0, 0, 0); } }
-    // transformer box (graffiti magnet) on the camera-side pavement
-    if (L.swF >= 2 && (block % 2 === 0 || len < 60)) {
-      for (let t = 0; t < 6; t++) {
-        const s = pickS(5), off = hb + Math.min(0.5, L.swF - 1.5);
-        if (!free(s - 1, off) || !free(s + 1, off) || !free(s, off + 1) || A.bins.some((r) => Math.abs(r.s - s) < 2) || L.zebras.some((z) => Math.abs(z - s) < 3)) continue;
-        at(s, off);
-        v.box(0, 0, 0, 2.0, 1.5, 0.7, '#7f9a8a');
-        v.box(0, 1.5, 0, 2.1, 0.1, 0.8, '#647a6d');
-        v.box(0.5, 0.2, -0.36, 0.7, 1.1, 0.03, '#6c8576');
-        A.boxes.push({ s, z: off + 0.35, y: 0, w: 2.0, h: 1.5 });
-        break;
-      }
-    }
-    // a herring / chips / flower stall where there is room on the camera side
-    if (L.kind === 'ped' || busy > 1.4 || st.beach || rnd.chance(0.3)) {
-      for (let t = 0; t < 6; t++) {
-        const s = pickS(6), off = L.kind === 'ped' ? hb + L.swF - 1.1 : L.s0 + 1.7;
-        const c0 = cls(s, off);
-        if (!okT[c0] || !free(s - 1.4, off) || !free(s + 1.4, off) || !free(s, off + 0.9) || A.stalls.some((r) => Math.abs(r.s - s) < 30)) continue;
-        const f = at(s, off), g = holder(f), lab = st.beach || c0 === C.SAND ? 'HARING' : rnd.pick(['HARING', 'FRIET', 'BLOEM']);
-        P.stall(g, v, 0, 0, lab, STALLS[lab], 0, -1);
-        A.stalls.push({ s, z: off - 1.3, label: lab });
-        break;
-      }
-    }
-    // the real street name, on a real Dutch blue sign
-    if (block % 3 === 0) {
-      for (let t = 0; t < 5; t++) {
-        const s = b0 + 2.6 + t * 3, off = L.s0 - 0.25;
-        if (!free(s, off)) continue;
-        const f = at(s, off), g = holder(f);
-        P.streetSign(g, v, 0, 0, (st.name || 'STRAAT').toUpperCase().slice(0, 26), 0);
-        break;
-      }
-    }
+    const far = pr.v < 0;
+    if (far !== (p.kind === 'rack' || p.kind === 'bench')) continue;
+    if (pr.s - last[p.kind] < gap[p.kind]) continue;
+    last[p.kind] = pr.s;
+    if (p.kind === 'rack') A.racks.push({ s: pr.s, z: pr.v + 1.7 });
+    else if (p.kind === 'bench') A.benches.push({ s: pr.s, z: pr.v });
+    else if (p.kind === 'bin') A.bins.push({ s: pr.s, z: pr.v });
+    else if (p.kind === 'box') A.boxes.push({ s: pr.s, z: pr.v + 0.35, y: 0, w: p.w || 2.0, h: p.h || 1.5 });
+    else A.stalls.push({ s: pr.s, z: pr.v - 1.3, label: p.label });
   }
 
-  // ---- side streets get their real names on the corner
+  // ---- sand along the street makes it a beach street
   {
-    const seen = new Set([st.name]);
-    let count = 0;
-    for (const r of W.roads) {
-      if (count >= 16) break;
-      if (!r.name || r.cls > 8 || seen.has(r.name)) continue;
-      const a = r.a, n = a.length >> 1;
-      for (let i = 0; i < n; i++) {
-        const pr = path.project(a[i * 2], a[i * 2 + 1]);
-        if (pr.d > 5 || pr.s < sA + 2 || pr.s > sB - 2) continue;
-        // which way does it leave? look at its far end
-        const j = i < n / 2 ? n - 1 : 0, far = path.project(a[j * 2], a[j * 2 + 1]);
-        const side = far.v < 0 ? -1 : 1, off = side * (hb + 0.95);
-        for (const ds of [r.w / 2 + 1.5, -(r.w / 2 + 1.5)]) {
-          const s2 = pr.s + ds;
-          if (s2 < sA + 1 || s2 > sB - 1 || !free(s2, off)) continue;
-          const f = at(s2, off), g = holder(f);
-          P.streetSign(g, v, 0, 0, r.name.toUpperCase().slice(0, 24), 0);
-          count++;
-          break;
-        }
-        seen.add(r.name);
-        break;
-      }
-    }
+    let sand = 0, n = 0;
+    for (let s = sA; s <= sB; s += 6) for (const off of [-10, -20, 10, 20]) { const q = path.xz(s, off); n++; if (G.get(q[0], q[1]) === C.SAND) sand++; }
+    if (n && sand / n > 0.2) L.beach = true;
   }
-
-  // ---- stops and terraces from real points of interest
-  const stops = [];
-  for (const p of W.pois) {
-    const pr = path.project(p.x, p.z);
-    if (pr.s < sA + 3 || pr.s > sB - 3) continue;
-    if (p.kind === 9 && pr.d < 16 && !stops.some((q) => Math.abs(q - pr.s) < 30)) {
-      const back = pr.v < 0, off = back ? -(hb + Math.min(L.swB - 0.3, 1.9)) : hb + Math.min(L.swF - 0.3, 1.9);
-      if (!free(pr.s, off) || doorNear(pr.s, 2)) continue;
-      at(pr.s, off, !back);
-      P.tramStop(v, gl, 0, 0, night, 0);
-      stops.push(pr.s);
-    }
-  }
-  for (const h of A.houses) {
-    if (!h.shop || !['CAFE', 'KROEG', 'BAR', 'BIER', 'PIZZA', 'SUSHI', 'ROTI'].includes(h.shop) || h.z > -hb - 3.2) continue;
-    for (const dx of [-1.3, 1.3]) {
-      const s = h.s + dx, off = h.z + 1.9;
-      if (Math.abs(h.door.s - s) < 1.1 || !free(s, off) || A.benches.some((r) => Math.abs(r.s - s) < 1.5) || A.racks.some((r) => Math.abs(r.s - s) < 1.8)) continue;
-      at(s, off);
-      P.terrace(v, 0, 0, rnd, 0);
-    }
-  }
-
-  // ---- beach life on any sand near the street
-  v.setT(); gl.setT();
-  let par = 0;
-  for (let t = 0; t < 400 && par < 34; t++) {
-    const s = rnd.range(sA, sB), off = rnd.range(-70, 70), p = path.xz(s, off);
-    if (G.get(p[0], p[1]) !== C.SAND || G.get(p[0] + 2, p[1]) !== C.SAND || G.get(p[0] - 2, p[1] + 2) !== C.SAND) continue;
-    const c = rnd.pick(['#e63946', '#ffb703', '#3a86ff', '#ff70a6', '#06d6a0']), [x, z] = p;
-    v.setT(0, 0, 0, W.hAt(x, z));
-    v.box(x, 0, z, 0.08, 2.0, 0.08, '#eee');
-    for (let k = 0; k < 4; k++) v.box(x - 0.9 + k * 0.6, 2.0, z, 0.6, 0.12, 2.2, k % 2 ? c : '#ffffff');
-    v.box(x, 2.12, z, 1.2, 0.12, 1.2, c);
-    v.box(x + 1.3, 0, z, 0.8, 0.3, 0.9, '#f1faee'); v.box(x + 1.3, 0.3, z - 0.35, 0.8, 0.8, 0.2, c);
-    v.box(x - 1.2, 0, z + 0.3, 1.5, 0.05, 0.8, rnd.pick(['#ff70a6', '#8ecae6', '#ffd166']));
-    par++;
-  }
-  if (par > 4) L.beach = true;
-
-  if (!v.empty) group.add(v.mesh());
-  if (!gl.empty) group.add(gl.mesh(MAT.glow));
 }
 
 /** The layout a gag sees at one spot: the cross-section plus the anchors within 24 m, with x measured from the spot. */

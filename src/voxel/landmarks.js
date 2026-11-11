@@ -16,7 +16,7 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const hexOf = (n, fb) => (n >= 0 ? '#' + (n & 0xffffff).toString(16).padStart(6, '0') : fb);
 const HALF = Math.PI / 2;
 
-const BRICKS = ['#9c4a37', '#a85a3f', '#8a4a3a', '#b0654a', '#7d4538'];
+const BRICKS = ['#8f5546', '#9a6350', '#80524a', '#a47058', '#74504a'];
 const STONE = '#d9d2c3', CONC = '#a9a59c', SLATE = '#4f545c', GLASS = '#9fd0e6', DARK = '#1f2328';
 const BRIGHT = ['#e63946', '#ffb703', '#3a86ff', '#2a9d8f', '#f4a261', '#8338ec', '#fb5607'];
 const NL = ['#ae1c28', '#ffffff', '#21468b']; // Dutch flag
@@ -235,7 +235,7 @@ function chimneyShape(v, H) {
   for (let i = 0; i < n; i++) {
     const s = d0 * (1 - 0.45 * i / (n - 1));
     const band = i >= n - 4;
-    v.box(0, i * sh, 0, s, sh, s, band ? (i % 2 ? '#ffffff' : '#e63946') : '#a8472f', 0.04);
+    v.box(0, i * sh, 0, s, sh, s, band ? (i % 2 ? '#ffffff' : '#e63946') : '#8f5a4a', 0.04);
   }
   const s = d0 * 0.55;
   v.box(0, H, 0, s * 1.15, 0.35, s * 1.15, '#3b3f45');
@@ -340,7 +340,7 @@ function fuelKiosk(c) {
 }
 function station(c) {
   const { v, gl, rnd, L, D, main, night } = c;
-  const hw = clamp(c.h, 6, 12), wall = rnd.pick(['#b5523b', '#c98b5e', '#d9d2c3']);
+  const hw = clamp(c.h, 6, 12), wall = rnd.pick(['#9a6452', '#c98b5e', '#d9d2c3']);
   body(c, hw, wall, 1);
   const rise = clamp(main.d * 0.28, 2, 6);
   arch(v, main.x, hw, main.z, main.w, main.d, rise, 5, '#6f8896');
@@ -356,7 +356,7 @@ function station(c) {
 function school(c) {
   const { v, rnd, L, main } = c;
   if (c.area < 200) return false;
-  const hh = eaves(c, 6), wall = rnd.pick(['#b5523b', '#c98b5e', '#d8b07a', '#a8472f']);
+  const hh = eaves(c, 6), wall = rnd.pick(['#9a6452', '#c98b5e', '#d8b07a', '#8f5a4a']);
   body(c, hh, wall);
   const rf = lid(c, hh, wall);
   const zf = main.z + main.d / 2, ac = rnd.pick(BRIGHT);
@@ -415,7 +415,7 @@ function prison(c) {
 }
 function windmillB(c) {
   const H = c.h >= 12 ? Math.min(c.h, 30) : 18, s0 = clamp(c.D * 0.8, 4, 9);
-  const t = windmillShape(c.v, H, s0, c.rnd.pick(['#e3dccb', '#b5523b', '#5a4a3e']));
+  const t = windmillShape(c.v, H, s0, c.rnd.pick(['#e3dccb', '#9a6452', '#5a4a3e']));
   c.tag(t);
   return true;
 }
@@ -518,7 +518,7 @@ function supermarket(c) {
 }
 function museum(c) {
   const { v, gl, rnd, main, night } = c;
-  const hh = eaves(c, 8), wall = rnd.pick(['#e3ded3', '#d9d2c3', '#cfc4b0', '#b5523b']);
+  const hh = eaves(c, 8), wall = rnd.pick(['#e3ded3', '#d9d2c3', '#cfc4b0', '#9a6452']);
   body(c, hh, wall, 1);
   let rf = 2;
   if (c.b.roof) rf = roofs(c, hh, SLATE);
@@ -537,7 +537,7 @@ function museum(c) {
 }
 function government(c) {
   const { v, rnd, main } = c;
-  const hh = eaves(c, 9), wall = rnd.pick(c.b.year > 0 && c.b.year < 1900 ? ['#9c4a37', '#a85a3f', '#8a4a3a', '#cfc4b0'] : ['#d9d2c3', '#e3ded3', '#cfc4b0', '#b5523b']);
+  const hh = eaves(c, 9), wall = rnd.pick(c.b.year > 0 && c.b.year < 1900 ? ['#8f5546', '#9a6350', '#80524a', '#cfc4b0'] : ['#d9d2c3', '#e3ded3', '#cfc4b0', '#9a6452']);
   body(c, hh, wall, 1);
   const zf = main.z + main.d / 2;
   let top;
@@ -573,7 +573,7 @@ function bunker(c) {
 }
 function fireStation(c) {
   const { v, gl, rnd, main, night } = c;
-  const hh = eaves(c, 7), wall = rnd.pick(['#b5523b', '#a8472f', '#c98b5e']);
+  const hh = eaves(c, 7), wall = rnd.pick(['#9a6452', '#8f5a4a', '#c98b5e']);
   body(c, hh, wall);
   lid(c, hh, wall);
   const zf = main.z + main.d / 2 + 0.04, n = clamp(Math.floor(main.w / 5), 2, 5);
@@ -619,7 +619,7 @@ function canopy(c) {
 function hotel(c) {
   const { v, gl, rnd, main, night } = c;
   const old = c.b.roof && c.h < 40;
-  const hh = eaves(c, 9), wall = old ? rnd.pick(['#e6dcc6', '#d7c9b8', '#b5523b', '#a85a3f']) : rnd.pick(['#e3e6e8', '#cfd8dc', '#d7c9b8', '#b5523b', '#9fb0ba']);
+  const hh = eaves(c, 9), wall = old ? rnd.pick(['#e6dcc6', '#d7c9b8', '#9a6452', '#9a6350']) : rnd.pick(['#e3e6e8', '#cfd8dc', '#d7c9b8', '#9a6452', '#9fb0ba']);
   body(c, hh, wall);
   const rf = lid(c, hh, wall);
   const zf = main.z + main.d / 2, col = rnd.pick(BRIGHT);
@@ -661,7 +661,7 @@ function industrial(c) {
 /** A palace, a manor, a listed town house: pale or brick walls, a stone band, dark slate roofs, tall chimneys. */
 function castle(c) {
   const { v, rnd, main } = c;
-  const hh = eaves(c, 7), wall = rnd.pick(c.b.year && c.b.year < 1750 ? ['#9c4a37', '#a85a3f', '#d8cfb8', '#cfc4b0'] : ['#d8cfb8', '#e3ded3', '#b5523b', '#cfc4b0']);
+  const hh = eaves(c, 7), wall = rnd.pick(c.b.year && c.b.year < 1750 ? ['#8f5546', '#9a6350', '#d8cfb8', '#cfc4b0'] : ['#d8cfb8', '#e3ded3', '#9a6452', '#cfc4b0']);
   body(c, hh, wall, 1);
   for (const r of c.rects) v.box(r.x, hh - 0.5, r.z, r.w + 0.2, 0.5, r.d + 0.2, STONE);
   const rf = c.b.roof || (c.b.year > 0 && c.b.year < 1900) ? roofs(c, hh, SLATE, { steep: 0.45, max: 8 }) : (flatTop(c, hh, wall), 0.4);
@@ -959,7 +959,7 @@ export function drawFeature(v, gl, f, rnd, night) {
     let t = 0;
     switch (f.type) {
       case 1: tag(8, Math.min(5, ((f.c > 3 ? f.c : 9)) / 2)); fuelStation(v, gl, f, rnd, night); break;
-      case 2: { const H = f.b > 8 ? f.b : 22; tag(H + 14, 4); t = windmillShape(v, H, clamp(H * 0.3, 4, 8), rnd.pick(['#e3dccb', '#b5523b'])); break; }
+      case 2: { const H = f.b > 8 ? f.b : 22; tag(H + 14, 4); t = windmillShape(v, H, clamp(H * 0.3, 4, 8), rnd.pick(['#e3dccb', '#9a6452'])); break; }
       case 3: { const H = f.b > 12 ? f.b : 30; tag(H + 7, 3); lighthouseShape(v, gl, H, clamp(H * 0.2, 4, 7), night); break; }
       case 4: { const H = f.b > 12 ? f.b : 28; tag(H + 4, 3); waterTowerShape(v, H, clamp(H * 0.16, 3, 6)); break; }
       case 5: { const H = f.b > 5 ? f.b : 40; tag(H + 1, 1.5); mastShape(v, gl, H); break; }
@@ -989,7 +989,7 @@ export function drawBarriers(v, list, rnd) {
       const kind = bar.kind >= 1 && bar.kind <= 4 ? bar.kind : 1;
       const h = bar.h > 0.2 ? Math.min(bar.h, 12) : DEF_H[kind];
       const tall = h >= 4;
-      const wallCol = kind === 4 ? '#a39b8c' : rnd.pick(['#a8472f', '#9c4a37', '#b0654a', '#a9a59c', '#c4bfb4']);
+      const wallCol = kind === 4 ? '#a39b8c' : rnd.pick(['#8f5a4a', '#8f5546', '#a47058', '#a9a59c', '#c4bfb4']);
       const capCol = tall ? '#3b3f45' : kind === 4 ? '#c1b9a8' : shade(wallCol, 1.25);
       const fenceCol = rnd.pick(['#2f4f3a', '#6b7280', '#3b4048']);
       const thick = kind === 1 ? 0.3 : kind === 2 ? 0.08 : kind === 3 ? 0.8 : 0.6;

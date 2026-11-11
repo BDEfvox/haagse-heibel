@@ -6,7 +6,7 @@ import { makePerson } from './cast.js';
 const _c = new THREE.Color();
 export const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexString();
 
-const BRICK = ['#b5523b', '#a8472f', '#c7714f', '#8f4a3a', '#d8b07a', '#e9e2d3', '#74504a', '#c98b5e', '#b86b4b'];
+const BRICK = ['#9a6452', '#8f5a4a', '#b08064', '#80524a', '#d8b07a', '#e9e2d3', '#74504a', '#c9a070', '#a47058'];
 const DOORS = ['#1f5b3a', '#1d3557', '#8d0801', '#2b2b2b', '#6a4c93', '#0b6e4f', '#e0a100'];
 const ROOFS = ['#c8553d', '#8a3b2e', '#4a4e57', '#a44a3f', '#d9693f'];
 const AWN = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff']];

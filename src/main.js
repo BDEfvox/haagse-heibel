@@ -119,12 +119,18 @@ async function boot() {
     buurt: () => play('click'),
     // zooming in far enough on a street drops you into it
     zoom: (z, pt) => zoomCue(pt),
-    // zooming in past the height at which the 3D city hands over to the map hands back: same spot, same height, no drop
+    // zooming in past the height at which the 3D city hands over to the map takes you into the city
     enterZoom: () => zoomFor(EXIT_DIST * 0.93, api.map.getCenter().lat),
     deep(pt) {
       const ll = pt ? api.map.unproject([pt.x, pt.y]) : api.map.getCenter();
       const id = streetAt([ll.lng, ll.lat], 900);
-      if (id >= 0) openStreet(S[id], null, mapView());
+      if (id < 0) return;
+      // straight back in after zooming out of the city: the same spot at the same height, so in and out mirror each other.
+      // Otherwise this is someone picking a place on the map by zooming: fly all the way down to that street.
+      const back = zoomedOut && performance.now() - zoomedOut.at < 20000 && !zoomedOut.moved;
+      zoomedOut = null;
+      if (back) openStreet(S[id], null, mapView());
+      else openStreet(S[id], pt || null);
     },
   });
 
@@ -324,6 +330,8 @@ async function boot() {
   const zoomFor = (dist, lat) => Math.log2((viewH() * EARTH * Math.cos((lat * Math.PI) / 180)) / (512 * 2 * VIEW_TAN * dist));
   const mapView = () => { const c = api.map.getCenter(); return { lngLat: [c.lng, c.lat], dist: distFor(api.map.getZoom(), c.lat) }; };
   let entry = null; // the map view we dropped in from: going back rises to that height again
+  let zoomedOut = null; // set when the viewer left the city by zooming out: { at, moved }
+  api.ready.then(() => api.map.on('dragstart', () => { if (zoomedOut) zoomedOut.moved = true; }));
 
   async function openStreet(p0, pt, enter = null) {
     if (busy || !p0) return;
@@ -444,6 +452,7 @@ async function boot() {
     const to = await stage.leave(viaZoom ? 0 : Math.min(9000, Math.max(750, entry ? entry.dist : 2600)));
     // the map takes over turned the way the camera was, then swings back to north-up
     api.quiet(1200);
+    zoomedOut = viaZoom ? { at: performance.now(), moved: false } : null;
     if (to) {
       api.map.jumpTo({ center: to.lngLat, zoom: Math.min(16.7, Math.max(9.6, zoomFor(to.dist, to.lngLat[1]))), pitch: 0, bearing: to.bearing || 0 });
       if (Math.abs(to.bearing || 0) > 1) api.map.easeTo({ bearing: 0, duration: 900 });

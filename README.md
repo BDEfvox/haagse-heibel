@@ -93,8 +93,9 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   red cycle lanes, road markings), water below its banks with quay walls, real building footprints as
   voxel blocks with windows painted by the shader, trees. Tiles come in three levels of detail (close,
   normal, far) chosen by distance, are built once and kept in memory, and reach the edge of the view
-  up to the height at which the flat map takes over. The open street adds its own house fronts with
-  doors and shops on top
+  up to the height at which the flat map takes over. Detailed house fronts (doors, shop fronts,
+  gables) are drawn for whatever is near the camera, and street furniture stands on every street: nothing
+  depends on which street is open
 - `src/voxel/landmarks.js` — buildings that are something in particular (churches, fuel stations,
   windmills, the lighthouse), landmark shapes from OpenStreetMap's 3D building parts, free-standing
   features and perimeter walls and fences
@@ -109,8 +110,9 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   in on the map by the same amount hands back at the same spot
 - Light follows the real time of day in The Hague (`skyAt` in `stage.js`)
 - `src/voxel/geo.js` — paths you can walk along, the ground raster, footprint boxes
-- `src/voxel/street.js` — lanes and pavements fitted between the real fronts, street furniture, and
-  the 48 m "spots" where gags play
+- `src/voxel/street.js` — lanes and pavements fitted between the real fronts, and the 48 m "spots"
+  where gags play, with the doors, windows and furniture found there
+- `src/voxel/furnish.js` — street furniture for every street, placed per map tile
 - `src/voxel/gags.js` — background street life plus 23 scripted gags, weighted by crime level and
   crime mix. Gags are written for a straight street; the stage bends them onto the real one
 - `src/voxel/stage.js` — renderer, lighting per level (sunny → night), the drop from map height, the
