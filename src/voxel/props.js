@@ -686,13 +686,22 @@ function vehicleActor(g, extra = {}) {
         const pitchT = two ? cl(-acc * 0.012, -0.4, 0.08) : cl(-acc * 0.012, -0.085, 0.11);
         this._rv += ((rollT - this.roll) * 70 - this._rv * 7.5) * dt; this.roll += this._rv * dt;
         this._pv += ((pitchT - this.pitch) * 95 - this._pv * 8.5) * dt; this.pitch += this._pv * dt;
+        if (!two) {
+          if (Math.abs(this.roll) > 0.34) { this.roll = cl(this.roll, -0.34, 0.34); this._rv = 0; }
+          if (Math.abs(this.pitch) > 0.2) { this.pitch = cl(this.pitch, -0.2, 0.2); this._pv = 0; }
+        } // (a jolt can swing the springs well past the target)
         this.slip = Math.abs(yawRate) * mv + Math.abs(this.drift) * mv * 2;
         if (two) { g.rotation.z = this.roll; body.rotation.x = Math.min(0.05, this.pitch); }
         else {
           body.rotation.z = this.roll; body.rotation.x = this.pitch;
           body.rotation.y += (this.drift - body.rotation.y) * Math.min(1, dt * 8);
         }
-        body.position.y = this.rideH + (mv > 0 ? Math.abs(Math.sin(this.t * 16)) * 0.03 : 0) + Math.abs(this.roll) * 0.25;
+        // the body pivots at its middle on the ground; its underside is ~0.22 m up, so when it tilts a corner dips by
+        // half-length x sin(pitch) + half-width x sin(roll): lift the body by exactly what would go below the road (+ a hand)
+        let lift = 0;
+        if (two) lift = Math.abs(this.roll) * 0.25; // (two-wheelers lean about the ground: unchanged)
+        else lift = Math.max(0, ((this.len || 4.4) / 2) * Math.abs(Math.sin(this.pitch)) + ((this.wid || 1.85) / 2) * Math.abs(Math.sin(this.roll)) - 0.2);
+        body.position.y = this.rideH + (mv > 0 ? Math.abs(Math.sin(this.t * 16)) * 0.03 : 0) + lift;
         if (this.wheels) {
           this._spin += (mv * dt) / this.wheelR;
           const st = cl(angd(this.heading - g.rotation.y) * 2.5 + yawRate * 0.22 - this.drift * 1.2, -0.6, 0.6);

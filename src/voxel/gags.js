@@ -10,11 +10,19 @@ import * as ACTS from './acts/index.js';
 const X0 = -24, X1 = 24, EX0 = X0 + 0.5, EX1 = X1 - 0.5;
 const E = Math.PI / 2, W = -Math.PI / 2; // headings: +x, −x
 
+// ---------------------------------------------------------------- what the viewer can see
+// `ctx.inView(x, z, y, margin)` and `ctx.watched()` come from the stage; when they are missing everything counts as in view.
+const seen = (ctx, x, z, y = 1, margin = 0.08) => (typeof ctx.inView === 'function' ? !!ctx.inView(x, z, y, margin) : true);
+const watching = (ctx) => (typeof ctx.watched === 'function' ? !!ctx.watched() : true);
+const CAR_TYPES = new Set(['car', 'police', 'van', 'taxi']);
+const isCar = (a) => !!a.vehicle && CAR_TYPES.has(a.type);
+
 // ---------------------------------------------------------------- movement primitives
-export function* go(ctx, a, x, z, speed = a.speed, stop = 0.06) {
+/** One straight leg at constant speed; finishes on arrival (within `stop`). Returns true when `each` ended it. */
+function* leg(ctx, a, x, z, speed, stop = 0.06, each = null) {
   for (;;) {
     const p = a.g.position, dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz);
-    if (d <= stop) return;
+    if (d <= stop) return false;
     const dt = yield;
     const s = Math.min(d, speed * dt);
     p.x += (dx / d) * s;
@@ -22,7 +30,53 @@ export function* go(ctx, a, x, z, speed = a.speed, stop = 0.06) {
     if (!a.air) p.y = 0;
     a.heading = Math.atan2(dx, dz);
     a.moving = speed;
+    if (each && each(dt, s) === true) return true;
   }
+}
+/** Flying things, boats, helicopters and anyone standing on something (`air`) do not walk round the street furniture. */
+const exempt = (ctx, a, o) => (o && o.straight) || a.air || a.fly || a.rigid || a.type === 'boat' || a.type === 'heli' || a.type === 'tram' || ctx.id === 'amb' || !ctx.L;
+/**
+ * The way a walker takes to (x, z): null = straight on; otherwise waypoints [[x, z], ...] round whatever stands in the way
+ * (S.route; what the walker already touches, `o.ignore` and `a.ignore` do not count). Empty = nowhere to go, stay put.
+ */
+function walkRoute(ctx, a, x, z, o) {
+  if (exempt(ctx, a, o)) return null;
+  const p = a.g.position;
+  if (Math.hypot(x - p.x, z - p.z) < 0.6) return null;
+  const r = S.route(ctx, p.x, p.z, x, z, { ignore: (o && o.ignore) || a.ignore || null });
+  return r.straight ? null : r.pts;
+}
+/** Follow waypoints with `go` semantics; `each` as in goEach. */
+function* followRoute(ctx, a, pts, speed, stop, each) {
+  for (let i = 0; i < pts.length; i++) if (yield* leg(ctx, a, pts[i][0], pts[i][1], speed, i === pts.length - 1 ? stop : 0.25, each)) return;
+}
+/** A car going straight, or bent round whatever is parked on the way. Stops at the last clear point when there is no line. */
+function* goCar(ctx, a, x, z, speed, stop, o) {
+  const p = a.g.position;
+  if (!(o && o.straight) && ctx.id !== 'amb' && ctx.L) {
+    const half = (a.wid || 1.85) / 2 + 0.12, off = Math.max(0, (a.len || 4.4) / 2 - half), ign = (o && o.ignore) || a.ignore || null;
+    const b = S.bend(ctx, [[p.x, p.z], [x, z]], { half, off, ignore: ign, road: !(o && o.road === false) });
+    if (b && b.length > 2) { yield* drive(ctx, a, b.slice(1), speed, { free: true }); return; }
+    if (!b) {
+      const q = S.carReach(ctx, p.x, p.z, x, z, { half, off, ignore: ign });
+      if (Math.hypot(q[0] - p.x, q[1] - p.z) < 0.1) { yield; return; }
+      yield* leg(ctx, a, q[0], q[1], speed, stop, null);
+      return;
+    }
+  }
+  yield* leg(ctx, a, x, z, speed, stop, null);
+}
+/**
+ * Walk (or drive) to (x, z) at `speed` and finish on arrival. Round parked cars, shelters, terrace tables, lamp posts and the
+ * rest of the obstacle picture (setting.js `obstacles`) on a detour worked out once per call; if there is no way, it stops at
+ * the last clear point of the straight line. `o`: { ignore: [things the walker is deliberately AT], straight: true (opt out) }.
+ */
+export function* go(ctx, a, x, z, speed = a.speed, stop = 0.06, o = null) {
+  if (isCar(a)) { yield* goCar(ctx, a, x, z, speed, stop, o); return; }
+  const pts = walkRoute(ctx, a, x, z, o);
+  if (!pts) { yield* leg(ctx, a, x, z, speed, stop, null); return; }
+  if (!pts.length) { yield; return; }
+  yield* followRoute(ctx, a, pts, speed, stop, null);
 }
 function* fly(a, x, y, z, speed) {
   for (;;) {
@@ -35,35 +89,197 @@ function* fly(a, x, y, z, speed) {
     a.moving = speed;
   }
 }
-function* chase(ctx, a, tgt, speed, stop = 1.0, timeout = 12) {
-  let t = 0;
+/**
+ * Run after a target until within `stop` of it (or `timeout` seconds). The way round things is looked up a few times a second
+ * (at most four), not every frame. Returns true when it caught up.
+ */
+function* chase(ctx, a, tgt, speed, stop = 1.0, timeout = 12, o = null) {
+  let t = 0, re = 0, wp = null, wi = 0;
+  const can = !exempt(ctx, a, o) && !isCar(a);
   while (t < timeout && tgt.alive) {
     const dt = yield;
     t += dt;
     const p = a.g.position, q = tgt.g.position, dx = q.x - p.x, dz = q.z - p.z, d = Math.hypot(dx, dz);
     if (d <= stop) return true;
-    const s = Math.min(d - stop * 0.9, speed * dt);
-    p.x += (dx / d) * s; p.z += (dz / d) * s;
+    let tx = q.x, tz = q.z, last = true;
+    if (can) {
+      if ((re -= dt) <= 0) {
+        re = 0.26;
+        const r = S.route(ctx, p.x, p.z, q.x, q.z, { ignore: (o && o.ignore) || a.ignore || null });
+        wp = r.straight ? null : r.pts; wi = 0;
+      }
+      if (wp) {
+        while (wi < wp.length - 1 && Math.hypot(wp[wi][0] - p.x, wp[wi][1] - p.z) < 0.3) wi++;
+        if (!wp.length) { a.moving = 0; continue; }
+        tx = wp[wi][0]; tz = wp[wi][1]; last = wi === wp.length - 1;
+      }
+    }
+    const ex = tx - p.x, ez = tz - p.z, e = Math.hypot(ex, ez) || 1e-6;
+    const s = last && tx === q.x && tz === q.z ? Math.min(d - stop * 0.9, speed * dt) : Math.min(e, speed * dt);
+    p.x += (ex / e) * s; p.z += (ez / e) * s;
     if (!a.air) p.y = ctx.L.yAt(p.z);
-    a.heading = Math.atan2(dx, dz);
+    a.heading = Math.atan2(ex, ez);
     a.moving = speed;
   }
   return false;
 }
+/** Scale up from nothing. Only for things that are MEANT to appear by magic or effect (a prop from a pocket, a puff of smoke). */
 function* popIn(ctx, a, dur = 0.28) {
   const s = a.baseScale;
   yield* tween(dur, (t) => a.g.scale.setScalar(Math.max(0.001, s * t)), ease.outBack);
 }
+/** Shrink to nothing and remove. Only for things that are MEANT to vanish by magic or effect; people and vehicles use `exitOut`. */
 function* popOut(ctx, a) {
   const s = a.g.scale.x;
   yield* tween(0.18, (t) => a.g.scale.setScalar(Math.max(0.001, s * (1 - t))), ease.inQuad);
   ctx.despawn(a);
 }
-function* enter(ctx, a, x, z, y) {
-  if (!y) { const q = S.nudge(ctx, x, z); x = q.x; z = q.z; } // never pop in on a tree or a wall
-  ctx.spawn(a, x, z, y);
-  a.g.scale.setScalar(0.001);
-  yield* popIn(ctx, a);
+
+// ---------------------------------------------------------------- entrances and exits that the viewer can follow
+/** Walking out from x along z in direction dir (+1/-1): the first point out of the frame, then `pad` metres further. { x, hidden }. */
+function outPoint(ctx, x, z, dir, pad = 3, y = 1) {
+  const L = ctx.L, sc = ctx.sc || 0;
+  const lim = dir > 0 ? Math.min(L.x1 + 30, L.sB != null ? L.sB - sc - 0.5 : 1e9) : Math.max(L.x0 - 30, L.sA != null ? L.sA - sc + 0.5 : -1e9);
+  let px = x, run = 0;
+  for (let d = 0; ; d++) {
+    px = x + dir * d;
+    if (dir * (px - lim) >= 0) return { x: lim, hidden: !seen(ctx, lim, z, y) };
+    if (!seen(ctx, px, z, y)) { if (++run >= 2) break; } else run = 0;
+  }
+  const ox = dir > 0 ? Math.min(lim, px + pad) : Math.max(lim, px - pad);
+  return { x: ox, hidden: !seen(ctx, ox, z, y) };
+}
+/** A real front door of the spot within maxD metres of (x, z), or null. */
+function doorNear(ctx, x, z, maxD) {
+  let best = null, bd = maxD;
+  for (const h of ctx.L.houses || []) {
+    if (!h.door) continue;
+    const d = Math.hypot(h.door.x - x, h.door.z - z);
+    if (d <= bd) { best = h.door; bd = d; }
+  }
+  return best;
+}
+/** The foot of something tall enough to hide a person (a stall, a kiosk, a shelter), on the side away from the camera. */
+function hideBehind(ctx, x, z) {
+  let best = null, bd = 16;
+  for (const s of S.hiders(ctx, 2.0)) {
+    const d = Math.hypot(s.x - x, s.z - z), hz = s.z - s.r - 0.6;
+    if (d > bd || !S.clearSpot(ctx, s.x, hz, 0.35, { ground: 'open', ignore: [{ x: s.x, z: s.z, r: s.r + 0.6 }] })) continue;
+    best = { x: s.x, z: hz }; bd = d;
+  }
+  return best;
+}
+const brisk = (a, o) => (o && o.speed) || (a.vehicle ? (a.two ? 6.5 : Math.min(a.speed || 9, 10)) : clamp(a.speed || 3, 2.6, 3.6));
+/**
+ * Bring `a` on stage at (x, z) so that nothing appears in view. Not watched, or the point out of view: it simply stands there
+ * (no scale pop). In view: from a real door close by (`o.from = 'door'`, or a point within 1.2 m of one), else from the nearest
+ * point outside the frame along its line (`o.dir` = the way it is travelling when it arrives, so a car arrives heading the way
+ * the scene wants it), else from behind a stall or shelter; it walks (drives) in at a brisk pace, round things, and this
+ * returns when it gets to (x, z). `y` above 0.05 (a balcony, a bench) cannot walk in and pops in by magic. `o`: { speed,
+ * from: 'edge' | 'door' | 'auto', dir, now, exact (do not nudge off a tree), ignore }.
+ */
+function* enterTo(ctx, a, x, z, y, o, spawn) {
+  o = o || {};
+  const high = y > 0.05, veh = !!a.vehicle;
+  if (!y && !o.exact && !veh) { const q = S.nudge(ctx, x, z, 0.5, { ignore: o.ignore }); x = q.x; z = q.z; }
+  if (!watching(ctx) || !seen(ctx, x, z, high ? y + 1 : 1)) { spawn(a, x, z, y); return; }
+  if (high || a.fly) { spawn(a, x, z, y); a.g.scale.setScalar(0.001); yield* popIn(ctx, a); return; }
+  const doorish = o.from === 'door' || (y > 0 && y <= 0.05);
+  const door = !veh && o.from !== 'edge' ? doorNear(ctx, x, z, doorish ? 8 : 1.2) : null;
+  if (door) {
+    const dz = door.z < 0 ? -1 : 1;
+    spawn(a, door.x, door.z + dz * 0.9, 0); // just behind the wall: the facade hides it until it steps out
+    a.offstage = true; a._door = { x: door.x, z: door.z };
+    a.heading = dz < 0 ? 0 : Math.PI;
+    ctx.sfx('door');
+    yield* leg(ctx, a, door.x, door.z, 1.8, 0.05);
+    if (Math.hypot(x - door.x, z - door.z) > 0.35) yield* go(ctx, a, x, z, brisk(a, o) * 0.85, 0.06, { ignore: o.ignore });
+    a.offstage = false;
+    return;
+  }
+  const sides = o.dir ? [-Math.sign(o.dir)] : x < 0 ? [-1, 1] : [1, -1], pad = veh ? 6 : 2.5;
+  let best = null;
+  for (const sd of sides) {
+    const q = outPoint(ctx, x, z, sd, pad, veh ? 0.8 : 1);
+    q.d = Math.abs(q.x - x);
+    if (!best || (q.hidden && !best.hidden) || (q.hidden === best.hidden && q.d < best.d)) best = q;
+  }
+  let sx = best.x, sz = z, hid = false;
+  if (!best.hidden && !veh) { const h = hideBehind(ctx, x, z); if (h) { sx = h.x; sz = h.z; hid = true; } }
+  if (!veh && !hid && !a.air) { const q = S.nudge(ctx, sx, sz, 0.35, { ignore: o.ignore }); sx = q.x; sz = q.z; }
+  spawn(a, sx, sz, y);
+  a.offstage = true;
+  const h0 = Math.atan2(x - sx, z - sz);
+  if (a.face) a.face(h0); else a.heading = h0;
+  yield* go(ctx, a, x, z, brisk(a, o), 0.06, { ignore: o.ignore });
+  a.offstage = false;
+}
+/**
+ * How many seconds `R.enter(a, x, z, y, o)` would take right now: 0 when it appears at once (not watched, point out of view),
+ * about 1.5 for a door, else the walk from the nearest out-of-frame point. Use it to start an entrance early enough
+ * (`R.run(R.enter(...))` this many seconds before the beat that needs the actor).
+ */
+function entryTime(ctx, a, x, z, o = {}) {
+  if (!watching(ctx) || !seen(ctx, x, z, 1)) return 0;
+  if (!a.vehicle && o.from !== 'edge' && doorNear(ctx, x, z, o.from === 'door' ? 8 : 1.2)) return 1.5;
+  const veh = !!a.vehicle, sides = o.dir ? [-Math.sign(o.dir)] : [-1, 1];
+  let d = 1e9;
+  for (const sd of sides) d = Math.min(d, Math.abs(outPoint(ctx, x, z, sd, veh ? 6 : 2.5, veh ? 0.8 : 1).x - x));
+  return d / brisk(a, o);
+}
+/** Bring someone on without tracking them (the rig's `R.enter` tracks). See enterTo. */
+function* enter(ctx, a, x, z, y, o) {
+  yield* enterTo(ctx, a, x, z, y, o, (q, px, pz, py) => ctx.spawn(q, px, pz, py));
+}
+/**
+ * Take `a` off stage so that nothing vanishes in view. Out of view (or not watched): it is handed back to the crowd if it
+ * came from there, else removed. In view: through the door it came from if it is near it; a person standing high steps back
+ * through the window; otherwise it walks (drives) on along its way until it is out of the frame and a few metres beyond
+ * (if the camera follows it to the end of the playable range it is handed back to the crowd there, else it goes on).
+ * Only then is it removed. `o`: { speed, now, edge (not the door) }.
+ */
+function* exitOut(ctx, a, o = {}) {
+  if (!a.alive) return;
+  const p = a.g.position, veh = !!a.vehicle;
+  const gone = () => { a.offstage = false; if (a.alive) ctx.despawn(a); };
+  a.offstage = true;
+  if (o.now || !watching(ctx) || !seen(ctx, p.x, p.z, 1)) {
+    if (!veh && a.look && ctx.demote) { unped(ctx, a); if (ctx.demote(a)) return; }
+    gone();
+    return;
+  }
+  if (a.fly) { yield* popOut(ctx, a); return; }
+  const hb = (ctx.L.hw || 2.6) + (ctx.L.bw || 0);
+  if (!veh && p.y > 0.6 && Math.abs(p.z) > hb + 1) { // up on a balcony: back in through the window
+    const z0 = p.z, dz = p.z < 0 ? -1 : 1;
+    yield* tween(0.5, (u) => { p.z = z0 + dz * 0.9 * u; });
+    gone();
+    return;
+  }
+  if (a._door && !o.edge && Math.hypot(p.x - a._door.x, p.z - a._door.z) < 14) {
+    const d = a._door, dz = d.z < 0 ? -1 : 1;
+    yield* go(ctx, a, d.x, d.z, o.speed || 3.2, 0.06);
+    ctx.sfx('door');
+    yield* leg(ctx, a, d.x, d.z + dz * 0.9, 1.8, 0.05);
+    gone();
+    return;
+  }
+  const hx = Math.sin(a.heading ?? 0), sp = o.speed || brisk(a, null), pad = veh ? 6 : 3;
+  let dir = Math.abs(hx) > 0.3 ? Math.sign(hx) : 0, q;
+  if (dir) q = outPoint(ctx, p.x, p.z, dir, pad, veh ? 0.8 : 1);
+  else {
+    const q1 = outPoint(ctx, p.x, p.z, 1, pad, veh ? 0.8 : 1), q2 = outPoint(ctx, p.x, p.z, -1, pad, veh ? 0.8 : 1);
+    const pickFirst = q1.hidden !== q2.hidden ? q1.hidden : Math.abs(q1.x - p.x) <= Math.abs(q2.x - p.x);
+    dir = pickFirst ? 1 : -1; q = pickFirst ? q1 : q2;
+  }
+  const z = p.z, edge = dir > 0 ? EX1 : EX0;
+  if (!veh && a.look && ctx.demote && dir * (q.x - edge) > 0 && dir * (edge - p.x) > 0) {
+    yield* go(ctx, a, edge, z, sp, 0.1);
+    if (seen(ctx, p.x, p.z, 1)) { unped(ctx, a); if (ctx.demote(a)) return; } // the camera is still on them: they carry on as one of the crowd
+  }
+  yield* go(ctx, a, q.x, z, sp, 0.1);
+  if (Math.abs(p.x - q.x) > 0.5 && seen(ctx, p.x, p.z, 1)) yield* go(ctx, a, q.x, z, sp, 0.1, { straight: true }); // blocked on the way: carry on regardless rather than vanish in view
+  gone();
 }
 const edgeOf = (a) => (a.g.position.x < 0 ? EX0 : EX1);
 /** Where a walker on this line gets to when heading for x: the end of the clear ground if that comes first. */
@@ -72,18 +288,20 @@ function* walkOff(ctx, a, tx, speed, z0 = a.g.position.z) {
   let bx = tx, bz = z0, best = -1;
   if (d) {
     // the line itself first, then lines a little to either side (round a tree trunk), keeping the longest
+    // (only the ground counts here: the standing things are walked round by go)
     for (const off of [0, 0.7, -0.7, 1.4, -1.4]) {
-      const e = S.runway(ctx, p.x, z0 + off, d, full), len = Math.abs(e - p.x);
+      const e = S.runway(ctx, p.x, z0 + off, d, full, 0.45, { obst: false }), len = Math.abs(e - p.x);
       if (len > best + 0.01) { best = len; bx = e; bz = z0 + off; }
       if (len >= full - 0.01) break;
     }
   }
   yield* go(ctx, a, bx, bz, speed);
 }
+/** Walk off the spot (to `toX`, default the near end) and on until out of the frame, then remove. */
 function* leave(ctx, a, speed = a.speed, toX = null) {
   if (!a.alive) return;
   yield* walkOff(ctx, a, toX ?? edgeOf(a), speed);
-  yield* popOut(ctx, a);
+  yield* exitOut(ctx, a, { speed });
 }
 function* hop(a, h = 0.6, dur = 0.3) {
   const y0 = a.g.position.y;
@@ -134,7 +352,7 @@ const padSpot = (ctx, k, x, r = 0.6, tries = 10) => S.findSpot(ctx, x, padZ(ctx,
 /** Put a borrowed or scripted person back into neutral. */
 function tidy(a) {
   if (a.drop) a.drop();
-  a.pose = null; a.air = false; a.arms = 'swing'; a.gait = 'walk';
+  a.pose = null; a.air = false; a.arms = 'swing'; a.gait = 'walk'; a.offstage = false;
   a.mood = 'neutral'; a.lookAt = null; a.laughT = 0; a.nodT = 0; a.shakeT = 0; // faces go back to neutral too
   a.g.visible = true; a.g.rotation.x = 0; a.g.rotation.z = 0;
   a.g.scale.setScalar(a.baseScale || a.scale || 0.9);
@@ -164,14 +382,17 @@ function rig(ctx) {
   let closed = false, policeClosed = false, cops = 0;
   const R = {
     spawn(a, x, z, y) { ctx.spawn(a, x, z, y); actors.add(a); return a; },
-    *enter(a, x, z, y) {
-      if (!y) { const q = S.nudge(ctx, x, z); x = q.x; z = q.z; }
-      R.spawn(a, x, z, y); a.g.scale.setScalar(0.001); yield* popIn(ctx, a);
-    },
-    *out(a) { if (a.alive) yield* popOut(ctx, a); actors.delete(a); },
+    /**
+     * Bring someone on stage; returns when they stand at (x, z). Nothing appears in view: out of view (or unwatched) they just
+     * stand there, in view they come in from a door, from out of the frame or from behind a stall (see enterTo). `o`: { speed,
+     * from: 'edge' | 'door' | 'auto', dir (the way they travel on arrival; cars!), now, exact, ignore }.
+     */
+    *enter(a, x, z, y, o) { yield* enterTo(ctx, a, x, z, y, o, (q, px, pz, py) => R.spawn(q, px, pz, py)); },
+    /** Take someone off stage: they walk (drive) on until out of the frame, then go (see exitOut). `o`: { speed, now, edge }. */
+    *out(a, o) { if (a.alive) yield* exitOut(ctx, a, o); actors.delete(a); },
     *leave(a, speed, toX) { yield* leave(ctx, a, speed, toX); actors.delete(a); },
-    /** walk a few metres in one direction, then pop away (a short exit that does not need the street edge) */
-    *away(a, dx, speed = 3.6) { if (!a.alive) return; yield* walkOff(ctx, a, clamp(a.g.position.x + dx, EX0, EX1), speed); yield* R.out(a); },
+    /** walk a few metres in one direction, then on out of the frame (a short exit that does not need the street edge) */
+    *away(a, dx, speed = 3.6) { if (!a.alive) return; yield* walkOff(ctx, a, clamp(a.g.position.x + dx, EX0, EX1), speed); yield* R.out(a, { speed }); },
     gone(a) { if (a.alive) ctx.despawn(a); actors.delete(a); },
     add(o) { ctx.world.add(o); objs.add(o); return o; },
     rm(o) { if (objs.delete(o)) ctx.world.remove(o); },
@@ -182,7 +403,7 @@ function rig(ctx) {
     run(g) { const t = ctx.run(g); if (!t.done) tasks.add(t); return t; },
     stop(t) { ctx.runner.stop(t); tasks.delete(t); },
     *settle(max = 10) { yield* waitUntil(() => { for (const t of tasks) if (!t.done) return false; return true; }, max); },
-    *close() { if (!closed) { closed = true; ctx.road.closed++; } yield* waitUntil(() => ctx.road.vehicles.size === 0, 6); },
+    *close() { if (!closed) { closed = true; ctx.road.closed++; } yield* waitUntil(() => ctx.road.vehicles.size === 0, 6); S.refreshCrowd(ctx); /* (the traffic that waited is gone: look again) */ },
     open() { if (closed) { closed = false; policeClosed = false; ctx.road.closed = Math.max(0, ctx.road.closed - 1); } },
     /** A police car crosses. It closes the road to ambient traffic first, unless someone else holds it (then it skips). */
     *police(fromDir, z, speed = 11, delay = 0) {
@@ -192,14 +413,19 @@ function rig(ctx) {
       if (!closed) { policeClosed = true; yield* R.close(); }
       cops++;
       try {
+        // the line it drives: the one asked for, or a free one (no free line, no police car)
+        const x0 = fromDir > 0 ? X0 + 2.5 : X1 - 2.5, x1 = fromDir > 0 ? X1 - 2.5 : X0 + 2.5;
+        const lz = S.laneClear(ctx, z, Math.min(x0, x1), Math.max(x0, x1)) ? z : S.laneFor(ctx, fromDir, Math.min(x0, x1), Math.max(x0, x1));
+        if (lz == null) return;
         const car = makeCar(rnd, 'police', L.night);
         car.siren = true;
-        ctx.sfx('siren', 3);
-        yield* R.enter(car, fromDir > 0 ? X0 + 2.5 : X1 - 2.5, z, 0);
+        ctx.sfx('siren', 3); // heard before it is seen
+        if (watching(ctx)) yield* wait(0.9);
+        yield* R.enter(car, x0, lz, 0, { dir: fromDir });
         car.face(fromDir > 0 ? E : W);
         say(ctx, car, 'WEE-OO!', { color: '#7db8ff', size: 16 });
-        yield* go(ctx, car, fromDir > 0 ? X1 - 2.5 : X0 + 2.5, z, speed);
-        yield* R.out(car);
+        yield* go(ctx, car, x1, lz, speed);
+        yield* R.out(car, { speed });
       } finally {
         cops--;
         if (policeClosed && cops === 0) { policeClosed = false; R.open(); }
@@ -224,8 +450,8 @@ function rig(ctx) {
       yield* wait(delay);
       if (!target.alive) return;
       const cop = makePerson(rnd, { kind: 'cop' }), fromLeft = target.heading > 0;
-      yield* R.enter(cop, fromLeft ? EX0 : EX1, target.g.position.z);
-      ctx.sfx('whistle');
+      ctx.sfx('whistle'); // heard first, then he runs in from out of the frame
+      yield* R.enter(cop, fromLeft ? EX0 : EX1, target.g.position.z, undefined, { dir: fromLeft ? 1 : -1, speed });
       say(ctx, cop, line || rnd.pick(['HALT!', 'STOP!', 'POLITIE!', 'STA STIL!']), { color: '#7db8ff', size: 15 });
       yield* chase(ctx, cop, target, speed, 0.8, 14);
       yield* R.leave(cop, speed, fromLeft ? EX1 : EX0);
@@ -235,7 +461,14 @@ function rig(ctx) {
       tasks.clear();
       for (const o of objs) if (!(done && keep.has(o))) ctx.world.remove(o);
       objs.clear();
-      for (const a of actors) if (a.alive) ctx.despawn(a);
+      // a normal finish never takes anybody off in view: whoever is still standing there walks (drives) off on their own
+      for (const a of actors) {
+        if (!a.alive) continue;
+        if (done && watching(ctx) && seen(ctx, a.g.position.x, a.g.position.z, 1) && !a.fly) {
+          if (!a.vehicle && a.g.position.y < 0.6) { a.pose = null; a.air = false; a.g.position.y = 0; a.g.rotation.x = 0; a.g.rotation.z = 0; } // (not left sitting, or standing on air, when it walks off)
+          ctx.run(exitOut(ctx, a));
+        } else ctx.despawn(a);
+      }
       actors.clear();
       for (const p of peds) if (p.alive) { tidy(p); release(ctx, p); }
       peds.clear();
@@ -409,19 +642,13 @@ function* arc(o, x, y, z, h = 1, dur = 0.6, spin = 0) {
     if (spin) o.rotation.y = r0 + spin * t;
   });
 }
-/** go() with a per-frame callback (return true to stop). */
-function* goEach(ctx, a, x, z, speed, each) {
-  for (;;) {
-    const p = a.g.position, dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz);
-    if (d <= 0.06) return;
-    const dt = yield;
-    const s = Math.min(d, speed * dt);
-    p.x += (dx / d) * s; p.z += (dz / d) * s;
-    if (!a.air) p.y = 0;
-    a.heading = Math.atan2(dx, dz);
-    a.moving = speed;
-    if (each && each(dt, s) === true) return;
-  }
+/** go() with a per-frame callback (return true to stop). Goes round standing things like go does (`o` as in go). */
+function* goEach(ctx, a, x, z, speed, each, o = null) {
+  if (isCar(a)) { yield* leg(ctx, a, x, z, speed, 0.06, each); return; } // (a car on a script of its own: use drive)
+  const pts = walkRoute(ctx, a, x, z, o);
+  if (!pts) { yield* leg(ctx, a, x, z, speed, 0.06, each); return; }
+  if (!pts.length) { yield; return; }
+  yield* followRoute(ctx, a, pts, speed, 0.06, each);
 }
 /** A person riding a bike that is a separate actor: the rider is parked on the saddle every frame. */
 // (saddle top 1.05 m at 0.30 m behind the bike's centre; hip sits 0.05 m above it, see makeBike)
@@ -619,7 +846,7 @@ function skid(ctx, car, smoke = true) {
   for (const sx of [-1, 1]) {
     const x = p.x + sn * rear + cs * sx * hw, z = p.z + cs * rear - sn * sx * hw;
     ctx.fx.mark(x, 0, z, h + (car.drift || 0), { w: 0.2, l: 0.55 });
-    if (smoke && Math.random() < 0.6) ctx.fx.dust(x, 0.05, z, -sn * 1.2, -cs * 1.2, 1, '#e9e9e9');
+    if (smoke && ctx.rnd() < 0.6) ctx.fx.dust(x, 0.05, z, -sn * 1.2, -cs * 1.2, 1, '#e9e9e9');
   }
 }
 /**
@@ -629,21 +856,15 @@ function skid(ctx, car, smoke = true) {
  * frame; return true to stop early. o.drift (0..1) slides the tail out in the bends.
  */
 function* drive(ctx, car, pts, speed = 12, o = {}) {
-  const P = [[car.g.position.x, car.g.position.z], ...pts], n = P.length;
-  const at = (i) => P[clamp(i, 0, n - 1)];
-  // Catmull-Rom through the points, sampled into a polyline with running length
-  const line = [], per = 14;
-  for (let i = 0; i < n - 1; i++) {
-    const a = at(i - 1), b = at(i), c = at(i + 1), d = at(i + 2);
-    for (let k = 0; k < per; k++) {
-      const t = k / per, t2 = t * t, t3 = t2 * t;
-      line.push([
-        0.5 * (2 * b[0] + (c[0] - a[0]) * t + (2 * a[0] - 5 * b[0] + 4 * c[0] - d[0]) * t2 + (3 * b[0] - a[0] - 3 * c[0] + d[0]) * t3),
-        0.5 * (2 * b[1] + (c[1] - a[1]) * t + (2 * a[1] - 5 * b[1] + 4 * c[1] - d[1]) * t2 + (3 * b[1] - a[1] - 3 * c[1] + d[1]) * t3),
-      ]);
-    }
+  let P = [[car.g.position.x, car.g.position.z], ...pts];
+  if (!o.free && isCar(car) && ctx.id !== 'amb' && ctx.L && !car.air) {
+    // a car keeps to the carriageway and half a car width off everything that stands: the line is bent round parked cars,
+    // shelters and the like; where no line exists nothing moves and the caller gets false (o.free: true drives the line as given)
+    const half = (car.wid || 1.85) / 2 + 0.12, b = S.bend(ctx, P, { half, off: Math.max(0, (car.len || 4.4) / 2 - half), ignore: o.ignore || car.ignore, road: o.road !== false });
+    if (!b) return false;
+    P = b;
   }
-  line.push(P[n - 1]);
+  const line = S.curve(P, 0.7); // Catmull-Rom through the points, sampled into a polyline with running length
   const len = [0];
   for (let i = 1; i < line.length; i++) len.push(len[i - 1] + Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]));
   const total = len[len.length - 1];
@@ -669,6 +890,7 @@ function* drive(ctx, car, pts, speed = 12, o = {}) {
     if (o.each && o.each(dt, u) === true) break;
   }
   car.drift = 0; car.turnRate = 0;
+  return true;
 }
 /**
  * Handbrake turn: the car swaps ends (turns by `turn` radians, default half a circle) while sliding on along its old
@@ -742,17 +964,15 @@ function spawnPed(ctx, atX = null, opts = {}) {
   a.look = look; a.keep = !!opts.keep;
   a.dir = dir; a.exitX = dir > 0 ? ex1 : ex0;
   a.walkSpeed = rnd.range(1.35, 2.0); // a stroll, at life size
-  const x = atX ?? (dir > 0 ? ex0 : ex1);
+  let x = atX ?? (dir > 0 ? ex0 : ex1);
   if (opts.z != null) { a.lineZ = opts.z + rnd.range(-0.15, 0.15); a.fixedZ = true; a.side = a.lineZ >= 0 ? 1 : -1; }
   else { a.side = rnd.sign(); a.wf = rnd.range(0.15, 0.85); a.lineZ = paveZ(ctx, a, x); }
+  // nobody appears in view: a walker the viewer can see starts from out of the frame and walks on
+  if (watching(ctx) && seen(ctx, x, a.lineZ, 1)) { x = outPoint(ctx, x, a.lineZ, -dir, 2.5, 1).x; if (!opts.z) a.lineZ = paveZ(ctx, a, x); }
   ctx.spawn(a, x, a.lineZ);
   a.face(dir > 0 ? E : W);
   ctx.peds.push(a);
-  ctx.run((function* () {
-    a.g.scale.setScalar(0.001);
-    yield* popIn(ctx, a);
-    yield* stroll(a, true);
-  })());
+  ctx.run(stroll(a, true));
   return a;
 }
 function unped(ctx, a) {
@@ -765,16 +985,26 @@ function unped(ctx, a) {
  */
 function* stroll(a, keepSide = false) {
   if (!keepSide) { a.side = a.g.position.z >= 0 ? 1 : -1; a.wf ??= 0.5; }
-  let tryT = 0.4;
+  let tryT = 0.4, look = 0.3;
   while (!a.busy && a.alive) {
     const c = a.ctx, p = a.g.position, dx = a.exitX - p.x;
-    if (Math.abs(dx) < 0.12) { unped(c, a); if (!c.demote || !c.demote(a)) yield* popOut(c, a); return; }
+    if (Math.abs(dx) < 0.12) { unped(c, a); if (!c.demote || !c.demote(a)) yield* exitOut(c, a); return; }
     const dt = yield;
     if (a.busy || !a.alive) return;
     if (!a.keep && (tryT -= dt) <= 0) { tryT = 0.5; if (c.demote && c.demote(a)) { unped(c, a); return; } }
     const sp = a.walkSpeed, fwd = Math.sign(dx);
     if (!a.fixedZ) a.lineZ = paveZ(c, a, p.x);
-    const dz = a.lineZ - p.z;
+    // a lamp post, a bin, a terrace table ahead: step round it (looked at twice a second, only on a spot, not the whole-street crowd)
+    if (c.id !== 'amb' && (look -= dt) <= 0) {
+      look = 0.5;
+      const lz = a.lineZ + (a.sideOff || 0);
+      if (S.hitsObst(c, p.x + fwd * 1.1, lz, 0.4, a.ignore)) {
+        let pick = null;
+        for (const off of [0.8, -0.8, 1.4, -1.4]) if (S.clearSpot(c, p.x + fwd * 1.1, a.lineZ + off, 0.35, { ground: 'open', ignore: a.ignore })) { pick = off; break; }
+        if (pick != null) a.sideOff = pick;
+      } else if (a.sideOff && !S.hitsObst(c, p.x + fwd * 1.1, a.lineZ, 0.4, a.ignore) && !S.hitsObst(c, p.x, a.lineZ, 0.5, a.ignore)) a.sideOff = 0;
+    }
+    const dz = a.lineZ + (a.sideOff || 0) - p.z;
     p.x += fwd * Math.min(Math.abs(dx), sp * dt);
     p.z += clamp(dz, -sp * 0.7 * dt, sp * 0.7 * dt);
     p.y = 0;
@@ -800,7 +1030,8 @@ function* needPed(ctx, xr = 13, filter = null) {
   if (!p) p = fromCrowd(ctx, 0, xr, ok);
   if (!p) {
     const np = spawnPed(ctx, null, { kind: extraKind(ctx), keep: true });
-    yield* waitUntil(() => ok(np) || !np.alive, 9);
+    // (an invented walker may start a good way beyond the frame: allow the time it takes to walk in)
+    yield* waitUntil(() => ok(np) || !np.alive, 9 + Math.max(0, Math.abs(np.g.position.x) - xr) / Math.max(0.8, np.walkSpeed || 1.4));
     p = np.alive && !np.busy ? np : ctx.peds.find(ok);
     if (!p) np.keep = false;
   }
@@ -820,10 +1051,10 @@ function panic(ctx, x, r = 16) {
     unped(ctx, a);
     ctx.run((function* () {
       a.arms = 'up';
-      if (Math.random() < 0.4) say(ctx, a, ctx.rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
+      if (ctx.rnd() < 0.4) say(ctx, a, ctx.rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
       yield* walkOff(ctx, a, a.g.position.x < x ? EX0 : EX1, 7.5, a.lineZ);
       a.arms = 'swing';
-      if (!ctx.demote || !ctx.demote(a)) yield* popOut(ctx, a);
+      if (!ctx.demote || !ctx.demote(a)) yield* exitOut(ctx, a);
     })());
   }
 }
@@ -836,10 +1067,10 @@ function* boatSpawner(ctx) {
     const dir = rnd.sign(), boat = makeBoat(rnd);
     boat.air = true;
     const z = L.canal.z + (dir > 0 ? -0.9 : 0.9);
-    yield* enter(ctx, boat, dir > 0 ? X0 + 2.4 : X1 - 2.4, z, L.canal.y);
+    yield* enter(ctx, boat, dir > 0 ? X0 + 2.4 : X1 - 2.4, z, L.canal.y, { dir, speed: 2.6 });
     boat.face(dir > 0 ? E : W);
     yield* go(ctx, boat, dir > 0 ? X1 - 2.4 : X0 + 2.4, z, 2.6);
-    yield* popOut(ctx, boat);
+    yield* exitOut(ctx, boat, { speed: 2.6 });
     yield* wait(rnd.range(5, 14));
   }
 }
@@ -913,19 +1144,20 @@ function* policeRun(ctx, fromDir, z, speed = 11, delay = 0) {
   const car = makeCar(ctx.rnd, 'police', ctx.L.night);
   car.siren = true;
   ctx.sfx('siren', 3);
-  yield* enter(ctx, car, fromDir > 0 ? X0 + 2.5 : X1 - 2.5, z, 0);
+  if (watching(ctx)) yield* wait(0.9);
+  yield* enter(ctx, car, fromDir > 0 ? X0 + 2.5 : X1 - 2.5, z, 0, { dir: fromDir });
   car.face(fromDir > 0 ? E : W);
   say(ctx, car, 'WEE-OO!', { color: '#7db8ff', size: 16 });
   yield* go(ctx, car, fromDir > 0 ? X1 - 2.5 : X0 + 2.5, z, speed);
-  yield* popOut(ctx, car);
+  yield* exitOut(ctx, car, { speed });
 }
 function* footCop(ctx, target, speed = 5.6, delay = 0.6) {
   yield* wait(delay);
   if (!target.alive) return;
   const cop = makePerson(ctx.rnd, { kind: 'cop' });
   const fromLeft = target.heading > 0; // chase from behind
-  yield* enter(ctx, cop, fromLeft ? EX0 : EX1, target.g.position.z);
   ctx.sfx('whistle');
+  yield* enter(ctx, cop, fromLeft ? EX0 : EX1, target.g.position.z, undefined, { dir: fromLeft ? 1 : -1, speed });
   say(ctx, cop, ctx.rnd.pick(['HALT!', 'STOP!', 'POLITIE!', 'STA STIL!']), { color: '#7db8ff', size: 15 });
   yield* chase(ctx, cop, target, speed, 0.8, 14);
   yield* leave(ctx, cop, speed, fromLeft ? EX1 : EX0);
@@ -933,7 +1165,7 @@ function* footCop(ctx, target, speed = 5.6, delay = 0.6) {
 
 /** The set-piece toolkit, handed to the scenes in ./acts (they cannot import this file: it imports them). */
 const T = {
-  X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter,
+  X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, exitOut, entryTime, seen, watching, outPoint,
   edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo, yell, padZ, once,
   spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
   extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
@@ -1146,21 +1378,87 @@ export function mixFor(cat, cats) {
   return out;
 }
 const weight = (ctx, n) => G[n].w[ctx.level - 1] * (ctx.mix?.factor?.[n] ?? 1);
-const ready = (ctx, n) => { const g = G[n]; return (!g.need || g.need.every((k) => ctx.L[k] && ctx.L[k].length > 0)) && (!g.avail || g.avail(ctx)); };
+/**
+ * The free ground a scene needs when it does not say (`stage:` next to `w`, `crime`, `avail`; `stage: false` = none): a modest
+ * clear patch of pavement, about 4 x 2 m, on either side. See S.findStage for the vocabulary.
+ */
+export const DEFAULT_STAGE = { pave: { side: 'any', len: 4, depth: 2 } };
+const stageOf = (n) => (G[n].stage === false ? null : G[n].stage || DEFAULT_STAGE);
+/** Scenes playing on this spot right now keep their stage x (so a second one is not put on top of the first). */
+const busyStages = (ctx) => (ctx._stages && ctx._stages.size ? [...ctx._stages] : null);
+const ready = (ctx, n) => {
+  const g = G[n];
+  return (!g.need || g.need.every((k) => ctx.L[k] && ctx.L[k].length > 0)) && (!g.avail || g.avail(ctx)) && S.stageClear(ctx, stageOf(n), busyStages(ctx));
+};
+/** Run a scene with its stage placement handed over: `ctx.stage = { x, side, room, lane }` (read it before the first yield). */
+function* runGag(ctx, n) {
+  const g = G[n], st = S.findStage(ctx, stageOf(n), busyStages(ctx)), mark = st ? { x: st.x, r: 8 } : null;
+  ctx.stage = st;
+  if (mark) (ctx._stages ||= new Set()).add(mark);
+  try { yield* g.run(ctx); } finally { if (mark) ctx._stages.delete(mark); }
+}
 
 // ---------------------------------------------------------------- the director
 const PACE = { 1: { gap: [4, 7], max: 1 }, 2: { gap: [3.5, 6], max: 1 }, 3: { gap: [2.6, 4.6], max: 1 }, 4: { gap: [2, 3.6], max: 2 }, 5: { gap: [1.5, 2.8], max: 2 } };
 
-/** The opening gag: the one this neighbourhood's figures point at most, if this spot can host it. */
-function signatureFor(ctx) {
-  const lv = ctx.level, names = Object.keys(G).filter((n) => G[n].w[lv - 1] > 0 && ready(ctx, n));
+// ---- which scene next: never the same twice in a row, and the usual suspects a little less usual
+// The opening scene used to be the single heaviest one for the neighbourhood, every time: on most streets that was the
+// phishing desk or the gulls (together about a third of all openings), and six scenes could never open a street.
+// Now every choice is a weighted draw. The heaviest scene is still the likeliest, rarer ones get a real chance, and
+// what the viewer saw last is remembered across spots, streets and reloads (for this browser tab).
+/** Tuning. `gamma` > 1 favours the heavy scenes in the OPENING draw (1 = plain weights, large = the old "always the heaviest");
+ * `floor` gives every available scene at least this share of the heaviest one's weight; `seen[i]` scales a scene shown
+ * i + 1 scenes ago (0 = never straight after itself). scripts/scene-rates.mjs prints what a setting does to the shares. */
+export const CASTING = { gamma: 2, floor: 0.25, seen: [0, 0.35, 0.6, 0.8] };
+const SEEN_KEY = 'heibel-seen';
+const SEEN = (() => {
+  try { const a = JSON.parse(sessionStorage.getItem(SEEN_KEY) || '[]'); return Array.isArray(a) ? a.filter((n) => typeof n === 'string').slice(0, CASTING.seen.length) : []; } catch (e) { return []; }
+})();
+const PLAYING = new Map(); // scene -> how many spots play it right now: never the same scene on two spots at once
+const noteSeen = (n) => {
+  const i = SEEN.indexOf(n);
+  if (i >= 0) SEEN.splice(i, 1);
+  SEEN.unshift(n);
+  SEEN.length = Math.min(SEEN.length, CASTING.seen.length);
+  try { sessionStorage.setItem(SEEN_KEY, JSON.stringify(SEEN)); } catch (e) { /* private mode */ }
+};
+// a street opened with ?seed= must replay the same way (tests); otherwise the casting dice are free, so the same street
+// does not open with the same scene every visit
+const SEEDED = typeof location !== 'undefined' && /[?&]seed=/.test(location.search);
+/**
+ * Draw one scene from `pool`. `weightOf(name)` is its weight here, `seen` the recent history (newest first), `dice` a
+ * 0..1 random function. Returns null when the pool is empty. A scene seen last is only drawn when nothing else is left.
+ */
+export function castScene(pool, weightOf, seen, dice, opening = false, C = CASTING) {
+  if (!pool.length) return null;
+  const top = pool.reduce((m, n) => Math.max(m, weightOf(n)), 0);
+  const score = (n, hist) => {
+    let v = Math.max(weightOf(n), C.floor * top);
+    if (opening) v = Math.pow(v, C.gamma);
+    const i = hist ? seen.indexOf(n) : -1;
+    return i >= 0 ? v * (C.seen[i] ?? 1) : v;
+  };
+  for (const hist of [true, false]) {
+    const ws = pool.map((n) => score(n, hist)), sum = ws.reduce((t, v) => t + v, 0);
+    if (!(sum > 0)) continue; // everything left was just seen: forget the history rather than play nothing
+    let r = dice() * sum;
+    for (let i = 0; i < pool.length; i++) { r -= ws[i]; if (r <= 0) return pool[i]; }
+    return pool[pool.length - 1];
+  }
+  return pool[0];
+}
+/** For scripts/scene-rates.mjs: every scene's weights per level and whether it is a crime scene. */
+export const sceneTable = () => Object.fromEntries(Object.keys(G).map((n) => [n, { w: G[n].w, crime: !!G[n].crime }]));
+
+/** The opening scene: drawn from what this neighbourhood's figures point at (crime scenes first), heaviest likeliest. */
+function signatureFor(ctx, dice) {
+  const lv = ctx.level, names = Object.keys(G).filter((n) => G[n].w[lv - 1] > 0 && !PLAYING.get(n) && ready(ctx, n));
   if (!names.length) return null;
-  if (lv === 1) return names.includes('pigeonLady') ? 'pigeonLady' : names[0];
-  const crime = names.filter((n) => G[n].crime), pool = crime.length ? crime : names;
-  return pool.reduce((a, b) => (weight(ctx, b) > weight(ctx, a) ? b : a));
+  const crime = names.filter((n) => G[n].crime), pool = lv > 1 && crime.length ? crime : names;
+  return castScene(pool, (n) => weight(ctx, n), SEEN, dice, true);
 }
 function* director(ctx, delay = 2.4, signature = true) {
-  const { rnd, level } = ctx, pace = PACE[level], locks = new Set();
+  const { rnd, level } = ctx, pace = PACE[level], locks = new Set(), dice = SEEDED ? rnd : Math.random;
   let active = 0;
   const recent = [];
   const launch = (name) => {
@@ -1169,22 +1467,22 @@ function* director(ctx, delay = 2.4, signature = true) {
     if (g.lock) locks.add(g.lock);
     recent.push(name);
     if (recent.length > 3) recent.shift();
-    ctx.gagStart?.(name);
+    noteSeen(name);
+    PLAYING.set(name, (PLAYING.get(name) || 0) + 1);
+    ctx.gagStart?.(name, { stage: G[name].stage || null });
     ctx.run((function* () {
-      try { yield* g.run(ctx); } finally { active--; if (g.lock) locks.delete(g.lock); ctx.gagEnd?.(name); }
+      try { yield* runGag(ctx, name); } finally { active--; if (g.lock) locks.delete(g.lock); PLAYING.set(name, Math.max(0, (PLAYING.get(name) || 1) - 1)); ctx.gagEnd?.(name); }
     })());
   };
   yield* wait(delay);
-  if (signature) { const sig = signatureFor(ctx); if (sig) launch(sig); }
+  if (signature) { const sig = signatureFor(ctx, dice); if (sig) launch(sig); }
   for (;;) {
     yield* wait(rnd.range(pace.gap[0], pace.gap[1]));
     if (active >= pace.max) continue;
     if (ctx.cineBusy && ctx.cineBusy()) continue; // a set piece holds the camera here
-    const opts = Object.keys(G).filter((n) => weight(ctx, n) > 0 && !recent.includes(n) && !(G[n].lock && locks.has(G[n].lock)) && ready(ctx, n));
+    const opts = Object.keys(G).filter((n) => weight(ctx, n) > 0 && !recent.includes(n) && !PLAYING.get(n) && !(G[n].lock && locks.has(G[n].lock)) && ready(ctx, n));
     if (!opts.length) { recent.shift(); continue; }
-    let r = rnd() * opts.reduce((t, n) => t + weight(ctx, n), 0), pickN = opts[0];
-    for (const n of opts) { r -= weight(ctx, n); if (r <= 0) { pickN = n; break; } }
-    launch(pickN);
+    launch(castScene(opts, (n) => weight(ctx, n), SEEN, dice));
   }
 }
 
@@ -1193,6 +1491,7 @@ function* director(ctx, delay = 2.4, signature = true) {
 const roadOf = (ctx) => ({ closed: 0, vehicles: { get size() { return ctx.trafficNear ? ctx.trafficNear() : 0; }, add() {}, delete() {}, has: () => false } });
 /** The street as a whole. Its walkers, bikes, cars and trams belong to the city's crowd (crowd.js), not to the street. */
 export function startAmbient(ctx) {
+  PLAYING.clear(); // a new street: whatever the last one was playing is gone
   ctx.peds = [];
   ctx.road = roadOf(ctx);
 }
@@ -1209,7 +1508,7 @@ export function startLocale(ctx, { only = null, delay = 2.4, signature = true, w
     ctx.run((function* () {
       for (;;) {
         yield* wait(2);
-        if (ready(ctx, only)) { ctx.gagStart?.(only); try { yield* G[only].run(ctx); } finally { ctx.gagEnd?.(only); } }
+        if (ready(ctx, only)) { ctx.gagStart?.(only, { stage: G[only].stage || null }); try { yield* runGag(ctx, only); } finally { ctx.gagEnd?.(only); } }
         yield* wait(2);
       }
     })());
@@ -1221,7 +1520,10 @@ export const canPlay = (ctx, name) => Object.hasOwn(G, name) && ready(ctx, name)
 export function playGag(ctx, name) {
   if (!canPlay(ctx, name)) return null;
   const state = { done: false };
-  ctx.gagStart?.(name);
-  ctx.run((function* () { try { yield* G[name].run(ctx); } finally { state.done = true; ctx.gagEnd?.(name); } })());
+  ctx.gagStart?.(name, { stage: G[name].stage || null });
+  ctx.run((function* () { try { yield* runGag(ctx, name); } finally { state.done = true; ctx.gagEnd?.(name); } })());
   return state;
 }
+
+/** The toolkit for tests and tools. */
+export const TOOLKIT = T;

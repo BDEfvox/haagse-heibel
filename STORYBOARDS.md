@@ -24,6 +24,19 @@ The audit returns one line per beat and lays the beats out as a contact sheet (o
 | `cam` | share of frames in which the scene itself directed the camera | 100% while it holds the camera |
 | `offFrame`, `hidden` | why `seen` was not 100% | |
 
+The audit also returns the director's own numbers (it logs every shot the stage really showed in `shotLog`):
+
+| Number | Meaning | Pass |
+|---|---|---|
+| `shots` | shots shown | about one per beat |
+| `short` | shots shown for less than 0.8 s | 0 to 1 (a glide that follows a cut straight away is allowed) |
+| `fallbacks` | blocked-view decisions after a shot began (new stand, high view, back down) | a few, never one every second |
+| `expired` | the 20 s safety net released the camera | 0 |
+| `offShot` | seconds the scene held the camera while the picture was not one of its shots | 0 |
+
+A shot never expires on its own (`hold` is no longer used); it stays until the script asks for the next one or releases the
+camera. A shot asked for less than 0.9 s after the last cut waits for its turn unless it has `quick: true` or `cut: seconds`.
+
 The numbers say whether the subject was in the picture; the contact sheet says whether the beat *reads* (pose, face,
 prop, composition). Both are needed.
 

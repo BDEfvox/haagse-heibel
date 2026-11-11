@@ -2,6 +2,11 @@
 // `await __heibel.audit('burglar')` plays one scene on fast-forward, measures every beat (was the subject in the
 // picture, in the clear, how big) and lays the beats out as a contact sheet over the page, to be looked at.
 // `__heibel.sheet(page)` turns the sheet's pages, `__heibel.sheet(-1)` takes it away.
+// It also logs every shot the stage really showed (`shotLog`: time, requested preset values, cut or glide, how long it lasted, whether it
+// had to wait for the minimum length, why the stand changed) and returns the director's numbers next to the beats:
+//   shots (count) · short (shown for under 0.8 s) · fallbacks (blocked-view decisions after the shot began: re-stand / high / back down)
+//   · stands (shots whose first stand was moved, mirrored or sent high) · deferred (shots that waited for the minimum length)
+//   · expired (the 20 s safety net fired: must be 0) · offShot (seconds the scene held the camera but the picture was not one of its shots).
 
 export function makeAudit(H) {
   let sheets = [], holder = null;
@@ -35,7 +40,10 @@ export function makeAudit(H) {
     // let whatever the street's own director is playing at this spot finish first, so the scene under test gets the camera
     for (let i = 0; i < 3600 && ([...st.gags].some((q) => q.ctx === st.camCtx && q.name !== st.only) || st.cine); i++) step();
     if (st.cine) st._cineEnd();
-    st.audit = true; st.auditOnly = name; st.beatLog = []; st.curBeat = null;
+    st.audit = true; st.auditOnly = name; st.beatLog = []; st.curBeat = null; st.shotLog = []; st.auditStats = {}; st._shotCur = null; st._shotsSeen = false;
+    // the scene gets the camera at the spot it plays at, whatever the director did meanwhile
+    const spot = st.camCtx;
+    st.lastSwitch = st.time; st.idleT = 0; st.focusReq = null;
     const state = st.debugPlay(name);
     if (!state) { st.audit = false; return 'not available at this spot'; }
     const h = Math.round((w * st.canvas.height) / st.canvas.width), shots = [];
@@ -50,6 +58,7 @@ export function makeAudit(H) {
     console.error = (...a) => { errors++; oldErr(...a); };
     try {
       while (!state.done && t < maxT) {
+        if (st.camCtx !== spot) { st.camCtx = spot; st.lastSwitch = st.time; st.idleT = 0; }
         step(); t += 0.0333;
         const b = st.curBeat;
         if (b !== last) {
@@ -82,7 +91,10 @@ export function makeAudit(H) {
       sheets.push(c);
     }
     show(0);
-    return { scene: name, seconds: +t.toFixed(1), finished: state.done, scriptErrors: errors, pages: sheets.length, beats: st.beatLog };
+    st._shotClose();
+    const sl = st.shotLog || [], ss = st.auditStats || {};
+    return { scene: name, seconds: +t.toFixed(1), finished: state.done, scriptErrors: errors, pages: sheets.length, shots: sl.length, short: sl.filter((s) => s.len < 0.8).length,
+      fallbacks: ss.fallbacks || 0, expired: ss.expired || 0, nogoal: ss.nogoal || 0, stands: ss.stands || 0, ducks: ss.ducks || 0, deferred: sl.filter((s) => s.deferred > 0).length, offShot: +(ss.offShot || 0).toFixed(1), shotLog: sl, beats: st.beatLog };
   }
 
   /** Every scene in turn, numbers only (no sheets): which can play here, and how its beats measure up. */

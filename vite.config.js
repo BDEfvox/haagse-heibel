@@ -24,7 +24,9 @@ const securityMeta = {
 export default defineConfig({
   base: './',
   plugins: [securityMeta],
-  server: { port: 5183, strictPort: true },
+  // HEIBEL_NO_HMR=1 serves the same dev site without pushing reloads on every saved file (the page takes new code on a
+  // manual reload): for long scene audits while files are being edited. See the `heibel-audit` launch config.
+  server: { port: 5183, strictPort: true, hmr: !process.env.HEIBEL_NO_HMR },
   build: {
     target: 'es2020',
     chunkSizeWarningLimit: 2000,

@@ -19,6 +19,9 @@
 //                        hair or cap). Omit to use the crowd's general palettes.
 //   speed      [min, max] metres per second.  gait: stride swing multiplier (1 = walking, 1.7 = running)
 //   lean       leans forward (radians), for runners.  scale: body height multiplier (1 = normal)
+//   watch      0..1, how curious they are when a scene plays out in front of them (crowd.js setStage): the chance that they
+//              stop at the edge and watch instead of going round or turning back. Default 0.4 for plain walkers
+//              (kids 0.85); cyclists use it as the chance of waiting instead of turning round.
 //   cap        how many of them can exist at once (desktop; phones get 30 %). They still count against the
 //              general walker/cyclist budgets of the crowd, this only sizes the draw pool.
 //   byCrime    optional: density by the buurt's crime level [0, 1, 2, 3, 4, 5] when a district row does not state
@@ -57,6 +60,7 @@ export const ARCHETYPES = {
   // (beige/brown "HH" monogram, green-red stripe), cap or hood. Often two on the seat; some ride on the pavement.
   niffo: {
     label: 'Straat Niffo', kind: 'rider', models: ['niffo', 'niffoHood'], bike: 'fatbike',
+    watch: 0.9,
     bikeCols: ['#151515', '#151515', '#1f1f23', '#ececec', '#2a2a2a', '#3a3f3a'],
     shirt: ['#c8aa7c', '#b9966a', '#a98259', '#d6c19a', '#8a6a48'],
     pants: ['#c0a276', '#a98259', '#8a6a48', '#2b2b2f', '#c8aa7c'],
@@ -68,6 +72,7 @@ export const ARCHETYPES = {
   // Men with a mullet and a Stone-Island-style jacket with a little stork badge on the upper left sleeve.
   harry: {
     label: 'Haagse Harry', kind: 'walker', model: 'harry',
+    watch: 0.85,
     shirt: ['#1f2a44', '#2f4a38', '#16181d', '#5b2c2c', '#3a3f4a', '#6a6a58'],
     pants: ['#2f3f5c', '#1f2430', '#4a4a4a', '#34405a'],
     hair: ['#2b1d14', '#5a3825', '#c58b3c', '#e6c36a', '#111111', '#a33b20'],
@@ -76,43 +81,51 @@ export const ARCHETYPES = {
   },
   civil: { // civil servant: suit, tie, briefcase
     label: 'Ambtenaar', kind: 'walker', model: 'civil',
+    watch: 0.35,
     shirt: ['#262c3a', '#3a3f4a', '#1b1d22', '#4a4d57', '#2b3a55'], pants: ['#262c3a', '#3a3f4a', '#1b1d22', '#4a4d57'],
     speed: [1.5, 2.0], cap: 70,
   },
   tourist: { // sun hat, backpack, camera
     label: 'Toerist', kind: 'walker', model: 'tourist',
+    watch: 0.85,
     shirt: ['#f4a261', '#e9c46a', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788'], pants: ['#c9b48a', '#6b705c', '#3d405b', '#8a8f96'],
     speed: [0.85, 1.25], cap: 70,
   },
   jogger: { // headband, bare arms and legs, leans forward
     label: 'Hardloper', kind: 'walker', model: 'jogger',
+    watch: 0.08,
     shirt: ['#ff4d6d', '#ffd166', '#06d6a0', '#4cc9f0', '#f72585', '#ffffff'], pants: ['#1b1d22', '#2b2b55', '#3a3f4a'],
     speed: [2.7, 3.7], gait: 1.75, lean: 0.12, cap: 50,
   },
   pensioner: { // grey hair, shopping trolley or rollator
     label: 'Gepensioneerde', kind: 'walker', models: ['pensionerTrolley', 'pensionerRollator'],
+    watch: 0.15,
     shirt: ['#8d7f6a', '#6f7f8f', '#9a6f7a', '#a39e93', '#586b5a'], pants: ['#4a4e69', '#5c4033', '#3d405b', '#6b705c'],
     hair: ['#cfcfcf', '#e6e6e6', '#b9b9b9', '#d8d2c4'], speed: [0.6, 0.95], gait: 0.7, cap: 60,
   },
   surfer: { // board under the arm, wetsuit trousers, bleached hair
     label: 'Surfer', kind: 'walker', model: 'surfer',
+    watch: 0.5,
     shirt: ['#2f3640', '#e63946', '#4cc9f0', '#f4a261', '#1d3557'], pants: ['#15171c', '#1d2a44', '#222222'],
     hair: ['#e6c36a', '#c58b3c', '#5a3825', '#e8d9a0'], speed: [1.2, 1.7], cap: 40,
   },
   parent: { // parent on a cargo bike (bakfiets) with two children in the box
     label: 'Bakfietsouder', kind: 'rider', model: 'person', bike: 'cargo',
+    watch: 0.3,
     bikeCols: ['#2a9d8f', '#e76f51', '#457b9d', '#8d99ae', '#6a994e'],
     shirt: ['#2a9d8f', '#e76f51', '#457b9d', '#e9c46a', '#9d4edd', '#52b788'], pants: ['#2b3a55', '#3d405b', '#5c4033', '#22223b'],
     speed: [3.2, 4.6], cap: 36,
   },
   courier: { // delivery rider with a big cube backpack, fast
     label: 'Bezorger', kind: 'rider', model: 'courier', bike: 'bike',
+    watch: 0.1,
     bikeCols: ['#111111', '#2b2b2b', '#e63946', '#1d3557'],
     shirt: ['#1fb6a8', '#2fc4b8', '#18a095'], pants: ['#1b1d22', '#2b3a55'],
     speed: [5.4, 7.6], cap: 40,
   },
   shopper: { // market shopper with a wheeled trolley and a tote
     label: 'Marktbezoeker', kind: 'walker', model: 'shopper',
+    watch: 0.3,
     shirt: ['#e84a5f', '#2a9d8f', '#f4a261', '#9d4edd', '#52b788', '#fb8500', '#e9c46a'], pants: ['#2b3a55', '#6b705c', '#5c4033', '#4a4e69'],
     speed: [0.85, 1.3], cap: 60,
   },

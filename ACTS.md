@@ -1,6 +1,6 @@
 # Writing a crime scene (`src/voxel/acts/*.js`)
 
-Every crime cutscene is one file in `src/voxel/acts/`. It exports a factory `(T) => ({ w, crime, avail, lock, *run(ctx) })`;
+Every crime cutscene is one file in `src/voxel/acts/`. It exports a factory `(T) => ({ w, crime, avail, lock, stage, *run(ctx) })`;
 `T` is the toolkit from `gags.js`, destructured at the top of every file (keep that header as it is). The reference
 scene is **`acts/burglar.js`**: read it before writing one. The storyboards are in `STORYBOARDS.md`.
 
@@ -21,11 +21,17 @@ distances in metres, angles in radians.
 5. **Fit the real street.** Never assume a door, window, pavement or road. Ask `S.*` (setting.js) and put the answer
    in `avail(ctx)` so the director only picks the scene where it fits. Cache terrain questions with `once(ctx, 'key', fn)`.
    Keep everybody within `EX0..EX1` (x from -23.5 to 23.5).
+   **Declare the free ground you use** with `stage:` (section 2b): a scene that has no room on a spot is not played there.
+   Nothing may clip: the walking helpers go round parked cars, shelters, terrace tables and lamp posts by themselves, but only
+   if the ground you chose is free to begin with, so choose it with `ctx.stage` / `S.findStage`, never by guessing.
 6. **Tone:** slapstick. No blood, no weapons, nothing aimed at real people or groups. Speech bubbles are short Dutch
    (Hague) exclamations, the news ticker (`ctx.news`) is dry English. Call `ctx.incident(n)` once when the crime happens.
 7. **No Math.random in scenes**: use `rnd` (`ctx.rnd`): `rnd()`, `rnd.range(a, b)`, `rnd.pick(arr)`, `rnd.chance(p)`, `rnd.sign()`.
    For a coin flip that picks the ending use `flip(ctx, 'name', p)` so the audit can force either ending.
 8. Do not edit files outside your own scene file(s) unless told to. If the toolkit lacks something, build it locally in your file.
+9. **Nothing appears or vanishes in view.** People and vehicles come on and go off through `R.enter` / `R.out` (section 3b): they
+   walk or drive in from out of the frame (or a real door) and leave the same way. `popIn` / `popOut` are only for things that are
+   MEANT to appear by magic or effect: a cloud of smoke, a prop pulled from a pocket, a wad of cash.
 
 ## 2. Street space
 
@@ -45,22 +51,120 @@ Pavement lines: `padZ(ctx, 'walkB0' | 'walkB1' | 'walkF0' | 'walkF1', x)` (B = h
 `S.houseNear`, `S.benchNear(ctx, x, maxDist)`, `S.surroundings(ctx)`. Toolkit: `spotNear(ctx, x, z)` (never null),
 `padSpot(ctx, 'walkF1', x)` (clear spot on a pavement line, or null).
 
+### 2a. The obstacle picture, and `ignore`
+
+Every spot has one picture of what STANDS there, in street space (`S.obstacles(ctx)`, built lazily, cached): parked cars (three
+circles each), lamp posts, every furniture prop (bins, benches, racks, bus shelters, terraces with tables, parasols, market stalls,
+kiosks, advertising columns, underground-bin posts, charging posts, trolley shelters, big bike parks, tram masts, traffic lights,
+statues, fountains...) with a footprint radius and height from ONE table, `S.FURN` (kind -> [height, radius]; unknown kinds count
+as 1.1 x 0.6; add new kinds there), and, when the crowd offers `ctx.crowd.obstacles`, the standing groups and waiting vehicles.
+Buildings, water and tree trunks are checked as before. `clearSpot`, `findSpot`, `spotOr`, `nudge`, `runway`, `lineClear`,
+`roadHere` and the new `S.route`, `S.laneClear`, `S.laneFor` all respect it. A thin post (lamp, pole) only needs a person's
+width beside it; `runway` lets a post on the line pass when there is 0.7 m to go round it (the walking helpers do).
+
+**`ignore`**: if your scene is deliberately AT a thing (the bin it tips over, the car it breaks into, the rack it cuts a bike
+from), pass it: `S.clearSpot(ctx, x, z, 0.6, { ground: 'open', ignore: [bin] })` (also `findSpot`, `nudge`, `runway`, `lineClear`,
+`roadHere`, `route`). An entry is an anchor (`L.bins[i]`, `L.parked[i]`, `L.racks[i]`: `{ x, z }`), an actor, or `[x, z]`; whatever
+stands within 2 m of it (or within its `r`) is left out. Whatever already touches the START of a `runway`/`lineClear`/`go`/`chase` is left
+out automatically (you start next to the bench you walk away from), and so is whatever touches the goal of a `go`. For movement
+helpers pass `ignore` in the last argument, `go(ctx, a, x, z, speed, 0.06, { ignore: [bin] })`, or set `a.ignore = [bin]` once.
+`opt.obst === false` skips the standing things altogether.
+
+### 2b. The stage declaration: `stage:` and `ctx.stage`
+
+A scene file exports `{ w, crime, avail, lock, stage, *run }`. `stage` says what free ground the scene uses, as data:
+
+```js
+stage: { pave: { side: 'near' | 'far' | 'any', len, depth },  // a clear pavement strip len x depth metres (default 4 x 2)
+         road: { len },                                       // a clear stretch of carriageway for a car (a 1.9 m lane, nothing in it)
+         cross: true,                                         // a clear line across the road between the two pavements, near the strip
+         anchor: 'door' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'atm' | null, reach: 12 }  // near one of the spot's anchors
+```
+
+Without `stage` the director assumes `DEFAULT_STAGE` (a clear 4 x 2 m patch of pavement on either side); `stage: false` = needs nothing.
+`ready()` asks `S.stageClear(ctx, need)`: a scene that fits nowhere on a spot is not played there, the director picks another
+scene, and the other spots of the street have their own directors (that is how a scene "moves"). Just before `run`, the director
+sets **`ctx.stage = { x, side ('near' | 'far' | null), room (metres of clear run), lane (z of a free driving line, with `road`) }`**:
+the placement with the most room. Centre the scene on it; read it before your first `yield` (two scenes can share a spot at the
+busy levels and the next one overwrites it); treat a missing `ctx.stage` as "the middle". Two examples:
+
+```js
+// a thief who cuts a bike from a rack and rides off along the pavement: a rack, 8 m of clear pavement on its side
+stage: { pave: { side: 'far', len: 8, depth: 2 }, anchor: 'rack', reach: 10 },
+// a car chase and a police car crossing: 16 m of free carriageway, and a way across for the people who scatter
+stage: { road: { len: 16 }, cross: true },
+```
+`S.findStage(ctx, need, avoid)` / `S.stageClear` are in setting.js if you want to ask for something else (cached per spot and need).
+The needs are your assumptions written down: a scene that runs 10 m along a pavement says `len: 10`.
+
+### 2c. Other spot facts
+
+`ctx.inView(x, z, y = 1, margin = 0.08)` is true when that street-space point is inside the camera frame now; `ctx.watched()`
+is true when the viewer is looking at this spot. (The toolkit's `T.seen` / `T.watching` wrap them and treat a missing one as
+"yes".) `ctx.stageMode('flee' | 'watch')` tells the crowd around the scene to run from it or to stop and look. Vehicles: `S.laneClear(ctx,
+z, x0, x1, halfWidth)` (is a driving line free: road under it, nothing standing within `halfWidth`), `S.laneFor(ctx, dir, x0, x1)` (the z of a free
+driving line for traffic going `dir`, or null: use it instead of `L.chaseZ` when you can), `S.route(ctx, x0, z0, x1, z1)` (the walking route
+the helpers use: `{ pts, ok, straight }`), `S.bend(ctx, points, { half })` (a driving line bent round parked cars, or null).
+
 ## 3. The rig `const R = rig(ctx)`
 
-`yield* R.enter(actor, x, z, y?)` pop in · `R.spawn(actor, x, z, y?)` no pop · `yield* R.out(a)` pop away ·
-`yield* R.leave(a, speed, toX?)` walk off the spot · `yield* R.away(a, dx, speed)` walk a few metres and pop ·
+`yield* R.enter(actor, x, z, y?, opts?)` bring on stage (section 3b) · `R.spawn(actor, x, z, y?)` put it there at once (only for things
+out of view) · `yield* R.out(a, opts?)` take off stage (3b) ·
+`yield* R.leave(a, speed, toX?)` walk off the spot and on out of the frame · `yield* R.away(a, dx, speed)` walk a few metres, then on out of the frame ·
 `R.add(object3d)` / `R.rm(o)` a prop in street space (`o.position.set(x, y, z)`) · `R.stay(o)` survives a normal finish ·
 `R.run(gen)` / `R.stop(task)` · `yield* R.settle(maxSeconds)` wait for running tasks (stop endless ones first!) ·
 `yield* R.close()` closes the road to traffic and waits for it to clear, `R.open()` ·
 `R.borrow(p)` / `R.give(p)` a passer-by from the crowd (`takePed(ctx, xr, null, cx)` or `yield* needPed(ctx, xr)`; `gather(ctx, R, x, n)` gives up to n onlookers; `filmIt(p, x, z)` makes one film with a phone) ·
 `extraKind(ctx)` the kind ('niffo' | 'harry' | 'civ') for an extra YOU invent, weighted by `ctx.district.pop` (use it in `makePerson(rnd, { kind: extraKind(ctx) })`; the toolkit's own `spawnPed`/`needPed`/passer-by `resident` already do) ·
 `fatbike(ctx, R, x, z, { passenger })` a spawned electric fat-bike with a rider (and a passenger if `passenger: true`) on it, returns `{ bike, rider, passenger }`; move it with `go`/`drive`/`rideTo`-style code, the rig cleans it up ·
-`R.panic(x, r, n)` bystanders flee · `yield* R.police(dir, z, speed, delay)` a police car crosses · `yield* R.cop(target, speed, delay, line)` a foot cop chases.
+`R.panic(x, r, n)` bystanders flee · `yield* R.police(dir, z, speed, delay)` a police car crosses (siren first, then it drives in from out of
+the frame along a free lane, and out again; no free lane, no car) · `yield* R.cop(target, speed, delay, line)` a foot cop runs in from out of the frame, chases and runs on out.
+
+### 3b. Entrances and exits: nothing appears or vanishes in view
+
+`yield* R.enter(a, x, z, y, opts)` returns when `a` stands at (x, z). If the spot is not being watched, or the point is out of
+view, `a` just stands there (no scale-up pop). In view it comes in from somewhere that explains it, in this order:
+
+1. a real front door close by: `opts.from = 'door'` (or `y = 0.001`, or a point within 1.2 m of a door): it steps out of the door;
+2. the nearest point outside the frame along the line it is on (pavement line or lane): it walks or drives in at a brisk pace, round
+   things, like `go`; `opts.dir` = the way it travels when it arrives (+1 / -1) picks the side, **give it for cars**, so that `car.face(E)`
+   afterwards does not flip it on screen;
+3. from behind the nearest stall, kiosk or shelter big enough to hide it.
+
+`opts`: `{ speed, from: 'edge' | 'door' | 'auto', dir, now, exact, ignore }`. `now` is for the rare script that needs an instant
+appearance and only applies out of view. A `y` above 0.05 (a balcony, a bench) cannot walk in and still pops in by magic: avoid it, or
+have the person come out of the door and walk to the spot. The actor is marked `a.offstage = true` until it has arrived; a beat that
+lists it as a subject while it is outside the frame will pull the camera back (the stage is asked to skip `offstage` actors),
+so name the point it is coming to rather than the actor, or start the beat when it is on.
+
+`yield* R.out(a)`, `R.away(a, dx, speed)`, `R.leave(a, speed, toX)`: the actor walks, runs or drives on until it is out of the frame (and a
+few metres beyond), or goes back in through the door it came out of, and only then is removed. If the camera keeps following it, it
+carries on to the end of the playable range and is handed back to the crowd (`ctx.demote`) there, else keeps going: nobody vanishes in view.
+A person on a balcony steps back through the window. When the scene ends normally, anybody still standing in view leaves the same way
+by themselves. `R.police`, `R.cop`, `spawnPed`, `needPed`, `resident` and the four ambient gags use the same entrances and exits.
+
+**Order "shot, then entrance".** Walking in takes longer than popping in (an entrance from a frame edge 14 m away is 4 to 5 seconds at
+a walk). So: (1) cut to the shot that will hold the arrival point *before* you call `R.enter`, and give that shot a `hold` longer than the
+walk; (2) if the beat after depends on the arrival (a cop who must be standing there when the thief runs into him), start the entrance
+earlier with `R.run(R.enter(...))` and `T.entryTime(ctx, a, x, z, opts)` (seconds it will take now, 0 when it is instant) and
+wait for that, or pass `speed` (runners: 5 to 7); (3) the first beat of a scene is the shot of the place, the entrance is the second
+half of it. In `burglar.js`: beat 1 holds `cam.wide(land, { hold: 3 })` and then calls `R.enter(rob, ...)`, and the track shot is cut after the
+entrance: lengthen the wide hold to the entrance (or cut to `cam.track` first and enter into it); the busted ending `wait(0.9)` then
+enters the cop, who now needs `entryTime` seconds, not 0.3: start him as soon as the getaway begins. The owner's `R.enter(owner,
+h.door.x, h.door.z, 0.001)` already steps out of the door.
+
+The raw `popIn(ctx, a)` / `popOut(ctx, a)` stay in the toolkit for magic (smoke clouds, a prop pulled from a pocket); `T.exitOut`,
+`T.enter` (the rig-free version) are there for scenes that do not use `R`.
 
 ## 4. Moving people
 
 `yield* go(ctx, a, x, z, speed)` · `yield* goEach(ctx, a, x, z, speed, (dt) => {...})` (return true to stop) ·
 `yield* chase(ctx, a, target, speed, stopDist, timeout)` · `yield* tiptoe(ctx, a, x, z, speed)` (creeps, looks over both shoulders half-way) ·
+**These go round things.** When the straight line meets a parked car, a bus shelter, a terrace table or a lamp post, they take a short
+detour (worked out once per call, a `chase` looks again four times a second) at the same speed, keeping 0.3 m off everything; if there is no
+way they stop at the last clear point of the straight line instead of walking through. Same signatures; the last argument of `go`/`goEach`/`chase`
+is an options object `{ ignore: [things you are AT], straight: true (no detour) }`, or set `a.ignore`. Flying things and `air` actors walk straight.
+Ground and water are still your business: choose the line with `ctx.stage` / `S.runway` / `S.lineClear`. `walkOff`, `leave`, `R.away`, `stroll` (passers-by sidestep what stands ahead) do the same.
 `yield* leap(ctx, a, x, z, height, dur, y1 = 0)` (crouch, arc, squash landing; `y1` > 0 lands on something, leaves `a.air = true`) ·
 `yield* tumble(ctx, a, x, z)` (knocked flying, ends sitting with stars: follow with `yield* getUp(a, mood)`) ·
 `yield* hop(a, h, dur)` · `yield* lookAround(a)` · `yield* doubleTake(ctx, a, 'HÈ?!')` · `yield* fright(ctx, a, 'OEPS')` ·
@@ -88,20 +192,45 @@ kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a
 
 `makeFatbike` is an electric fat-bike like the scooter (1.75 m, 4 inch tyres, long bench for two, big round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
 
-Enter with `yield* R.enter(car, x, z, 0)` then `car.face(E)`. A car is 4.4 m long (`car.len`, `car.wid`). The body sits
+Enter with `yield* R.enter(car, x, z, 0, { dir: 1 })` (it drives in from out of the frame heading the way you say) then `car.face(E)`. A car is 4.4 m long (`car.len`, `car.wid`). The body sits
 on springs: it **rolls in bends, dives when braking and squats when accelerating by itself** from how you drive it.
 
-- `yield* go(ctx, car, x, z, speed)` straight line · `yield* drive(ctx, car, [[x, z], ...], speed | (u) => speed, { drift: 0..1, each })` a smooth curve through points; lays rubber and smoke where it corners hard.
+- `yield* go(ctx, car, x, z, speed)` straight line (bent round parked cars; stops at the last clear point when there is no line) · `yield* drive(ctx, car, [[x, z], ...], speed | (u) => speed, { drift: 0..1, each, ignore, free })` a smooth curve through points; lays rubber and smoke where it corners hard. **For cars `drive` keeps the line on the carriageway and half a car width off everything that stands: it bends the curve round parked cars, shelters and the like, and where no such line exists it does NOT move and returns `false`**, so write `if (!(yield* drive(...))) { /* another branch */ }`; it returns `true` when it has arrived. `ignore: [the car you hit]` for a deliberate crash; `free: true` drives the points exactly as given (use sparingly). Scooters and bikes are not bent. Find the line first: `const z = S.laneFor(ctx, dir, x0, x1)` (null = no free lane: do not stage the drive) or `ctx.stage.lane`, and `S.laneClear(ctx, z, x0, x1)`.
 - `yield* handbrake(ctx, car, slide = 7, dur = 1.15, turn = Math.PI, side = 1)` swaps ends while sliding on, leaning, smoking.
 - `car.jolt(pitch, side)` knock the springs (0.5 = a kerb) · `car.lean = 0.2` hold a lean by hand · `skid(ctx, car)` marks + smoke this frame · `exhaust(ctx, car, n)`.
 - `car.siren = true` (police) · `car.hazard = true` (indicators) · van: `van.doors = 1` opens the back doors (0 closes).
 - Speeds: cruising 8, fleeing 13–15. Brake to a stop by tweening the speed down, never by teleporting.
-- Close the road first (`yield* R.close()`) when a scripted car uses it, and check `S.roadHere(ctx, L.chaseZ, x0, x1, 0.8)` in `avail`.
+- Close the road first (`yield* R.close()`) when a scripted car uses it, declare `stage: { road: { len } }` and check `S.roadHere(ctx, L.chaseZ, x0, x1, 0.8)` in `avail`.
+- A car's body sits on the road: it tilts on its springs (pitch, roll, `jolt`, `lean`), and the body is lifted exactly as far as a tilted corner would dip below the ground.
 
 ## 7. The camera `const cam = camFor(ctx, 'sceneName')`
 
-A shot follows its subject until the next shot. `on` = an actor, an array of actors, or a point `pt(x, z)` / `{ x, z, y }`.
-Options on every preset: `{ dist, el, az, y, fov, roll, hold (seconds, default 4: always set it longer than the beat), cut (seconds: glide instead of cutting), drift: { az, el, dist, fov }, lead, shake, fit, face, back }`.
+A shot follows its subject until the next shot.
+
+**Shots are binding (the camera rules, `stage.js`).** Every shot has a purpose, a minimum length and a motivated cut.
+- *A shot never expires.* It stays until you ask for the next one or call `cam.release()` (or the scene ends). `hold` is
+  gone as an expiry: it no longer cuts to the street's wide view (that was the "jumps up for a second, jumps back" bug).
+  The only timer left is a safety net for a scene that hangs: 20 s after the last shot or `B(...)` beat the stage releases the
+  camera once and logs a warning (the audit counts it as `expired`, which must be 0). If a shot's subjects leave the world the
+  last picture is held.
+- *Minimum shot length 0.9 s.* A `cam.*` call that comes sooner than 0.9 s after the last cut is queued inside the stage (the
+  script does not block; if several arrive the latest wins) and shows when the 0.9 s are up. `quick: true` cuts at once, and a
+  glide (`cut: seconds`) is never deferred. Do not rely on two shots 0.2 s apart: the first never shows.
+- *The stand is decided once* when the shot starts (walls, parked cars, furniture, lamp posts, trunks, bystanders, statues and
+  shelters; never under a terrace parasol or inside a market stall or kiosk), then kept. If the sight line then stays blocked
+  for 0.7 s the stand is reconsidered once, with a 0.5 s glide, and not again for 2 s; failing a clear stand the camera goes
+  high and wide the same way (once), and comes back down after 1 s of clear view. The cutaway of the buildings follows that
+  decision, not the passing sight line.
+- *Motivated cuts.* A shot on the same subject from nearly the same place (angle within 30 degrees, distance within 30%)
+  glides instead of cutting. A cut that would cross the line between two characters the last shot showed (the 180 degree
+  rule) is mirrored to the same side, unless the shot has `from` (you asked for the over-the-shoulder side) or `free`.
+- *Fitting the beat's subjects* eases in and out: the camera starts backing off when somebody is outside 97% of the frame and
+  comes back when everybody is inside 85%.
+
+Helpers on `ctx` for entrances and exits: `ctx.inView(x, z, y = 1, margin = 0.08)` (is this street-space point inside the
+camera's picture, camera within 250 m; positive margin grows the frame), `ctx.watched()` (is this spot what the viewer looks
+at), `ctx.stageMode('watch' | 'flee' | ...)` (how the crowd treats the stage while this scene holds the camera). `on` = an actor, an array of actors, or a point `pt(x, z)` / `{ x, z, y }`.
+Options on every preset: `{ dist, el, az, y, fov, roll, cut (seconds: glide instead of cutting), quick, drift: { az, el, dist, fov }, lead, shake, fit, face, back, from, free }`.
 `az`: 0 = straight across from the camera side, ±1.5 = looking along the street (camera at the +x / −x end). `el`: 0 = eye level.
 
 | Preset | Use it for |
