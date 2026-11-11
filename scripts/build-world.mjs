@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import bboxClip from '@turf/bbox-clip';
 import { PNG } from 'pngjs';
 import { fromArrayBuffer } from 'geotiff';
+import { POI_CAT, POI_FLAG } from '../src/voxel/poicats.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CACHE = path.join(ROOT, '.cache', 'world');
@@ -231,7 +232,7 @@ const tiles = new Map(); // key -> {b,g,r,l,t,p, names:Map}
 function getTile(tx, ty) {
   const k = tileKey(tx, ty);
   let t = tiles.get(k);
-  if (!t) tiles.set(k, (t = { tx, ty, b: [], bl: [], g: [], r: [], l: [], t: [], p: [], q: [], x: [], f: [], names: new Map() }));
+  if (!t) tiles.set(k, (t = { tx, ty, b: [], bl: [], g: [], r: [], l: [], t: [], p: [], ps: [], pn: new Map(), lp: [], q: [], x: [], f: [], names: new Map() }));
   return t;
 }
 const inWorld = (x, y) => x >= EXT[0] && x < EXT[2] && y >= EXT[1] && y < EXT[3];
@@ -358,11 +359,14 @@ const Q = {
   ].join('') + ');out geom;',
   bparts: (b) => `(way["building:part"](${b});relation["building:part"]["type"="multipolygon"](${b}););out geom;`,
   barriers: (b) => `way["barrier"~"${rx(['wall', 'fence', 'hedge', 'city_wall', 'retaining_wall'])}"](${b});out geom;`,
-  pois: (b) => `(nwr["amenity"~"${rx(['bar', 'pub', 'nightclub', 'biergarten', 'coffee_shop', 'restaurant', 'fast_food', 'cafe', 'bank', 'atm', 'bicycle_parking', 'bench', 'police', 'waste_basket', 'fuel', 'place_of_worship'])}"](${b});nwr["shop"](${b});nwr["highway"="bus_stop"](${b});nwr["railway"="tram_stop"](${b}););out center;`,
+  // wide points of interest (names, kinds, terraces) and street lamps; same queries as the background download
+  pois2: (b) => `(nwr["amenity"](${b});nwr["shop"](${b});nwr["tourism"](${b});nwr["leisure"~"${rx(['outdoor_seating', 'beach_resort', 'playground', 'fitness_station', 'bandstand'])}"](${b});nwr["highway"="bus_stop"](${b});nwr["railway"="tram_stop"](${b});nwr["office"](${b});nwr["craft"](${b});nwr["historic"](${b});nwr["man_made"~"${rx(['street_cabinet', 'surveillance', 'flagpole'])}"](${b});nwr["advertising"](${b});nwr["barrier"~"${rx(['bollard', 'planter'])}"](${b}););out center;`,
+  lamps: (b) => `node["highway"="street_lamp"](${b});out;`,
 };
 // small layers (lines/trees/pois): use fresh per-sub-bbox Overpass caches when all exist (or FETCH_SMALL=1),
 // otherwise fall back to the older, narrower caches in .cache/ (no network). Delete nothing; rerun with FETCH_SMALL=1 to upgrade.
-const SMALL = ['lines', 'trees', 'pois'];
+const SMALL = ['lines', 'trees', 'pois2', 'lamps'];
+const FALLBACK_USED = {};
 const OLD_CACHE = (f) => JSON.parse(fs.readFileSync(path.join(ROOT, '.cache', f), 'utf8')).elements;
 function fallbackElements(kind) {
   if (kind === 'lines') {
@@ -371,12 +375,14 @@ function fallbackElements(kind) {
     return rail.concat(wat);
   }
   if (kind === 'trees') return OLD_CACHE('osm-trees.json').filter((e) => e.type === 'node');
+  if (kind === 'lamps') return [];
   return OLD_CACHE('osm-pois.json');
 }
 async function eachSub(kind, fn) {
   const seen = new Set();
   if (SMALL.includes(kind) && !process.env.FETCH_SMALL && !SUBS.every((_, i) => fs.existsSync(path.join(CACHE, `${kind}_${i}.json.gz`)))) {
-    console.log(`  ${kind}: using fallback caches in .cache/ (FALLBACK, narrower tags)`);
+    FALLBACK_USED[kind] = true;
+    console.log(`  ${kind}: using fallback caches in .cache/ (FALLBACK, ${kind === 'lamps' ? 'no street lamps: tiles get no lp' : 'narrower tags, the old osm-pois.json'})`);
     let n = 0;
     for (const el of fallbackElements(kind)) {
       const k = el.type + '/' + el.id;
@@ -678,17 +684,101 @@ function poiKind(t) {
   if (t.highway === 'bus_stop' || t.railway === 'tram_stop') return 9;
   return 0;
 }
-await eachSub('pois', (el) => {
+// detail per point: `ps` = [cat, nameIdx, flags] per point of `p` (see src/voxel/poicats.js), `pn` = the tile's names
+const first = (v) => String(v ?? '').toLowerCase().split(/[;,]/).map((x) => x.trim()).filter(Boolean);
+const cuisineCat = (t) => {
+  const cu = first(t.cuisine);
+  const has = (...w) => cu.some((c) => w.some((x) => c === x || c.includes(x)));
+  if (has('burger', 'hamburger')) return 'burger';
+  if (has('pizza', 'italian')) return 'pizza';
+  if (has('kebab', 'turkish', 'shoarma', 'shawarma', 'doner', 'gyros', 'greek', 'lebanese', 'middle_eastern', 'arab')) return 'kebab';
+  if (has('chicken')) return 'chicken';
+  if (has('fish_and_chips', 'fish', 'seafood')) return 'fish';
+  if (has('surinamese', 'roti', 'caribbean')) return 'roti';
+  if (has('asian', 'chinese', 'indonesian', 'sushi', 'thai', 'japanese', 'vietnamese', 'korean', 'indian', 'ramen', 'noodle', 'wok', 'dim_sum', 'malaysian', 'nepalese')) return 'asian';
+  if (has('sandwich', 'bakery')) return 'sandwich';
+  if (has('ice_cream')) return 'ice_cream';
+  return null;
+};
+const SHOP_CAT = {
+  supermarket: 'supermarket', convenience: 'convenience', kiosk: 'convenience', deli: 'convenience', bakery: 'bakery', pastry: 'bakery', butcher: 'butcher',
+  greengrocer: 'greengrocer', farm: 'greengrocer', seafood: 'fish', chemist: 'chemist', hairdresser: 'hairdresser', barber: 'hairdresser',
+  beauty: 'beauty', cosmetics: 'beauty', nails: 'beauty', perfumery: 'beauty', optician: 'optician', jewelry: 'jewelry', florist: 'florist', books: 'books',
+  electronics: 'electronics', mobile_phone: 'electronics', computer: 'electronics', hifi: 'electronics', bicycle: 'bicycle', car: 'car', car_repair: 'car', car_parts: 'car',
+  motorcycle: 'car', tyres: 'car', furniture: 'furniture', interior: 'furniture', kitchen: 'furniture', bed: 'furniture', doityourself: 'diy', hardware: 'diy',
+  department_store: 'department', mall: 'department', alcohol: 'liquor', wine: 'liquor', beverages: 'liquor', laundry: 'laundry', dry_cleaning: 'laundry',
+  second_hand: 'second_hand', charity: 'second_hand', antiques: 'second_hand', gift: 'gift', variety_store: 'gift', sports: 'sports', outdoor: 'sports', pet: 'pet',
+  tattoo: 'tattoo', clothes: 'clothes', fashion: 'clothes', boutique: 'clothes', fashion_accessories: 'clothes', bag: 'clothes', shoes: 'shoes', vacant: 'vacant',
+  massage: 'massage', cannabis: 'coffeeshop', ice_cream: 'ice_cream', market: 'market_stall',
+};
+// -> { kind (the old poi kind, 0 = no point; 16 = new detail-only kinds, 17 = leisure=outdoor_seating), cat (a POI_CATS name) }
+function poiInfo(t) {
+  const a = t.amenity;
+  const base = poiKind(t);
+  if (t.leisure === 'outdoor_seating') return { kind: 17, cat: 'terrace' };
+  if (a === 'restaurant' || a === 'fast_food') return { kind: base, cat: cuisineCat(t) || (a === 'restaurant' ? 'restaurant' : 'snackbar') };
+  if (a === 'cafe') return { kind: base, cat: 'cafe' };
+  if (a === 'ice_cream') return { kind: 2, cat: 'ice_cream' };
+  if (['bar', 'pub', 'biergarten'].includes(a)) return { kind: base, cat: 'pub' };
+  if (a === 'nightclub') return { kind: base, cat: 'nightclub' };
+  if (a === 'coffee_shop') return { kind: base, cat: 'coffeeshop' };
+  if (a === 'bank') return { kind: base, cat: 'bank' };
+  if (a === 'atm') return { kind: base, cat: 'atm' };
+  if (a === 'fuel') return { kind: base, cat: 'fuel' };
+  if (a === 'pharmacy') return { kind: 3, cat: 'pharmacy' };
+  if (a === 'laundry') return { kind: 3, cat: 'laundry' };
+  if (a === 'cinema') return { kind: 16, cat: 'cinema' };
+  if (a === 'casino' || a === 'gambling') return { kind: 16, cat: 'casino' };
+  if (a === 'gym') return { kind: 16, cat: 'gym' };
+  if (a === 'marketplace') return { kind: 16, cat: 'market_stall' };
+  if (t.shop) return { kind: base, cat: SHOP_CAT[t.shop] || 'other' };
+  if (base) return { kind: base, cat: 'other' };
+  if (['hotel', 'hostel', 'guest_house', 'motel'].includes(t.tourism)) return { kind: 16, cat: 'hotel' };
+  if (t.office && (t.name || t.brand)) return { kind: 16, cat: 'office' };
+  return { kind: 0, cat: 'other' };
+}
+const poiStat = { points: 0, named: 0, terrace: 0, chain: 0, takeaway: 0, cats: {} };
+await eachSub('pois2', (el) => {
   const lon = el.type === 'node' ? el.lon : el.center?.lon, lat = el.type === 'node' ? el.lat : el.center?.lat;
   if (lon == null) return;
-  const kind = poiKind(el.tags || {});
+  const tg = el.tags || {};
+  const { kind, cat } = poiInfo(tg);
   if (!kind) return;
   const [x, y] = proj(lon, lat);
   if (!inWorld(x, y)) return;
   bump(stats.pois, kind);
   const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
   if (!eligible.has(tileKey(tx, ty))) return;
-  getTile(tx, ty).p.push([kind, dm(x, tx * TILE), dm(y, ty * TILE)]);
+  const T = getTile(tx, ty);
+  const cut = (v) => Array.from(clean(v)).slice(0, 40).join('').trim();
+  const brand = cut(tg.brand), nm = brand || cut(tg.name);
+  let ni = -1;
+  if (nm) { ni = T.pn.get(nm); if (ni === undefined) { ni = T.pn.size; T.pn.set(nm, ni); } }
+  const food = ['restaurant', 'fast_food', 'cafe', 'ice_cream'].includes(tg.amenity);
+  let flags = 0;
+  if (tg.leisure === 'outdoor_seating' || (tg.outdoor_seating && tg.outdoor_seating !== 'no')) flags |= POI_FLAG.TERRACE;
+  if (brand) flags |= POI_FLAG.CHAIN;
+  if (food && (tg.takeaway === 'only' || tg.takeaway === 'yes')) flags |= POI_FLAG.TAKEAWAY;
+  T.p.push([kind, dm(x, tx * TILE), dm(y, ty * TILE)]);
+  T.ps.push(POI_CAT[cat], ni, flags);
+  poiStat.points++; bump(poiStat.cats, cat);
+  if (ni >= 0) poiStat.named++;
+  if (flags & POI_FLAG.TERRACE) poiStat.terrace++;
+  if (flags & POI_FLAG.CHAIN) poiStat.chain++;
+  if (flags & POI_FLAG.TAKEAWAY) poiStat.takeaway++;
+});
+
+// ================================================================= 2e. STREET LAMPS
+console.log('[2e] street lamps');
+const lampStat = { lamps: 0, tiles: new Set() };
+await eachSub('lamps', (el) => {
+  if (el.type !== 'node' || el.lon == null || el.tags?.highway !== 'street_lamp') return;
+  const [x, y] = proj(el.lon, el.lat);
+  if (!inWorld(x, y)) return;
+  const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+  if (!eligible.has(tileKey(tx, ty))) return;
+  getTile(tx, ty).lp.push(dm(x, tx * TILE), dm(y, ty * TILE));
+  lampStat.lamps++; lampStat.tiles.add(tileKey(tx, ty));
 });
 
 // ================================================================= 2f. BUILDING TYPES, BUILDING PARTS, BARRIERS, POINT FEATURES, LANDMARKS
@@ -845,11 +935,13 @@ function finalBt(codes) {
 }
 
 // ---- collect the OSM objects
+const STATUE_IDS = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'voxel', 'statues', 'ids.json'), 'utf8'));
+const STATUE_IX = new Map(STATUE_IDS.map((id, i) => [id, i + 1]));
 const ENT = []; // {id, t, polys: [{ring, holes, bb, area}], pt, area}
 await eachSub('bsite', (el) => {
   const t = el.tags || {};
-  if (el.type === 'relation' && t.type !== 'multipolygon' && t.type !== 'building') return;
-  const e = { id: el.type[0] + el.id, t, polys: [], pt: null, area: 0 };
+  if (el.type === 'relation' && t.type !== 'multipolygon' && t.type !== 'building' && !STATUE_IX.has('relation/' + el.id)) return; // (a listed statue relation is kept whatever its type)
+  const e = { id: el.type[0] + el.id, oid: el.type + '/' + el.id, t, polys: [], pt: null, area: 0 };
   if (el.type === 'node') e.pt = proj(el.lon, el.lat);
   else {
     for (const poly of elementPolygons(el)) {
@@ -872,6 +964,7 @@ await eachSub('bsite', (el) => {
     } else if (el.type === 'relation') {
       const m = (el.members || []).find((q) => q.geometry && q.geometry.length);
       if (m) { const g = m.geometry[0]; e.pt = proj(g.lon, g.lat); }
+      else { const ns = (el.members || []).filter((q) => q.lat != null); if (ns.length) { const g = ns[Math.floor(ns.length / 2)]; e.pt = proj(g.lon, g.lat); } } // site relation: its node members
     }
   }
   if (!e.pt) return;
@@ -1138,6 +1231,26 @@ function addFeat(type, x, y, a, b, c, dedupe = 2) {
   FEATS.push({ type, x, y, a, b, c });
 }
 const BADMEM = ['stolperstein', 'plaque', 'ghost_bike', 'tree', 'bench', 'grave'];
+const BADART = ['mural', 'graffiti', 'mosaic', 'relief', 'painting', 'street_art', 'plaque', 'stolperstein', 'stolpersteine', 'bench', 'tree', 'grave'];
+const GOODART = ['sculpture', 'statue', 'bust', 'installation', 'column', 'stone', 'obelisk'];
+const isStatue = (t) => ((t.historic === 'memorial' || t.historic === 'monument') && !BADMEM.includes(t.memorial) && !BADMEM.includes(t['memorial:type']) && !t.building)
+  || (t.tourism === 'artwork' && !t.building && !BADART.includes(t.artwork_type) && (!t.artwork_type || GOODART.includes(t.artwork_type)));
+// 1 statue/figure, 2 bust, 3 sculpture (abstract or unknown artwork), 4 obelisk, 5 war memorial, 6 stone/stele, 7 cross, 8 column, 9 installation, 0 unknown
+function statueForm(t) {
+  const at = t.artwork_type, mem = t.memorial || t['memorial:type'];
+  const is = (...w) => w.includes(at) || w.includes(mem);
+  if (is('statue', 'figure')) return 1;
+  if (is('bust')) return 2;
+  if (is('obelisk')) return 4;
+  if (is('war_memorial')) return 5;
+  if (is('stone', 'stele')) return 6;
+  if (is('cross')) return 7;
+  if (is('column', 'pillar')) return 8;
+  if (is('installation')) return 9;
+  if (at === 'sculpture' || is('sculpture') || (t.tourism === 'artwork' && !at)) return 3;
+  return 0;
+}
+const statueStat = { listed: STATUE_IDS.length, missing: [] };
 const roofs = [], fuels = [], POINTS = [];
 for (const e of ENT) {
   const t = e.t;
@@ -1152,10 +1265,20 @@ for (const e of ENT) {
   else if (mm === 'chimney') POINTS.push([6, e, hdm, 12, 15]);
   else if (mm === 'flagpole') addFeat(12, e.pt[0], e.pt[1], 0, 0, 0);
   if (t.attraction === 'big_wheel') addFeat(7, e.pt[0], e.pt[1], 0, 0, 0, 10);
-  if (((t.historic === 'memorial' || t.historic === 'monument') && !BADMEM.includes(t.memorial) && !BADMEM.includes(t['memorial:type']) && !t.building) || (t.tourism === 'artwork' && t.artwork_type === 'statue')) addFeat(8, e.pt[0], e.pt[1], 0, 0, 0);
-  if (t.amenity === 'fountain') addFeat(9, e.pt[0], e.pt[1], 0, 0, 0);
   if ((t.highway === 'bus_stop' && t.shelter === 'yes') || t.railway === 'tram_stop' || (t.amenity === 'shelter' && t.shelter_type === 'public_transport')) addFeat(10, e.pt[0], e.pt[1], 0, 0, 0);
   if (t.leisure === 'playground') addFeat(11, e.pt[0], e.pt[1], 0, 0, 0, 5);
+}
+{ // statues, memorials and fountains: the ones in statues/ids.json first (never thinned out), then every other mapped one
+  const found = new Set();
+  for (const pass of [0, 1]) for (const e of ENT) {
+    const t = e.t, ix = STATUE_IX.get(e.oid) || 0;
+    if ((pass === 0) !== !!ix) continue;
+    if (t.amenity === 'fountain') addFeat(9, e.pt[0], e.pt[1], ix, 0, 0, ix ? 0 : 2);
+    else if (ix || isStatue(t)) addFeat(8, e.pt[0], e.pt[1], ix, statueForm(t), 0, ix ? 0 : 2);
+    else continue;
+    if (ix) found.add(e.oid);
+  }
+  statueStat.missing = STATUE_IDS.filter((id) => !found.has(id));
 }
 for (const [type, e, b, code, d] of POINTS) {
   if (nearTagged(code, e.pt[0], e.pt[1], d)) continue;
@@ -1316,7 +1439,8 @@ for (const k of [...tiles.keys()].sort()) {
   if (t.r.length) o.r = t.r;
   if (t.l.length) o.l = t.l;
   if (t.t.length) o.t = t.t;
-  if (t.p.length) o.p = t.p;
+  if (t.p.length) { o.p = t.p; o.ps = t.ps; if (t.pn.size) o.pn = [...t.pn.keys()]; }
+  if (t.lp.length) o.lp = t.lp;
   const hasNew = t.q.length || t.x.length || t.f.length;
   if (!Object.keys(o).length && !hasNew) continue;
   if (t.names.size) o.n = [...t.names.keys()];
@@ -1581,7 +1705,9 @@ const index = {
     b: '[height_m, roof(0 flat,1 slanted), year, x0,y0,...] 3DBAG footprint', bt: 'per building (parallel to b): 0 nothing special, 1..25 type code', bp: 'per building (parallel to b): 1 = drawn from q parts instead of as a block',
     bf: 'per building (parallel to b): compass direction / 10 (0..35) towards the street it fronts, -1 = none',
     q: '[height_dm, min_height_dm, roofShape(0 flat,1 gabled,2 hipped,3 pyramidal,4 dome,5 onion,6 cone/round,7 skillion,8 other), roofHeight_dm, wallRGB|-1, roofRGB|-1, x0,y0,...] OSM building parts, tile of centroid, not clipped',
-    x: '[kind(1 wall,2 fence,3 hedge,4 city/retaining wall), height_dm, x0,y0,...] barriers clipped per tile', f: '[type, x, y, a, b, c] point features, see HANDOFF.md',
+    p: '[kind, x, y] points of interest', ps: 'per point of p, 3 integers: cat (index into POI_CATS in src/voxel/poicats.js), nameIdx (into pn, or -1), flags (1 terrace, 2 chain, 4 takeaway)', pn: 'names used by ps',
+    lp: 'street lamps: x0,y0,x1,y1,... in tile dm',
+    x: '[kind(1 wall,2 fence,3 hedge,4 city/retaining wall), height_dm, x0,y0,...] barriers clipped per tile', f: '[type, x, y, a, b, c] point features, see HANDOFF.md; types 8 and 9: a = 1-based index in src/voxel/statues/ids.json or 0, type 8: b = form (1 statue,2 bust,3 sculpture,4 obelisk,5 war memorial,6 stone,7 cross,8 column,9 installation,0 unknown)',
   },
   generated: new Date().toISOString(),
 };
@@ -1597,4 +1723,7 @@ console.log('roads per class', JSON.stringify(stats.roads));
 console.log('rails per kind', JSON.stringify(stats.rails));
 console.log(`fronts (bf) ${dstats.bf} of ${BLD.length}; bt per code ${JSON.stringify(dstats.bt)}; bp=1 ${dstats.bp}; parts ${dstats.parts} per roof shape ${JSON.stringify(dstats.q)}; barrier pieces per kind ${JSON.stringify(dstats.x)} (fences+hedges ${(dstats.softBytes / 1e6).toFixed(1)} MB, long-only filter ${dstats.softFilter}); features per type ${JSON.stringify(dstats.f)}; fuel ${JSON.stringify(dstats.fuel)}; prisons ${JSON.stringify(dstats.prisons)} (walls raised ${dstats.prisonWalls}); landmarks ${LANDMARKS.length}`);
 console.log(`trees in tiles ${stats.trees} (OSM ${stats.treesOsm}, register ${stats.treesRegister}); pois (world) per kind ${JSON.stringify(stats.pois)}`);
+console.log(`poi detail ${JSON.stringify({ ...poiStat, cats: undefined })}; cats ${JSON.stringify(poiStat.cats)}; wide caches ${FALLBACK_USED.pois2 ? 'NOT used (fallback)' : 'used'}`);
+console.log(`statues: ids listed ${statueStat.listed}, placed ${statueStat.listed - statueStat.missing.length}, missing ${JSON.stringify(statueStat.missing)}; features with id ${FEATS.filter((f) => (f.type === 8 || f.type === 9) && f.a).length}`);
+console.log(`lamps ${lampStat.lamps} in ${lampStat.tiles.size} tiles; lamp caches ${FALLBACK_USED.lamps ? 'NOT used (fallback, no lp)' : 'used'}`);
 console.log(`tiles written ${tileList.length}; tile json ${(tilesBytes / 1e6).toFixed(1)} MB; largest ${largest.k} ${(largest.size / 1e6).toFixed(2)} MB; world dir total ${(total / 1e6).toFixed(1)} MB`);

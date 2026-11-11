@@ -6,8 +6,11 @@ import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
 import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } from './landmarks.js';
+import { faceNearestRoad } from './statues/kit.js';
 import { SPECIAL_PARTS } from './special-parts.js';
 import { furnishTile } from './furnish.js';
+import { signFor, lookOf as shopLook } from './brands.js';
+import { POI_CATS, POI_FLAG } from './poicats.js';
 
 const ROOT = './data/world/';
 const TILE = 256;
@@ -19,18 +22,19 @@ export const C = {
   ASPHALT: 20, KLINKER: 21, SERVICE: 22, CYCLE: 23, FOOT: 24, PED: 25, DIRT: 26, RAILBED: 27, RAIL: 28,
   WALK: 30, CURB: 31, MARK: 32, BIKELANE: 34, BUILDING: 40,
 };
-// Dutch street materials: grey concrete paving tiles, red-brown clinker streets, red asphalt cycle paths,
+// Dutch street materials: grey concrete paving tiles (never beige: pavements 30/24 are mid grey, squares 8 and
+// pedestrian streets 25 dark grey clinker and stone), red-brown clinker streets, red asphalt cycle paths,
 // dark asphalt main roads, murky green canal water and a grey-green North Sea.
 const PAL = {
-  0: { c: '#b9bba9', alt: '#aeb19e', speck: 0.14 },
-  1: { c: '#5d8a8c', alt: '#77a3a2', speck: 0.03 },
+  0: { c: '#a4a89d', alt: '#9a9f94', speck: 0.14 },
+  1: { c: '#5b7f78', alt: '#739a90', speck: 0.03 },
   2: { c: '#7aa95b', alt: '#6e9d52', speck: 0.16 },
   3: { c: '#5c8f4b', alt: '#507f43', speck: 0.3 },
   4: { c: '#e6d5a6', alt: '#dcc894', speck: 0.16 },
   5: { c: '#c8cb97', alt: '#a7b87b', speck: 0.3 },
   6: { c: '#62ad63', alt: '#58a15a', stripe: 4 },
   7: { c: '#a4bf76', alt: '#98b56a', stripe: 3 },
-  8: { c: '#c7bdab', alt: '#bcb19e', check: 1.5 },
+  8: { c: '#85837f', alt: '#7b7975', check: 1.5 },
   9: { c: '#7e828a', alt: '#757981', speck: 0.12 },
   10: { c: '#6f9aa2', alt: '#dcebea', speck: 0.012 },
   11: { c: '#5f636c' }, 12: { c: '#b79a90' }, 13: { c: '#8d8577' },
@@ -38,13 +42,13 @@ const PAL = {
   21: { c: '#8f7169', alt: '#866860', check: 1 },
   22: { c: '#6c7078', alt: '#666a72', speck: 0.2 },
   23: { c: '#a65c4f', alt: '#9d5549', speck: 0.15 },
-  24: { c: '#c6bfae', alt: '#bcb4a2', check: 1 },
-  25: { c: '#c3b59d', alt: '#b8a98f', check: 1.5 },
+  24: { c: '#96989a', alt: '#8c8e91', check: 1 },
+  25: { c: '#7d7a77', alt: '#73706e', check: 1.5 },
   26: { c: '#cbb98e', alt: '#bfac80', speck: 0.25 },
   27: { c: '#8d8577', alt: '#837b6e', speck: 0.3 },
   28: { c: '#8f959c' },
-  30: { c: '#b4b4ae', alt: '#a9a9a3', check: 1 },
-  31: { c: '#cdcabf' },
+  30: { c: '#999c9f', alt: '#8f9296', check: 1 },
+  31: { c: '#b4b6b4' },
   32: { c: '#ecece6' },
   34: { c: '#a65c4f', alt: '#9d5549', speck: 0.15 },
   40: { c: '#9a958a' },
@@ -456,13 +460,8 @@ function drawGeneric(v, gl, b, look, night, simple = false) {
   }
 }
 
-const SHOPS = ['BAKKER', 'KAAS', 'BLOEM', 'FIETS', 'KAPPER', 'BOEK', 'TOKO', 'SLAGER', 'DROP', 'VIS', 'KIOSK', 'MODE', 'SCHOEN'];
-const BARS = ['CAFE', 'KROEG', 'BAR', 'BIER'];
-const FOOD = ['FRIET', 'PIZZA', 'SNACK', 'KEBAB', 'ROTI', 'SUSHI'];
-const POI_SHOP = { 1: BARS, 2: FOOD, 3: SHOPS, 4: ['SUPER'], 5: ['BANK'], 6: ['KOFFIE'] };
-
 /** A street-facing house front drawn with the full kit (doors, windows, gables, shop fronts). Returns anchors in scene coords. */
-function drawHero(v, gl, u, rnd, night) {
+function drawHero(v, gl, u, rnd, night, dry = false) {
   // rnd: this front's own dice, so it comes out the same every time the street is opened
   const th = Math.atan2(u.nx, u.nz), c = Math.cos(th), s = Math.sin(th);
   v.setT(th, u.cx, u.cz); gl.setT(th, u.cx, u.cz);
@@ -478,11 +477,11 @@ function drawHero(v, gl, u, rnd, night) {
     info = P.house(v, gl, {
       x: 0, z: depth / 2, w, rnd, night, depth, y: 0, roof, wall: u.wall || rnd.pick(era.wall), roofCol: u.roofCol,
       floors: clamp(Math.round((u.h - (u.roof ? 3.4 : 2.6)) / 2.2) + 1, 1, 9),
-      shop: u.shop || null, signBg: u.shop === 'BANK' ? '#005eb8' : undefined,
+      shop: u.shop || null, atm: u.atm, dry,
     });
   }
   if (u.atm) P.atm(v, gl, -w / 2 + 0.9, depth / 2 + 0.05, 0);
-  const out = { u, info, th, side: u.side, w, front: toS(0, depth / 2), door: toS(info.door.x, info.door.z), win: toS(info.win.x, info.win.z), winY: info.win.y };
+  const out = { u, info, cat: info.cat || null, name: info.name || null, th, side: u.side, w, front: toS(0, depth / 2), door: toS(info.door.x, info.door.z), win: toS(info.win.x, info.win.z), winY: info.win.y };
   if (u.atm) out.atm = toS(-w / 2 + 0.9, depth / 2 + 1.2);
   if (info.chimney) { const p = toS(info.chimney.x, info.chimney.z); out.chimney = { x: p[0], y: info.chimney.y, z: p[1] }; }
   if (info.sign) {
@@ -501,12 +500,99 @@ function drawHero(v, gl, u, rnd, night) {
 // doors and windows are.
 const CELL = 64, CELLS = TILE / CELL;
 const cellOf = (x, z) => Math.min(CELLS - 1, Math.max(0, Math.floor(x / CELL))) + CELLS * Math.min(CELLS - 1, Math.max(0, Math.floor(z / CELL)));
+// Which kinds of point of interest take a front (and which are only a cash machine or nothing at all). Tiles built
+// before `ps` existed only know the old kinds 1-6.
+const OLD_CAT = { 1: 'cafe', 2: 'snackbar', 3: 'other', 4: 'supermarket', 5: 'bank', 6: 'coffeeshop' };
+const NO_FRONT = new Set(['terrace', 'market_stall', 'fuel', 'atm']);
+// how much a place deserves a front when a building has more points than fronts
+const PRIO = { supermarket: 9, department: 9, burger: 8, chicken: 8, pizza: 8, kebab: 7, snackbar: 7, restaurant: 7, cafe: 7, pub: 7, bakery: 7, butcher: 7, clothes: 7, chemist: 7, bank: 7, coffeeshop: 7, hairdresser: 5, hotel: 4, office: 1, massage: 2, beauty: 3, vacant: 2, other: 3 };
+const segDist = (px, pz, ax, az, bx, bz) => {
+  const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz, t = l2 ? clamp(((px - ax) * dx + (pz - az) * dz) / l2, 0, 1) : 0;
+  return Math.hypot(px - ax - t * dx, pz - az - t * dz);
+};
+const ringDist = (px, pz, ring) => { let d = 1e9; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) d = Math.min(d, segDist(px, pz, ring[j][0], ring[j][1], ring[i][0], ring[i][1])); return d; };
+/**
+ * Give every front unit the real place that stands there. A point of interest belongs to the building it lies in (or the
+ * nearest building within 5.5 m). Its place along the facade picks the unit; a building with several points gets them on
+ * separate units in the order they lie. Big stores take two or three units under one wide sign. Units left over stay homes.
+ */
+function assignShops(key, t, F, dice) {
+  const P = t.p || [], ps = t.ps, byBuilding = new Map(), atms = [];
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i], px = p[1] / 10, pz = TILE - p[2] / 10;
+    let cat, name = null, flags = 0;
+    if (ps) {
+      cat = POI_CATS[ps[3 * i]] || 'other';
+      const ni = ps[3 * i + 1];
+      name = ni >= 0 && t.pn ? t.pn[ni] || null : null;
+      flags = ps[3 * i + 2] | 0;
+      if (cat === 'other' && p[0] !== 3) continue; // a bench, a bus stop, a church: not a shop
+    } else cat = OLD_CAT[p[0]];
+    if (!cat) continue;
+    if (NO_FRONT.has(cat) && cat !== 'atm') continue;
+    // the building it lies in, else the nearest one within a few metres
+    let owner = -1, bd = 5.5;
+    for (const [bi, us] of F.byB) {
+      if (!us.some((u) => Math.hypot(u.cx - px, u.cz - pz) < 60)) continue;
+      const ring = F.rings.get(bi);
+      if (inRing(px, pz, ring)) { owner = bi; break; }
+      const d = ringDist(px, pz, ring);
+      if (d < bd) { bd = d; owner = bi; }
+    }
+    if (owner < 0) continue;
+    const us = F.byB.get(owner), u0 = us[0];
+    const q = ((px - u0.cx) * -u0.nz + (pz - u0.cz) * u0.nx) / u0.w + u0.i; // its place along the facade, in units
+    const c = { cat, name, flags, q, prio: (PRIO[cat] || 5) + (name ? 1 : 0) + (flags & POI_FLAG.CHAIN ? 1 : 0), i };
+    if (cat === 'atm') { atms.push({ owner, q }); continue; }
+    if (!byBuilding.has(owner)) byBuilding.set(owner, []);
+    byBuilding.get(owner).push(c);
+  }
+  for (const [bi, list] of byBuilding) {
+    const us = F.byB.get(bi), free = (u) => !u.shop && !u.tower;
+    list.sort((a, b) => b.prio - a.prio || a.q - b.q);
+    const taken = [];
+    for (const c of list) {
+      let best = null, bq = 3.01;
+      for (const u of us) if (free(u) && Math.abs(u.i - c.q) < bq) { bq = Math.abs(u.i - c.q); best = u; }
+      if (!best) continue;
+      const sg = signFor(c.cat, c.name, c.flags, dice(best, 'shop'));
+      const L = shopLook(sg.cat), chainy = sg.kind === 'chain' || (c.flags & POI_FLAG.CHAIN) !== 0;
+      // big stores take more than one unit; a one-off clothes shop or garage does not
+      const want = sg.cat === 'supermarket' || sg.cat === 'department' ? L.span : chainy ? L.span || 1 : 1;
+      best.shop = { cat: sg.cat, real: c.name, sign: sg, look: sg.win ? { ...L, win: sg.win } : L, head: true, k: 1, signW: 0, off: 0, flags: c.flags };
+      taken.push({ u: best, q: c.q, want });
+    }
+    for (const g of taken) {
+      let lo = g.u.i, hi = g.u.i;
+      const unitAt = (i) => us.find((u) => u.i === i);
+      for (let extra = g.want - 1, up = g.q > g.u.i; extra > 0; extra--, up = !up) {
+        const a = unitAt(up ? hi + 1 : lo - 1), b = unitAt(up ? lo - 1 : hi + 1);
+        const pick = a && free(a) ? [a, up] : b && free(b) ? [b, !up] : null;
+        if (!pick) break;
+        pick[0].shop = { ...g.u.shop, head: false };
+        if (pick[1]) hi++; else lo--;
+      }
+      const k = hi - lo + 1, head = unitAt(lo), uw = g.u.w;
+      if (head !== g.u) { head.shop = g.u.shop; g.u.shop = { ...head.shop, head: false }; }
+      head.shop.head = true; head.shop.k = k;
+      head.shop.signW = k * uw - 0.1;
+      head.shop.off = -((k - 1) * uw) / 2; // the next unit lies towards local -x
+    }
+  }
+  // cash machines: on a bank, where the map has one, and (only where there is no map data) on a blank wall now and then
+  for (const a of atms) {
+    const us = F.byB.get(a.owner).filter((u) => !u.tower);
+    us.sort((x, y) => Math.abs(x.i - a.q) - Math.abs(y.i - a.q) || (x.shop ? 1 : 0) - (y.shop ? 1 : 0));
+    if (us.length) us[0].atm = true;
+  }
+  for (const u of F.units) u.atm = u.atm || (!u.tower && ((u.shop && u.shop.cat === 'bank' && u.shop.head) || (!ps && !u.shop && u.w >= 4.4 && dice(u, 'atm') % 13 === 0)));
+}
 const _fronts = new WeakMap();
 /** The street fronts of a tile, in tile coordinates (x east, z south). { units, byB: building index -> its units } */
 function frontsOf(key, t) {
   let F = _fronts.get(t);
   if (F) return F;
-  F = { units: [], byB: new Map() };
+  F = { units: [], byB: new Map(), rings: new Map() };
   _fronts.set(t, F);
   if (!t.bf || !t.b) return F;
   t.b.forEach((e, bi) => {
@@ -553,21 +639,11 @@ function frontsOf(key, t) {
     }
     if (mine.length >= Math.max(1, n * 0.6)) {
       if (backs.length) mine[0].backs = { list: backs, th: Math.atan2(-o.uz, o.ux), cx: o.cx, cz: o.cz, rad: Math.min(o.w, o.d) / 2, h: b.h, wall: look.wall };
-      F.byB.set(bi, mine); F.units.push(...mine);
+      F.byB.set(bi, mine); F.rings.set(bi, ring); F.units.push(...mine);
     }
   });
   const dice = (u, salt) => hashStr(salt + '|' + key + '|' + u.bi + '|' + u.i);
-  // shops: real points of interest claim the nearest front
-  for (const p of t.p || []) {
-    const list = POI_SHOP[p[0]];
-    if (!list) continue;
-    const px = p[1] / 10, pz = TILE - p[2] / 10;
-    let best = null, bd = 16;
-    for (const u of F.units) { if (u.shop || u.tower) continue; const d = Math.hypot(u.cx - px, u.cz - pz) - u.d / 2; if (d < bd) { bd = d; best = u; } }
-    if (best) best.shop = list[dice(best, 'shop') % list.length];
-  }
-  // cash machines: on the bank, otherwise on a blank wall now and then
-  for (const u of F.units) u.atm = !u.tower && (u.shop === 'BANK' || (!u.shop && u.w >= 4.4 && dice(u, 'atm') % 13 === 0));
+  assignShops(key, t, F, dice);
   return F;
 }
 const unitRng = (u) => makeRng(hashStr('u|' + u.key + '|' + u.bi + '|' + u.i));
@@ -576,11 +652,11 @@ let _dry = null;
 function frontInfo(u, night) {
   _dry ||= { v: new Vox(1, true), gl: new Vox(1, true) };
   _dry.v.n = 0; _dry.gl.n = 0;
-  const hi = drawHero(_dry.v, _dry.gl, u, unitRng(u), night);
+  const hi = drawHero(_dry.v, _dry.gl, u, unitRng(u), night, true);
   _dry.v.setT(); _dry.gl.setT(); _dry.v.setB(); _dry.gl.setB(); _dry.v.n = 0; _dry.gl.n = 0;
-  if (hi.sign) { hi.sign.geometry.dispose(); hi.sign.material.dispose(); hi.sign = null; }
-  return hi;
+  return hi; // a dry run makes no sign plane (and so no texture)
 }
+export { frontsOf, drawHero, frontInfo, unitRng }; // for the node checks in test/
 /** Is a tree trunk within r metres of this point (map metres)? Only knows the tiles that are built. */
 export function treeNearMap(mx, my, r) {
   const t0x = Math.floor((mx - r) / TILE), t1x = Math.floor((mx + r) / TILE), t0y = Math.floor((my - r) / TILE), t1y = Math.floor((my + r) / TILE);
@@ -1446,12 +1522,17 @@ export const tileOf = (key) => _built.get(key) || null;
 export function trimTiles(keep) {
   for (const key of [..._built.keys()]) { if (_built.size <= keep) break; dropTile(key); }
   // the tiles that stay give up their detailed house fronts: those are heavy, and are rebuilt in a moment when needed
-  for (const c of _built.values()) if (c.cells) for (const cell of c.cells) { cell.job = null; if (cell.detail) plainCell(c, cell); }
+  for (const c of _built.values()) if (c.cells) for (const cell of c.cells) { dropJob(cell); if (cell.detail) plainCell(c, cell); }
+}
+/** Throw away a half-built detailed cell: its sign planes were made but never reached the scene, so give them back. */
+function dropJob(cell) {
+  if (cell.job) for (const sg of cell.job.signs) P.releaseSign(sg.m);
+  cell.job = null;
 }
 /** Swap a cell's detailed fronts back for its plain blocks. */
 function plainCell(c, cell) {
   for (const m of cell.detail.meshes) { c.g.remove(m); m.geometry.dispose(); }
-  for (const sg of cell.detail.signs) { c.g.remove(sg.m); sg.m.geometry.dispose(); sg.m.material.dispose(); }
+  for (const sg of cell.detail.signs) { c.g.remove(sg.m); P.releaseSign(sg.m); }
   for (const m of cell.plain) m.visible = true;
   cell.detail = null;
 }
@@ -1541,10 +1622,10 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   });
   for (const e of t.f || []) {
     // free-standing things: fuel station canopies, windmills, masts, statues, fountains, shelters
-    if (lod === 2 && !(e[0] >= 2 && e[0] <= 7)) continue; // from far away only the tall ones matter
+    if (lod === 2 && !(e[0] >= 2 && e[0] <= 9)) continue; // from far away only the tall ones matter (statues and fountains as a few boxes)
     const n0 = vx.n, g0 = glx.n;
     // a compass direction (degrees clockwise from north) as a turn of the builder's frame, in the tile's east/south axes
-    try { drawFeature(vx, glx, { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180 }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
+    try { drawFeature(vx, glx, { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180, lod, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
   }
   if (lod < 2 && t.x && t.x.length) {
@@ -1585,7 +1666,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   if (lod === 0) {
     const fv = new Vox(rnd.int(1, 9999)), fgl = new Vox(rnd.int(1, 9999)), fg = new THREE.Group();
     try {
-      props = furnishTile({ key, grid, C, roads, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite }).props || [];
+      props = furnishTile({ key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite }).props || [];
       fv.setT(); fgl.setT();
       if (!fv.empty) g.add(fv.mesh());
       if (!fgl.empty) g.add(fgl.mesh(MAT.glow));
@@ -1606,6 +1687,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   return {
     key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night,
     dispose() {
+      for (const cell of cells) { dropJob(cell); if (cell.detail) for (const sg of cell.detail.signs) P.releaseSign(sg.m); }
       g.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
         if (o.isInstancedMesh) o.dispose();
@@ -1775,7 +1857,7 @@ class Streamer {
       for (const cell of c.cells) {
         const d = Math.hypot(c.ox + cell.cx - mx, c.oy + TILE - cell.cz - my);
         if (!on || d > R + 45) {
-          cell.job = null;
+          dropJob(cell);
           if (cell.detail && (!on || d > R + 80)) this._plain(c, cell);
           continue;
         }

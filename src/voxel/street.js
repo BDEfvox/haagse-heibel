@@ -101,7 +101,7 @@ export function dress(W) {
     const fp = path.project(h.front[0], h.front[1]), dp = path.project(h.door[0], h.door[1]), wp = path.project(h.win[0], h.win[1]);
     if (fp.v > -hb - 0.5 || fp.s < sA - 2 || fp.s > sB + 2) continue;
     const a = {
-      s: fp.s, w: h.w, top: h.info.top, z: fp.v, shop: h.info.shop || null, tower: !!h.info.tower,
+      s: fp.s, w: h.w, top: h.info.top, z: fp.v, shop: h.info.shop || null, cat: h.info.cat || null, name: h.info.name || null, tower: !!h.info.tower,
       door: { s: dp.s, z: Math.min(dp.v, -hb - 0.4) }, win: { s: wp.s, y: h.winY, z: wp.v },
     };
     A.houses.push(a);

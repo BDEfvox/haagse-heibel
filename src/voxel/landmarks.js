@@ -6,6 +6,9 @@ import * as THREE from 'three';
 import { inRing, obbOf, rectsOf } from './geo.js';
 import { SPECIALS as S1 } from './specials.js';
 import { SPECIALS2 as S2 } from './specials2.js';
+import { makeRng } from './kit.js';
+import { drawStatue, drawGeneric, drawFountain, statueRot } from './statues/kit.js';
+import { recipeFor } from './statues/index.js';
 
 // hand-made landmarks (the Ridderzaal, the Peace Palace, the skyline towers, ...): see specials.js and specials2.js
 const SPECIALS = [...S1, ...S2];
@@ -859,30 +862,27 @@ function fuelStation(v, gl, f, rnd, night) {
   for (let k = 0; k < 3; k++) (night ? gl : v).box(tx, 3.2 + k * 0.9, tz, 1.5, 0.7, 0.5, night ? '#ffd97a' : '#23262b');
   return 8;
 }
-function statue(v, rnd) {
-  v.box(0, 0, 0, 1.9, 0.5, 1.9, '#b8b4aa');
-  v.box(0, 0.5, 0, 1.4, 1.9, 1.4, '#d9d2c3');
-  v.box(0, 2.4, 0, 1.7, 0.3, 1.7, '#b8b4aa');
-  const bz = rnd.pick(['#5b6b4f', '#6a5a3c', '#4a5a5a']);
-  v.box(-0.18, 2.7, 0, 0.3, 0.9, 0.35, bz);
-  v.box(0.18, 2.7, 0, 0.3, 0.9, 0.35, bz);
-  v.box(0, 3.6, 0, 0.8, 1.1, 0.45, bz);
-  v.box(0.55, 4.0, 0, 0.3, 0.9, 0.3, bz);
-  v.box(0, 4.7, 0, 0.45, 0.5, 0.45, bz);
-  return 5.3;
-}
-function fountain(v, f) {
-  const r = f.b > 1 ? f.b : 3;
-  for (const s of [-1, 1]) {
-    v.box(0, 0, s * (r - 0.3), r * 2, 0.6, 0.6, '#c9c4b8');
-    v.box(s * (r - 0.3), 0, 0, 0.6, 0.6, r * 2 - 1.2, '#c9c4b8');
+// Statues, monuments, sculptures and fountains: a recipe by the feature's `a` (1-based index into statues/ids.json),
+// else a generic one by the form code in `b` (1 statue, 2 bust, 3 abstract, 4 obelisk, 5 war memorial, 6 stone, 7 cross,
+// 8 column, 9 installation, 0 unknown). The front looks along recipe.face, else f.face (compass degrees towards the nearest
+// street, when the tile code supplies it), else south. f.lod (0 close, 1 normal, 2 far) picks the level of detail.
+function landmark(v, gl, f, night) {
+  const recipe = recipeFor(f.a), lod = f.lod | 0;
+  const face = recipe && typeof recipe.face === 'number' ? recipe.face : typeof f.face === 'number' ? f.face : 180;
+  const rot = statueRot(face);
+  v.setT(rot, f.x, f.z); gl.setT(rot, f.x, f.z);
+  const rnd = makeRng(Math.imul(Math.round(f.x * 10), 73856093) ^ Math.imul(Math.round(f.z * 10), 19349663) ^ Math.imul(f.a | 0, 83492791));
+  const out = {}, n0 = v.n, g0 = gl.n;
+  let H;
+  if (f.type === 9) H = drawFountain(v, gl, f, recipe, night, { lod, rnd, out });
+  else if (recipe) H = drawStatue(v, gl, recipe, { night, lod, rnd, out });
+  else H = drawGeneric(v, gl, f.b >= 1 ? Math.round(f.b) : Math.round(f.b * 10), rnd, { night, lod, out });
+  // tell the cutaway the real height and footprint of what was just drawn
+  for (const [k, n] of [[v, n0], [gl, g0]]) {
+    if (!k.tag) continue;
+    for (let i = n; i < k.n; i++) { k.tag[i * 4] = f.x; k.tag[i * 4 + 1] = f.z; k.tag[i * 4 + 2] = H + 2; k.tag[i * 4 + 3] = out.r; }
   }
-  v.box(0, 0.05, 0, r * 2 - 1.2, 0.45, r * 2 - 1.2, '#8fd3e8');
-  v.box(0, 0.4, 0, 1.2, 1.2, 1.2, '#b8b4aa');
-  v.box(0, 1.6, 0, 2.2, 0.25, 2.2, '#c9c4b8');
-  v.box(0, 1.85, 0, 0.5, 1.8, 0.5, '#cdeef7');
-  v.box(0, 3.65, 0, 0.9, 0.4, 0.9, '#e4f6fb');
-  return 4.2;
+  return H;
 }
 function shelter(v, gl, night) {
   v.box(0, 0.1, -0.7, 3.8, 2.3, 0.08, '#a8d8e8');
@@ -965,8 +965,7 @@ export function drawFeature(v, gl, f, rnd, night) {
       case 5: { const H = f.b > 5 ? f.b : 40; tag(H + 1, 1.5); mastShape(v, gl, H); break; }
       case 6: { const H = f.b > 8 ? f.b : 35; tag(H + 1, 2.5); chimneyShape(v, H); break; }
       case 7: { const H = f.b > 10 ? f.b : 45; tag(H + 3, 3); wheel(v, gl, f, rnd, night); break; }
-      case 8: tag(6, 1); statue(v, rnd); break;
-      case 9: tag(5, f.b > 1 ? f.b : 3); fountain(v, f); break;
+      case 8: case 9: tag(6, 1.5); landmark(v, gl, f, night); break;
       case 10: tag(3.5, 1); shelter(v, gl, night); break;
       case 11: tag(3, 3); playground(v, rnd); break;
       case 12: tag((f.b > 3 ? f.b : 12) + 1, 0.5); flagpole(v, f); break;

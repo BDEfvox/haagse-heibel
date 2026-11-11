@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { Vox, MAT, sculpt, piece, makeSign, TAU } from './kit.js';
 import { makePerson } from './cast.js';
+import { GLYPHS, fitText } from './brands.js';
 
 const _c = new THREE.Color();
 export const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexString();
@@ -20,6 +21,332 @@ function win(v, gl, x, y, z, w, h, night, rnd, litChance = 0.6) {
   v.box(x, y + h / 2 - 0.03, z + 0.09, w, 0.06, 0.07, '#f6f3ec');
   v.box(x, y - 0.14, z + 0.14, w + 0.3, 0.08, 0.2, STONE);
   return lit;
+}
+
+// ---------------------------------------------------------------- shop signs and window dressing
+// Sign texture cache with a count of the signs using each texture, so a texture goes when its last sign goes
+// (kit.signTexture keeps every text for ever, which would grow while roaming a city of 7,000 names).
+const _sigTex = new Map();
+function sigEntry(text, bg, fg) {
+  const key = text + '|' + bg + '|' + fg;
+  let e = _sigTex.get(key);
+  if (!e) {
+    const px = 16, pad = 6, font = `${px}px "Press Start 2P", monospace`, c = document.createElement('canvas'), g = c.getContext('2d');
+    g.font = font;
+    c.width = Math.ceil(g.measureText(text).width) + pad * 2;
+    c.height = px + pad * 2;
+    g.fillStyle = bg; g.fillRect(0, 0, c.width, c.height);
+    g.font = font; g.fillStyle = fg; g.textBaseline = 'top'; g.fillText(text, pad, pad + 1);
+    const tex = new THREE.CanvasTexture(c);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.LinearFilter; tex.colorSpace = THREE.SRGBColorSpace;
+    e = { key, tex, n: 0, aspect: c.width / c.height };
+    _sigTex.set(key, e);
+  }
+  e.n++;
+  return e;
+}
+/** The text plane of a shop sign, fitted between x0 and x1 and at most h tall. Give it back with releaseSign. */
+function shopSign(sg, x0, x1, h) {
+  // a narrow front gets a shorter text rather than letters too small to read
+  const room = x1 - x0, maxN = Math.max(4, Math.floor(((room / 0.3) * 28 - 12) / 16));
+  const text = sg.text.length > maxN ? fitText(sg.text, maxN) : sg.text;
+  const e = sigEntry(text, sg.bg, sg.fg);
+  const hh = Math.min(h, room / e.aspect);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(hh * e.aspect, hh), new THREE.MeshBasicMaterial({ map: e.tex, toneMapped: false }));
+  m.userData.texKey = e.key;
+  return m;
+}
+/** Let go of a sign made by shopSign (its geometry, material and, with the last user, its texture). Safe to call twice. */
+export function releaseSign(m) {
+  if (!m || m.userData.released) return;
+  m.userData.released = true;
+  m.geometry.dispose(); m.material.dispose();
+  const e = _sigTex.get(m.userData.texKey);
+  if (e && --e.n <= 0) { e.tex.dispose(); _sigTex.delete(e.key); }
+}
+
+const GOODS = ['#e63946', '#ffb703', '#2a9d8f', '#9d4edd', '#fb8500', '#ffffff'];
+const LOAF = ['#c98a3c', '#b8742a', '#e0a95a', '#a86a2a'];
+const CAKE = ['#f4d6a0', '#e7b6c0', '#8a4b2a', '#fff3d9'];
+const FRUIT = ['#d63b2e', '#f2a31d', '#5fae3a', '#8fd14f', '#e8c92a'];
+const CLOTHES = ['#e63946', '#2a9d8f', '#3a86ff', '#ffb703', '#9d4edd', '#222831', '#f1faee', '#fb8500'];
+const BOOKS = ['#c1272d', '#2a5ab0', '#2f7d3a', '#e8b04a', '#6a3d7a', '#222222', '#e8e0d0'];
+const BOTTLES = ['#2e8b57', '#7a1f3d', '#d4a017', '#4a90d9', '#e8e0d0', '#8a4b2a'];
+const TULIPS = ['#e63946', '#ffb703', '#ff70a6', '#9d4edd', '#ffffff', '#fb8500'];
+/**
+ * What stands in the shop window or in front of it, by the `win` kind of the place's look (brands.js CAT_LOOK).
+ * A handful of boxes each; c = { v, gl, lit (gl at night, v by day), night, rnd, x, w (the unit), gx, gw (the window), y0, gh, z, dx (door), fg, bg }.
+ */
+function dress(kind, c) {
+  const { v, gl, lit, night, rnd, gx, gw, y0, gh, z, dx } = c;
+  const left = gx - gw / 2, n = Math.max(1, Math.floor(gw / 0.6)), at = (i, k) => left + ((i + 0.5) * gw) / k;
+  switch (kind) {
+    case 'bread':
+      v.box(gx, y0 + 1.05, z + 0.2, gw - 0.1, 0.05, 0.3, '#8d6e4c');
+      v.box(gx, y0 + 0.55, z + 0.2, gw - 0.1, 0.05, 0.3, '#8d6e4c');
+      for (let i = 0; i < n; i++) {
+        v.box(at(i, n), y0 + 1.1, z + 0.2, 0.34, 0.2, 0.22, rnd.pick(LOAF));
+        if (i % 2 === 0) v.box(at(i, n), y0 + 0.6, z + 0.2, 0.3, 0.16, 0.3, rnd.pick(CAKE));
+      }
+      break;
+    case 'hair': {
+      v.box(gx, y0 + 0.95, z + 0.13, gw - 0.3, 0.95, 0.04, '#cfe6f0');
+      for (const f of [-0.25, 0.25]) {
+        v.box(gx + gw * f, y0 + 0.5, z + 0.3, 0.5, 0.4, 0.5, '#222');
+        v.box(gx + gw * f, y0 + 0.9, z + 0.14, 0.5, 0.5, 0.08, '#222');
+      }
+      // the red and white pole beside the door
+      const px = c.x + c.w / 2 - 1.52;
+      for (let j = 0; j < 6; j++) v.box(px, y0 + 0.95 + j * 0.17, z + 0.22, 0.14, 0.17, 0.14, j % 2 ? '#e63946' : '#ffffff');
+      lit.box(px, y0 + 0.9, z + 0.22, 0.2, 0.06, 0.2, '#d4af37');
+      lit.box(px, y0 + 1.97, z + 0.22, 0.2, 0.06, 0.2, '#d4af37');
+      break;
+    }
+    case 'cross':
+      for (const sy of [0.55, 1.1]) {
+        v.box(gx, y0 + sy, z + 0.15, gw - 0.2, 0.04, 0.2, '#ffffff');
+        for (let i = 0; i < n; i++) v.box(at(i, n), y0 + sy + 0.04, z + 0.15, 0.14, 0.3, 0.14, rnd.pick(['#2e8b57', '#ffffff', '#4a90d9', '#e8b04a']));
+      }
+      break;
+    case 'crates':
+      // fruit and vegetable crates on the pavement, produce in the window
+      for (let k = 0; k < 2; k++) {
+        const px = gx + (k ? 0.5 : -0.5) * gw * 0.5;
+        v.box(px, y0, z + 0.7, 0.9, 0.3, 0.5, '#a5753c');
+        v.box(px, y0 + 0.3, z + 0.75, 0.9, 0.3, 0.5, '#b8844a');
+        for (let i = 0; i < 4; i++) v.box(px - 0.33 + i * 0.22, y0 + 0.6, z + 0.75, 0.2, 0.12, 0.4, rnd.pick(FRUIT));
+      }
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 0.5, z + 0.14, 0.4, rnd.range(0.2, 0.5), 0.1, rnd.pick(FRUIT));
+      break;
+    case 'spit': {
+      const px = gx - gw * 0.2;
+      for (let j = 0; j < 6; j++) v.box(px, y0 + 0.75 + j * 0.18, z + 0.28, 0.54 - j * 0.03, 0.18, 0.54 - j * 0.03, j % 2 ? '#8b4a2b' : '#a3623a');
+      v.box(px, y0 + 0.65, z + 0.28, 0.1, 1.3, 0.1, '#9aa5ad');
+      lit.box(px + 0.42, y0 + 0.8, z + 0.28, 0.05, 1.0, 0.4, '#ff7a1a');
+      v.box(gx + gw * 0.25, y0 + 0.9, z + 0.14, 0.9, 0.7, 0.05, '#22262b');
+      for (let j = 0; j < 3; j++) v.box(gx + gw * 0.25, y0 + 1.15 + j * 0.15, z + 0.18, 0.6, 0.05, 0.02, j % 2 ? '#ffd166' : '#ffffff');
+      break;
+    }
+    case 'fryer': {
+      const px = gx - gw * 0.22;
+      v.box(px, y0 + 1.55, z + 0.2, 1.0, 0.35, 0.35, '#9aa5ad');
+      v.box(px, y0 + 1.9, z + 0.25, 0.3, 0.3, 0.3, '#7a838b');
+      v.box(px, y0 + 0.55, z + 0.2, 1.1, 0.7, 0.4, '#c9d1d6');
+      v.box(gx + gw * 0.25, y0 + 0.8, z + 0.14, 1.1, 0.95, 0.05, '#22262b');
+      for (let j = 0; j < 5; j++) v.box(gx + gw * 0.25 - 0.1, y0 + 0.95 + j * 0.15, z + 0.18, 0.5 + rnd.range(0, 0.3), 0.05, 0.02, j % 2 ? '#ffd166' : '#ffffff');
+      v.box(px, y0 + 1.2, z + 0.3, 0.2, 0.25, 0.2, '#ffd23a');
+      break;
+    }
+    case 'rail': {
+      v.box(gx, y0 + 1.75, z + 0.2, gw - 0.2, 0.04, 0.04, '#333');
+      for (let i = 0; i < n * 2; i++) v.box(left + 0.15 + (i + 0.5) * ((gw - 0.3) / (n * 2)), y0 + 1.15, z + 0.2, 0.1, 0.6, 0.12, rnd.pick(CLOTHES));
+      for (const f of [-0.3, 0.3]) {
+        if (gw < 3 && f > 0) break;
+        const px = gx + gw * f;
+        v.box(px, y0 + 0.5, z + 0.3, 0.1, 0.9, 0.1, '#e8e0d0');
+        v.box(px, y0 + 0.75, z + 0.3, 0.34, 0.5, 0.2, rnd.pick(CLOTHES));
+        v.box(px, y0 + 1.4, z + 0.3, 0.18, 0.2, 0.18, '#e8e0d0');
+      }
+      break;
+    }
+    case 'phones':
+      v.box(gx, y0 + 0.55, z + 0.2, gw - 0.2, 0.1, 0.35, '#ffffff');
+      for (let i = 0; i < n; i++) { v.box(at(i, n), y0 + 0.65, z + 0.22, 0.16, 0.3, 0.04, '#222'); lit.box(at(i, n), y0 + 0.69, z + 0.245, 0.12, 0.22, 0.01, night ? '#59d0ff' : '#6aa6c8'); }
+      break;
+    case 'bike':
+      if (gw >= 2.3) bikeStatic(v, gw >= 4.4 ? gx - gw * 0.22 : gx, z + 0.5, rnd.pick(['#e63946', '#2a9d8f', '#1d3557', '#f4a261']), y0 + 0.5);
+      if (gw >= 4.4) bikeStatic(v, gx + gw * 0.22, z + 0.5, rnd.pick(['#ffb703', '#8338ec', '#111']), y0 + 0.5);
+      break;
+    case 'trolleys':
+      // wide glass, posters in it, and a row of nested trolleys by the door
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 1.25 + (i % 2) * 0.2, z + 0.14, 0.45, 0.4, 0.04, rnd.pick(['#e63946', '#ffd166', '#ffffff', '#2a9d8f']));
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 0.55, z + 0.17, 0.5, 0.25, 0.1, rnd.pick(FRUIT));
+      for (let i = 0; i < 4; i++) {
+        v.box(left + 0.5 + i * 0.3, y0 + 0.45, z + 0.95, 0.9, 0.35, 0.5, '#b9c2c9');
+        v.box(left + 0.05 + i * 0.3, y0 + 0.8, z + 0.95, 0.06, 0.45, 0.5, '#8a949b');
+      }
+      break;
+    case 'herring': {
+      // a herring cart on the pavement with a Dutch flag
+      const px = gx - gw * 0.15;
+      v.box(px, y0, z + 0.95, 1.5, 0.8, 0.7, '#e8f1f7');
+      v.box(px, y0 + 0.8, z + 0.95, 1.6, 0.08, 0.8, '#2d6a9f');
+      v.box(px, y0 + 1.9, z + 0.95, 1.8, 0.08, 0.9, '#2d6a9f');
+      v.box(px, y0 + 1.98, z + 0.95, 0.4, 0.04, 0.9, '#ffffff');
+      for (const sx of [-0.8, 0.8]) v.box(px + sx, y0 + 0.88, z + 0.65, 0.05, 1.05, 0.05, '#cfd6db');
+      v.box(px + 0.8, y0 + 1.98, z + 0.95, 0.04, 0.8, 0.04, '#cfd6db');
+      v.box(px + 1.0, y0 + 2.58, z + 0.95, 0.4, 0.07, 0.02, '#e63946');
+      v.box(px + 1.0, y0 + 2.51, z + 0.95, 0.4, 0.07, 0.02, '#ffffff');
+      v.box(px + 1.0, y0 + 2.44, z + 0.95, 0.4, 0.07, 0.02, '#2a5ab0');
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 0.6, z + 0.15, 0.4, 0.07, 0.14, '#c9d6df');
+      break;
+    }
+    case 'dark':
+      // darkened windows, a bench outside
+      v.box(gx, y0 + 0.4, z + 0.8, 1.2, 0.08, 0.4, '#6b5a45');
+      v.box(gx - 0.5, y0, z + 0.8, 0.08, 0.4, 0.35, '#444');
+      v.box(gx + 0.5, y0, z + 0.8, 0.08, 0.4, 0.35, '#444');
+      break;
+    case 'taps':
+      v.box(gx, y0, z + 0.1, gw, 0.5, 0.06, '#5b3a24');
+      v.box(gx, y0 + 1.0, z + 0.16, gw - 0.4, 0.05, 0.25, '#7a5230');
+      for (let i = 0; i < Math.min(5, n); i++) {
+        v.box(at(i, Math.min(5, n)), y0 + 1.35, z + 0.16, 0.06, 0.18, 0.06, '#d4af37');
+        v.box(at(i, Math.min(5, n)) + 0.1, y0 + 1.05, z + 0.2, 0.14, 0.2, 0.14, '#f2b632');
+      }
+      lit.box(c.x + c.w / 2 - 1.55, y0 + 1.95, z + 0.2, 0.18, 0.28, 0.18, '#ffcf6b');
+      break;
+    case 'chalk': {
+      const bx = c.x - c.w / 2 + 0.9;
+      v.box(bx, y0, z + 0.7, 0.7, 1.0, 0.08, '#22262b');
+      for (let j = 0; j < 3; j++) v.box(bx, y0 + 0.35 + j * 0.2, z + 0.75, 0.5, 0.05, 0.02, '#f1f1f1');
+      for (let i = 0; i < Math.min(2, n); i++) {
+        v.box(at(i, 2), y0 + 0.5, z + 0.25, 0.5, 0.05, 0.5, '#8d6e4c');
+        v.box(at(i, 2), y0, z + 0.25, 0.06, 0.5, 0.06, '#555');
+      }
+      break;
+    }
+    case 'pizza':
+      for (let j = 0; j < 4; j++) v.box(gx - gw * 0.2, y0 + 0.55 + j * 0.07, z + 0.25, 0.7, 0.07, 0.7, j % 2 ? '#ffffff' : '#f6efe0');
+      v.box(gx - gw * 0.2, y0 + 0.8, z + 0.25, 0.72, 0.04, 0.2, '#e63946');
+      lit.box(gx + gw * 0.2, y0 + 0.7, z + 0.2, 0.9, 0.5, 0.1, night ? '#ff7a2a' : '#d9552b');
+      v.box(gx + gw * 0.2, y0 + 1.3, z + 0.14, 0.9, 0.5, 0.05, '#2f7d3a');
+      break;
+    case 'burger': {
+      v.box(gx, y0 + 1.0, z + 0.14, gw - 0.4, 0.8, 0.05, '#2a1a12');
+      const bx = gx - gw * 0.3;
+      v.box(bx, y0 + 1.1, z + 0.18, 0.5, 0.12, 0.03, '#e8b04a');
+      v.box(bx, y0 + 1.22, z + 0.18, 0.54, 0.06, 0.03, '#5fae3a');
+      v.box(bx, y0 + 1.28, z + 0.18, 0.5, 0.1, 0.03, '#7a2e12');
+      v.box(bx, y0 + 1.38, z + 0.18, 0.46, 0.14, 0.03, '#e8b04a');
+      for (let j = 0; j < 4; j++) v.box(gx + gw * 0.15, y0 + 1.1 + j * 0.15, z + 0.18, 0.9 - (j % 2) * 0.3, 0.06, 0.02, j % 2 ? '#ffd166' : '#ffffff');
+      v.box(gx, y0 + 0.5, z + 0.25, gw - 0.6, 0.06, 0.4, '#d9d2c3');
+      break;
+    }
+    case 'chicken':
+      for (let k = 0; k < Math.min(2, n); k++) {
+        const px = at(k, 2);
+        v.box(px, y0 + 0.55, z + 0.25, 0.5, 0.55, 0.5, '#ffffff');
+        v.box(px, y0 + 0.7, z + 0.26, 0.52, 0.12, 0.52, '#c1272d');
+        for (let i = 0; i < 3; i++) v.box(px - 0.15 + i * 0.15, y0 + 1.1, z + 0.25, 0.14, 0.14, 0.14, '#d98a3a');
+      }
+      break;
+    case 'cone': {
+      const px = c.x - c.w / 2 + 0.7;
+      for (let j = 0; j < 3; j++) v.box(px, y0 + 1.6 + j * 0.15, z + 0.55, 0.12 + j * 0.1, 0.15, 0.12 + j * 0.1, '#d9a35c');
+      v.box(px, y0 + 2.05, z + 0.55, 0.4, 0.2, 0.4, '#f78fb3');
+      v.box(px, y0 + 2.25, z + 0.55, 0.34, 0.18, 0.34, '#fff3d9');
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 0.55, z + 0.17, 0.4, 0.2, 0.2, rnd.pick(['#f78fb3', '#fff3d9', '#a67c52', '#8fd14f', '#ffd166']));
+      break;
+    }
+    case 'flowers':
+      for (let k = 0; k < 3; k++) {
+        const px = gx + (k - 1) * gw * 0.3;
+        v.box(px, y0, z + 0.65, 0.4, 0.35, 0.4, '#7a8a96');
+        for (let i = 0; i < 3; i++) { v.box(px - 0.12 + i * 0.12, y0 + 0.35, z + 0.65, 0.04, 0.35, 0.04, '#3f8f3a'); v.box(px - 0.12 + i * 0.12, y0 + 0.65, z + 0.65, 0.12, 0.12, 0.12, rnd.pick(TULIPS)); }
+      }
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 0.6, z + 0.15, 0.2, 0.3, 0.1, rnd.pick(TULIPS));
+      break;
+    case 'books':
+      for (const sy of [0.5, 1.15, 1.8]) {
+        v.box(gx, sy + y0, z + 0.15, gw - 0.2, 0.04, 0.2, '#6b4a2a');
+        for (let i = 0; i < n * 2 - 1; i++) v.box(left + 0.2 + (i + 0.5) * ((gw - 0.4) / (n * 2 - 1)), y0 + sy + 0.04, z + 0.15, 0.1, rnd.range(0.3, 0.5), 0.14, rnd.pick(BOOKS));
+      }
+      break;
+    case 'glasses':
+      for (const sy of [0.7, 1.3]) {
+        v.box(gx, y0 + sy, z + 0.15, gw - 0.2, 0.04, 0.2, '#ffffff');
+        for (let i = 0; i < n; i++) { v.box(at(i, n) - 0.07, y0 + sy + 0.05, z + 0.17, 0.11, 0.09, 0.04, '#222'); v.box(at(i, n) + 0.07, y0 + sy + 0.05, z + 0.17, 0.11, 0.09, 0.04, '#222'); }
+      }
+      break;
+    case 'jewel':
+      v.box(gx, y0 + 0.5, z + 0.12, gw - 0.2, 1.5, 0.04, '#2a1f3d');
+      for (let i = 0; i < n * 2; i++) lit.box(left + 0.2 + rnd.range(0, gw - 0.4), y0 + 0.7 + rnd.range(0, 1.1), z + 0.16, 0.07, 0.07, 0.03, rnd.pick(['#e6c35c', '#9be8ff', '#ffffff']));
+      break;
+    case 'shelves':
+      for (const sy of [0.55, 1.1, 1.65]) {
+        v.box(gx, y0 + sy, z + 0.15, gw - 0.2, 0.04, 0.2, '#e8e0d0');
+        for (let i = 0; i < n; i++) v.box(at(i, n), y0 + sy + 0.04, z + 0.15, 0.3, rnd.range(0.2, 0.4), 0.14, rnd.pick(GOODS));
+      }
+      break;
+    case 'bottles':
+      for (const sy of [0.55, 1.1, 1.65]) {
+        v.box(gx, y0 + sy, z + 0.15, gw - 0.2, 0.04, 0.2, '#e8e0d0');
+        for (let i = 0; i < n * 2; i++) v.box(left + 0.15 + (i + 0.5) * ((gw - 0.3) / (n * 2)), y0 + sy + 0.04, z + 0.15, 0.1, rnd.range(0.25, 0.4), 0.1, rnd.pick(BOTTLES));
+      }
+      break;
+    case 'meat':
+      v.box(gx, y0 + 0.5, z + 0.2, gw - 0.2, 0.5, 0.4, '#e9e9e9');
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 1.0, z + 0.2, 0.34, 0.1, 0.28, rnd.pick(['#c0392b', '#e8a0a0', '#8a2a2a']));
+      v.box(gx, y0 + 1.85, z + 0.2, gw - 0.2, 0.04, 0.04, '#555');
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 1.4, z + 0.2, 0.07, 0.45, 0.07, '#a8433a');
+      break;
+    case 'furniture': {
+      const px = gx - gw * 0.2;
+      v.box(px, y0 + 0.5, z + 0.35, Math.min(1.8, gw * 0.5), 0.4, 0.7, '#6f8f9f');
+      v.box(px, y0 + 0.9, z + 0.15, Math.min(1.8, gw * 0.5), 0.5, 0.2, '#5a7a8a');
+      v.box(gx + gw * 0.3, y0 + 0.5, z + 0.3, 0.05, 1.2, 0.05, '#555');
+      lit.box(gx + gw * 0.3, y0 + 1.7, z + 0.3, 0.35, 0.25, 0.35, '#ffe9a8');
+      break;
+    }
+    case 'diy':
+      for (let i = 0; i < 4; i++) v.box(left + 0.4 + i * 0.35, y0, z + 0.7, 0.3, 0.35, 0.3, rnd.pick(['#e63946', '#ffb703', '#3a86ff', '#ffffff']));
+      v.box(left + 1.9, y0, z + 0.6, 0.05, 1.8, 0.05, '#c9d1d6');
+      v.box(left + 2.3, y0, z + 0.6, 0.05, 1.8, 0.05, '#c9d1d6');
+      for (let j = 0; j < 5; j++) v.box(left + 2.1, y0 + 0.3 + j * 0.35, z + 0.6, 0.45, 0.04, 0.05, '#c9d1d6');
+      for (let i = 0; i < n; i++) v.box(at(i, n), y0 + 0.9, z + 0.15, 0.3, 0.5, 0.12, rnd.pick(['#e6a100', '#2a6ab0', '#5fae3a']));
+      break;
+    case 'car':
+      if (gw >= 2.6) {
+        const col = rnd.pick(['#d93030', '#2a5ab0', '#e8e8e8', '#2f7d3a']);
+        v.box(gx, y0 + 0.65, z + 0.5, 2.1, 0.4, 0.95, col);
+        v.box(gx - 0.1, y0 + 1.05, z + 0.5, 1.1, 0.35, 0.85, '#bfd9e8');
+        for (const sx of [-0.7, 0.7]) for (const sz of [-0.4, 0.4]) v.box(gx + sx, y0 + 0.45, z + 0.5 + sz, 0.4, 0.4, 0.1, '#222');
+      }
+      break;
+    case 'washers':
+      for (let i = 0; i < Math.min(4, n); i++) {
+        v.box(at(i, Math.min(4, n)), y0 + 0.5, z + 0.2, 0.7, 0.9, 0.5, '#f1f1f1');
+        v.box(at(i, Math.min(4, n)), y0 + 0.75, z + 0.46, 0.4, 0.4, 0.03, '#2a5ab0');
+      }
+      break;
+    case 'posters':
+      for (let i = 0; i < n; i++) lit.box(at(i, n), y0 + 0.6, z + 0.14, 0.5, 1.2, 0.04, rnd.pick(['#c1272d', '#2a5ab0', '#e8b04a', '#6a3d7a', '#2f7d3a']));
+      break;
+    case 'weights':
+      for (let i = 0; i < Math.min(5, n); i++) {
+        const px = at(i, Math.min(5, n));
+        v.box(px, y0 + 0.6, z + 0.2, 0.5, 0.05, 0.05, '#555');
+        v.box(px - 0.22, y0 + 0.5, z + 0.2, 0.08, 0.25, 0.15, '#222');
+        v.box(px + 0.22, y0 + 0.5, z + 0.2, 0.08, 0.25, 0.15, '#222');
+      }
+      break;
+    case 'tank':
+      lit.box(gx - gw * 0.2, y0 + 0.75, z + 0.16, gw * 0.4, 0.8, 0.06, night ? '#6ae0ff' : '#3ec6e0');
+      for (let k = 0; k < 2; k++) v.box(gx + gw * (0.15 + k * 0.2), y0 + 0.55 + k * 0.5, z + 0.2, 0.35, 0.35, 0.3, '#9aa5ad');
+      break;
+    case 'toys':
+      for (let i = 0; i < n * 2; i++) v.box(left + 0.2 + rnd.range(0, gw - 0.4), y0 + 0.5 + rnd.int(0, 2) * 0.3, z + 0.18, 0.25, 0.25, 0.2, rnd.pick(GOODS));
+      break;
+    case 'shoes':
+      for (const sy of [0.6, 1.1, 1.6]) {
+        v.box(gx, y0 + sy, z + 0.15, gw - 0.2, 0.04, 0.2, '#ffffff');
+        for (let i = 0; i < n; i++) v.box(at(i, n), y0 + sy + 0.04, z + 0.15, 0.3, 0.12, 0.12, rnd.pick(CLOTHES));
+      }
+      break;
+    case 'tvs':
+      for (let i = 0; i < Math.min(4, n); i++) {
+        const px = at(i, Math.min(4, n));
+        v.box(px, y0 + 0.6 + (i % 2) * 0.55, z + 0.15, 0.6, 0.4, 0.06, '#111');
+        lit.box(px, y0 + 0.65 + (i % 2) * 0.55, z + 0.19, 0.52, 0.3, 0.01, night ? '#6ab8ff' : '#2a4a6a');
+      }
+      break;
+    case 'neon':
+      lit.box(gx, y0 + 1.4, z + 0.15, gw * 0.6, 0.06, 0.04, c.fg);
+      lit.box(gx, y0 + 0.9, z + 0.15, gw * 0.4, 0.06, 0.04, c.fg);
+      break;
+    default: // 'plain'
+  }
 }
 
 /** Dutch row house with its front face at z, facing +z. Returns anchors. */
@@ -46,22 +373,66 @@ export function house(v, gl, o) {
   // ground floor
   const doorCol = rnd.pick(DOORS);
   if (o.shop) {
-    const dx = x + w / 2 - 0.85, gw = w - 2.2, gx = x - w / 2 + 0.45 + gw / 2;
+    const S = o.shop, L = S.look, sg = S.sign, lit = night ? gl : v;
+    // room for a cash machine on the left of a bank, and what remains for the window
+    let leftPad = o.atm ? 1.7 : 0.45;
+    if (w - leftPad - 1.75 < 1.2) leftPad = 0.45;
+    const dx = x + w / 2 - 0.85, gw = w - leftPad - 1.75, gx = x - w / 2 + leftPad + gw / 2;
     v.box(gx, y0 + 0.4, z + 0.04, gw + 0.2, 1.75, 0.1, '#f6f3ec');
-    (night ? gl : v).box(gx, y0 + 0.5, z + 0.07, gw, 1.55, 0.08, night ? '#ffe9a8' : '#a9dcf5');
-    // goods in the window
-    for (let i = 0; i < Math.floor(gw / 0.6); i++) v.box(gx - gw / 2 + 0.35 + i * 0.6, y0 + 0.5, z + 0.13, 0.3, rnd.range(0.25, 0.7), 0.06, rnd.pick(['#e63946', '#ffb703', '#2a9d8f', '#9d4edd', '#fb8500', '#ffffff']));
-    v.box(dx, y0, z + 0.05, 0.9, 1.85, 0.1, doorCol);
-    (night ? gl : v).box(dx, y0 + 0.9, z + 0.08, 0.6, 0.75, 0.06, night ? '#ffe9a8' : '#a9dcf5');
-    const [a, b] = o.awn || rnd.pick(AWN);
-    const n = Math.floor((w - 0.3) / 0.42);
-    for (let i = 0; i < 3; i++) {
-      for (let s = 0; s < n; s++) v.box(x - (n * 0.42) / 2 + 0.21 + s * 0.42, y0 + gh - 0.32 - i * 0.13, z + 0.2 + i * 0.3, 0.42, 0.1, 0.32, s % 2 ? a : b);
+    if (L.win === 'shutter') {
+      // a closed shop: roller shutter with ribs
+      v.box(gx, y0 + 0.5, z + 0.07, gw, 1.55, 0.08, '#8d949b');
+      for (let i = 0; i < 7; i++) v.box(gx, y0 + 0.58 + i * 0.22, z + 0.12, gw, 0.04, 0.03, '#6f767d');
+    } else {
+      const glass = L.dark ? (night ? '#2a2118' : '#1b212a') : night ? '#ffe9a8' : '#a9dcf5';
+      (night && !L.dark ? gl : v).box(gx, y0 + 0.5, z + 0.07, gw, 1.55, 0.08, glass);
+      dress(L.win, { v, gl, lit, night, rnd, x, w, gx, gw, y0, gh, z, dx, fg: sg.fg, bg: sg.bg });
     }
-    out.sign = makeSign(o.shop, 0.44, { bg: o.signBg || shade(a, 0.75), fg: '#ffffff' });
-    out.sign.position.set(x, y0 + gh + 0.2, z + 0.14);
+    v.box(dx, y0, z + 0.05, 0.9, 1.85, 0.1, doorCol);
+    (night ? gl : v).box(dx, y0 + 0.9, z + 0.08, 0.6, 0.75, 0.06, L.dark ? '#2a2118' : night ? '#ffe9a8' : '#a9dcf5');
+    if (L.awn) {
+      const a = sg.kind === 'name' ? sg.bg : L.awn[0], b = L.awn[1], n = Math.floor((w - 0.3) / 0.42);
+      for (let i = 0; i < 3; i++) {
+        for (let q = 0; q < n; q++) v.box(x - (n * 0.42) / 2 + 0.21 + q * 0.42, y0 + gh - 0.32 - i * 0.13, z + 0.2 + i * 0.3, 0.42, 0.1, 0.32, q % 2 ? a : b);
+      }
+    }
+    // the sign: one board over the whole group of units the shop takes (the first unit draws it); lit, so it reads at night
+    if (S.head) {
+      const bandY = y0 + gh + 0.13, bandH = 0.78, span = S.signW || w - 0.1, cxs = x + (S.off || 0), left = cxs - span / 2;
+      const mk = sg.mark && span >= 3.2 ? GLYPHS[sg.mark.g] : null, endPad = L.hang || 0;
+      gl.box(cxs, bandY - bandH / 2, z + 0.09, span, bandH, 0.1, sg.bg);
+      v.box(cxs, bandY + bandH / 2, z + 0.09, span + 0.06, 0.05, 0.13, sg.fg);
+      v.box(cxs, bandY - bandH / 2 - 0.05, z + 0.09, span + 0.06, 0.05, 0.13, sg.fg);
+      if (mk) {
+        // the mark: a plate with five rows of coloured pixels, our own drawing for each chain
+        const cs = 0.13, mx = left + 0.12 + 0.38;
+        gl.box(mx, bandY - 0.38, z + 0.155, 0.76, 0.76, 0.03, sg.mark.p);
+        for (let r = 0; r < 5; r++) {
+          const row = mk[r];
+          for (let cI = 0; cI < 5;) {
+            const ch = row[cI];
+            if (ch === '.') { cI++; continue; }
+            let e = cI; while (e < 5 && row[e] === ch) e++;
+            gl.box(mx + ((cI + e - 1) / 2 - 2) * cs, bandY + (2 - r) * cs - cs / 2, z + 0.18, (e - cI) * cs, cs, 0.03, ch === 'a' ? sg.mark.a : sg.mark.b);
+            cI = e;
+          }
+        }
+      }
+      const tL = left + 0.12 + (mk ? 0.84 : 0), tR = left + span - 0.12 - endPad;
+      if (endPad) { // a projecting green cross and the like
+        const hx = left + span - 0.12 - endPad / 2 + 0.05;
+        gl.box(hx, bandY - 0.32, z + 0.3, 0.2, 0.64, 0.12, sg.fg);
+        gl.box(hx, bandY - 0.1, z + 0.3, 0.64, 0.2, 0.12, sg.fg);
+      }
+      if (!o.dry) {
+        out.sign = shopSign(sg, tL, tR, bandH - 0.12);
+        out.sign.position.set((tL + tR) / 2, bandY, z + 0.165);
+      }
+    }
     out.door = { x: dx, z: z + 0.9 };
-    out.shop = o.shop;
+    out.shop = sg.text;
+    out.cat = S.cat;
+    out.name = sg.text;
   } else {
     const dc = rnd.int(0, cols - 1), dx = cx(dc);
     v.box(dx, y0, z + 0.03, 1.14, 2.25, 0.08, '#f6f3ec');
