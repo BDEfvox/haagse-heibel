@@ -702,7 +702,7 @@ export class Crowd {
           a.think = 0.5;
           if (lane.side && a.vis && d2 < 400 * 400) {
             const zebra = lane.zeb && lane.zeb.some((s) => Math.abs(s - a.s) < 1.6);
-            if (zebra ? this.rnd() < 0.25 : this.rnd() < this.jay * 0.5) {
+            if (zebra ? this.rnd() < 0.06 : this.rnd() < this.jay * 0.5) {
               const to = this._across(a, a.x, a.z, ex / el, ez / el);
               if (to) { a.cross = { lane: to[0], i: to[1], x0: a.x, z0: a.z, x1: to[2], z1: to[3], t: 0, dur: Math.max(1, Math.hypot(to[2] - a.x, to[3] - a.z) / a.v0), wait: zebra || this.rnd() < 0.35 ? 3.5 : 0 }; continue; }
             }
@@ -764,7 +764,7 @@ export class Crowd {
             const gap = tram ? 7 : car ? 6.3 : 2.8;
             target = Math.min(a.v0, block < gap ? 0 : bv + (block - gap) * 1.2);
             // no room left and still rolling: an unwary walker in the road gets knocked over, now and then
-            if (who && who.kind === PED && who.cross && !who.cross.wait && !who.cross.hit && block < (car ? 3.0 : 1.6) && a.v > 2.4 && !tram && this.t - this.bonkAt > 22 && d2 < 160 * 160) {
+            if (who && who.kind === PED && who.cross && !who.cross.wait && !who.cross.hit && block < (car ? 4.6 : 2.3) && a.v > 2.4 && !tram && this.t - this.bonkAt > 22 && d2 < 160 * 160) {
               this.bonkAt = this.t;
               const X = who.cross, fly = clamp(a.v * (car ? 0.45 : 0.25), 0.8, 3.2), sd = (who.x - a.x) * hz - (who.z - a.z) * hx >= 0 ? 1 : -1;
               who.fall = { x0: who.x, z0: who.z, vx: hx * fly + hz * sd * 1.1, vz: hz * fly - hx * sd * 1.1, up: car ? 1.7 : 0.9, fly: 0.75, dur: 2.9, to: { lane: X.lane, i: X.i, x1: X.x1, z1: X.z1 } };

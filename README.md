@@ -88,20 +88,23 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
 
 ## How the street scenes work
 
-- `src/voxel/world.js` — loads the map tiles around a street and builds the scene: relief from the
-  height model (4 m cells) with a stepped pixel-grid ground on it (pavements stand on kerbs, grass and
-  dunes lie higher and uneven), water lying below its banks with quay walls, real building footprints
-  as voxel blocks (street-facing ones get full house fronts, the rest get windows painted on by the
-  shader) and three kinds of tree
-- Level of detail, also in `world.js`: the whole city is always there as a relief map with plain
-  building blocks (16 m cells near the camera, 32 m further out, chosen in the shader). Close to the
-  ground, 256 m tiles with real outlines, ground, water and trees are streamed in around the camera.
-  A tile is built once in its own coordinates and kept in memory, so it is reused when the focus moves
-  to another street; high up the tiles step aside for the blocks
-- `src/voxel/crowd.js` — background life on every street around the camera: walkers, cyclists, moving
-  and parked cars and lamp posts as instanced meshes, following lanes derived from the road map
-- Roaming onto another street while zoomed in moves the focus there (`Stage.show` with `keep`,
-  `shiftFocus` in `main.js`): the camera stays put, the street under it becomes the one that is open
+- `src/voxel/world.js` — the city is drawn from 256 m map tiles, all painted and coloured by the same
+  rules whichever street is open: a stepped pixel-grid ground on the height model (pavements on kerbs,
+  red cycle lanes, road markings), water below its banks with quay walls, real building footprints as
+  voxel blocks with windows painted by the shader, trees. Tiles come in three levels of detail (close,
+  normal, far) chosen by distance, are built once and kept in memory, and reach the edge of the view
+  up to the height at which the flat map takes over. The open street adds its own house fronts with
+  doors and shops on top
+- `src/voxel/landmarks.js` — buildings that are something in particular (churches, fuel stations,
+  windmills, the lighthouse), landmark shapes from OpenStreetMap's 3D building parts, free-standing
+  features and perimeter walls and fences
+- `src/voxel/crowd.js` — street life for the whole city, the open street included: walkers, cyclists,
+  cars, trams, parked cars and lamp posts as instanced meshes on lanes derived from the road map. It
+  carries on unchanged when the focus moves to another street; gags borrow passers-by from it
+- Roaming onto another street moves the focus there with the camera staying put (`Stage.show` with
+  `keep`, `shiftFocus` in `main.js`). Zooming out far enough hands over to the flat map, and zooming
+  in on the map by the same amount hands back at the same spot
+- Light follows the real time of day in The Hague (`skyAt` in `stage.js`)
 - `src/voxel/geo.js` — paths you can walk along, the ground raster, footprint boxes
 - `src/voxel/street.js` — lanes and pavements fitted between the real fronts, street furniture, and
   the 48 m "spots" where gags play
