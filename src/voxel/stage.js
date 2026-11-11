@@ -3,24 +3,29 @@
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
 import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT, wait } from './kit.js';
-import { buildWorld, preload, U, cutWeight, cutLimit, CUT, setMaxTexture, trimTiles, tileOf } from './world.js';
+import { buildWorld, preload, U, cutWeight, cutLimit, CUT, setMaxTexture, trimTiles, tileOf, LAMP_KIND } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
 import { makeBird, makePerson, PERSON_K } from './cast.js';
+import { litShare } from './props.js';
 import { Crowd, PED, SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
 import { spotAt } from './districts.js';
 import { sfx } from '../audio.js';
 
-// Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open.
-// Keyframes by the sun's height above the horizon, in degrees; colours are blended between them.
+// Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open. The owner can
+// also force day or night (`setSky`). Keyframes by the sun's height above the horizon, in degrees; colours are blended between them.
+// Night is a look of its own: little light from the sky (a cool moon fill so nothing is pure black), so that lamp pools,
+// windows and signs carry the picture.
 const SKY = [
-  { alt: -12, top: '#060a22', bot: '#2c1b5c', sun: '#a9bdff', sunI: 1.3, hs: '#6f83e6', hg: '#2c2752', hI: 1.3, fog: '#1b1444' },
-  { alt: -4, top: '#3d2a7a', bot: '#ff8a66', sun: '#ffa573', sunI: 1.7, hs: '#b79cf0', hg: '#6e5378', hI: 1.5, fog: '#b0688a' },
+  { alt: -30, top: '#03050f', bot: '#131a3c', sun: '#8ea6ff', sunI: 0.7, hs: '#4259aa', hg: '#1f2644', hI: 0.88, fog: '#0a0f26' },
+  { alt: -16, top: '#050818', bot: '#1b2352', sun: '#8ea6ff', sunI: 0.72, hs: '#4259aa', hg: '#1f2644', hI: 0.9, fog: '#0d1330' },
+  { alt: -9, top: '#131947', bot: '#4b3b7c', sun: '#93a3ff', sunI: 0.8, hs: '#4d5eb0', hg: '#2a2443', hI: 0.9, fog: '#2a2358' },
+  { alt: -4, top: '#3d2a7a', bot: '#ff8a66', sun: '#ffa573', sunI: 1.5, hs: '#b79cf0', hg: '#6e5378', hI: 1.3, fog: '#b0688a' },
   { alt: 3, top: '#ffab66', bot: '#ffecc9', sun: '#ffe6c2', sunI: 2.2, hs: '#fff1df', hg: '#bfa27e', hI: 1.45, fog: '#ffecc9' },
   { alt: 12, top: '#5bb8ff', bot: '#eaf7ff', sun: '#fff1cc', sunI: 2.2, hs: '#e6f5ff', hg: '#c0c090', hI: 1.45, fog: '#eaf7ff' },
   { alt: 35, top: '#6ec3ff', bot: '#d9f2ff', sun: '#fff6e0', sunI: 2.15, hs: '#e6f5ff', hg: '#b7c690', hI: 1.5, fog: '#d9f2ff' },
-];
+].map((k) => { const o = { ...k }; for (const c of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) o[c] = new THREE.Color(k[c]); return o; });
 /** Where the sun stands over The Hague at a moment in time: height and compass direction, in radians. */
 function sunAt(date, lat = 52.08, lon = 4.31) {
   const R = Math.PI / 180, d = date.getTime() / 86400000 - 10957.5; // days since 1 January 2000, noon UTC
@@ -32,22 +37,62 @@ function sunAt(date, lat = 52.08, lon = 4.31) {
     az: Math.atan2(-Math.sin(ha), Math.tan(dec) * Math.cos(lat * R) - Math.sin(lat * R) * Math.cos(ha)), // from north, clockwise
   };
 }
-const _ca = new THREE.Color(), _cb = new THREE.Color();
-const mixHex = (a, b, t) => '#' + _ca.set(a).lerp(_cb.set(b), t).getHexString();
-/** The look of the sky and the light at a moment in time. */
-export function skyAt(date) {
-  const sun = sunAt(date), deg = (sun.alt * 180) / Math.PI;
-  let k = 0;
-  while (k < SKY.length - 2 && deg > SKY[k + 1].alt) k++;
-  const a = SKY[k], b = SKY[k + 1], t = clamp((deg - a.alt) / (b.alt - a.alt));
-  const sky = { deg, night: deg < -1.5, stars: deg < -7 };
-  for (const key of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) sky[key] = mixHex(a[key], b[key], t);
-  for (const key of ['sunI', 'hI']) sky[key] = lerp(a[key], b[key], t);
-  // the light comes from the sun by day (never so low that shadows run the length of the street) and from a high moon at night
-  sky.lightAz = deg > 1 ? sun.az : sun.az + Math.PI;
-  sky.lightAlt = deg > 1 ? Math.max(sun.alt, 0.3) : 0.8;
-  return sky;
+const smoothS = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const hourFmt = (() => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Amsterdam', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' }); } catch (e) { return null; } })();
+/** The hour in The Hague (0-24) at a moment in time. */
+function hourIn(date) {
+  if (hourFmt) { const m = /(\d+):(\d+)/.exec(hourFmt.format(date)); if (m) return +m[1] + +m[2] / 60; }
+  return (date.getUTCHours() + 1 + date.getUTCMinutes() / 60) % 24;
 }
+/** The look of the sky and the light at one moment: colours, light, how dark it is, what is up in the sky, who is awake. */
+class Look {
+  constructor() {
+    for (const c of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) this[c] = new THREE.Color();
+    this.sunI = 1; this.hI = 1; this.lightAz = 0; this.lightAlt = 1; this.nk = 0; this.stars = 0; this.moon = 0; this.hour = 12; this.deg = 30;
+    this.night = false; // what the tiles are baked for (the lit windows of the detailed fronts and the like)
+  }
+  copy(o) {
+    for (const c of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) this[c].copy(o[c]);
+    this.sunI = o.sunI; this.hI = o.hI; this.lightAz = o.lightAz; this.lightAlt = o.lightAlt; this.nk = o.nk; this.stars = o.stars; this.moon = o.moon; this.hour = o.hour; this.deg = o.deg; this.night = o.night;
+    return this;
+  }
+  mix(a, b, t) {
+    for (const c of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) this[c].lerpColors(a[c], b[c], t);
+    for (const k of ['sunI', 'hI', 'lightAlt', 'nk', 'stars', 'moon', 'hour', 'deg']) this[k] = lerp(a[k], b[k], t);
+    this.lightAz = a.lightAz + angDiff(a.lightAz, b.lightAz) * t;
+    return this;
+  }
+  /** From the sun's height (degrees) and compass direction (radians). */
+  sun_(deg, az) {
+    let k = 0;
+    while (k < SKY.length - 2 && deg > SKY[k + 1].alt) k++;
+    const a = SKY[k], b = SKY[k + 1], t = clamp((deg - a.alt) / (b.alt - a.alt));
+    for (const c of ['top', 'bot', 'sun', 'hs', 'hg', 'fog']) this[c].lerpColors(a[c], b[c], t);
+    this.sunI = lerp(a.sunI, b.sunI, t); this.hI = lerp(a.hI, b.hI, t);
+    this.deg = deg; this.night = deg < -1.5;
+    this.nk = 1 - smoothS(-4, 3, deg); // how dark: windows light up and lamp pools fade in over the half hour round sunset
+    this.stars = smoothS(-5, -11, deg); this.moon = smoothS(-6, -12, deg);
+    // the light comes from the sun by day (never so low that shadows run the length of the street) and from a high moon at night
+    this.lightAz = deg > 1 ? az : az + Math.PI;
+    this.lightAlt = deg > 1 ? Math.max((deg * Math.PI) / 180, 0.3) : 0.8;
+    return this;
+  }
+}
+/** The look at a moment in time (the real clock, or `&t=` on the dev server). */
+export function skyAt(date) {
+  const sun = sunAt(date), L = new Look().sun_((sun.alt * 180) / Math.PI, sun.az);
+  L.hour = hourIn(date);
+  return L;
+}
+/** The look of a forced day (a clear early-afternoon sun) or night (full night, an evening's worth of lit windows). */
+const forcedLook = (mode) => { const L = new Look().sun_(mode === 'night' ? -30 : 38, mode === 'night' ? 2.4 : 3.5); L.hour = mode === 'night' ? 22.3 : 14; return L; };
+/** The lit share of windows by the hour: homes, offices, shops. */
+const WIN = {
+  home: [[0, 0.3], [1.5, 0.12], [5, 0.1], [6.5, 0.5], [8, 0.35], [12, 0.2], [16, 0.45], [18, 0.7], [22, 0.62], [23.5, 0.42], [24, 0.3]],
+  office: [[0, 0.04], [5, 0.04], [6.5, 0.22], [8, 0.12], [17, 0.2], [19, 0.14], [22, 0.08], [24, 0.04]],
+  shop: [[0, 0.12], [1, 0.04], [6, 0.04], [9, 0.25], [17, 0.6], [21.5, 0.82], [23, 0.3], [24, 0.12]],
+};
+const tab = (t, h) => { let i = 1; while (i < t.length - 1 && h > t[i][0]) i++; const a = t[i - 1], b = t[i]; return lerp(a[1], b[1], clamp((h - a[0]) / (b[0] - a[0]))); };
 const AZ0 = 0.4, EL0 = 0.7, FOV = 30, TAN = Math.tan((FOV / 2) * (Math.PI / 180));
 /** Half the vertical field of view, as a tangent: lets the page match a map zoom to a camera height. */
 export const VIEW_TAN = TAN;
@@ -58,7 +103,7 @@ export const EXIT_DIST = EXIT;
 const DMIN = 20, DMAX = 3100;
 const sm = (x) => x * x * (3 - 2 * x);
 const angDiff = (a, b) => { const d = b - a; return Math.atan2(Math.sin(d), Math.cos(d)); };
-const _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+const _col = new THREE.Color(), _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 
 /** Free the GPU buffers of an object that has left the scene for good. */
 const SHARED = new Set([MAT.solid, MAT.glow, MAT.water, CUT.solid, CUT.glow, CUT.depth]);
@@ -126,7 +171,11 @@ export class Stage {
     this.hemi = new THREE.HemisphereLight('#fff', '#888', 1);
     this.scene.add(this.sun, this.sun.target, this.hemi);
     this.lampLights = [];
-    for (let i = 0; i < 5; i++) { const pl = new THREE.PointLight('#ffd27a', 0, 15, 1.7); this.lampLights.push(pl); this.scene.add(pl); }
+    for (let i = 0; i < 5; i++) { const pl = new THREE.PointLight('#ffd27a', 0, 15, 1.7); pl.userData.base = 0; this.lampLights.push(pl); this.scene.add(pl); }
+    // the sky: follows the clock unless the owner forces day or night (`setSky`); `cur` is the look on screen right now, `tr` a change in progress
+    this.skyMode = 'clock'; this.clockOpt = null;
+    this.cur = new Look(); this.sky = this.cur; this.tr = null; this._clockT = 0; this._dip = 0;
+    this.sunDir = new THREE.Vector3(0, 1, 0); this._cssLast = {}; this._winHour = -1;
     this.W = null;
     this.running = false;
     this.mode = 'idle';
@@ -569,6 +618,90 @@ export class Stage {
     b.el += this.rig.el; b.dist += this.rig.dist;
   }
 
+  // ------------------------------------------------------------ sky: clock, forced day or night, and the change between them
+  /** The look the sky should have now, by mode. */
+  _wantLook() {
+    if (this.skyMode === 'clock') return skyAt(this.clockOpt || new Date());
+    return forcedLook(this.skyMode);
+  }
+  /** 'clock' (the default: the real time in The Hague), 'day' or 'night'. Glides there if a street is open. */
+  setSky(mode) {
+    if (mode !== 'day' && mode !== 'night') mode = 'clock';
+    if (mode === this.skyMode) return;
+    this.skyMode = mode;
+    if (this.W) this._startTr(this._wantLook());
+  }
+  /**
+   * A change of light that is a short, deliberate event: the sky and the sun glide over about a second while the picture
+   * dips towards dusk, and the baked parts of the tiles (lit windows of the detailed fronts, lanterns, landmark lights)
+   * are made on the side and swapped in together at the darkest moment. The crowd does not change: its lights are uniforms.
+   */
+  _startTr(to) {
+    const from = new Look().copy(this.cur), need = !!to.night !== !!this.cur.night;
+    // a change asked for during a change: carry on from where the picture is (it may be mid-dusk), never jump back to full light
+    this.tr = { from, to, t: 0, need, swapped: false, hold: 0, tc: 0, d0: this._dip };
+    this.W.bake.start(to.night);
+  }
+  _commitBake() {
+    const tr = this.tr, W = this.W;
+    W.bake.commit(tr.to.night);
+    W.L.night = tr.to.night;
+    for (const c of [this.amb, ...(this.locales || [])]) if (c && c.L) c.L.night = tr.to.night;
+    this.cur.night = tr.to.night;
+    tr.swapped = true; tr.tc = tr.t;
+  }
+  _skyFrame(real) {
+    const tr = this.tr, cur = this.cur;
+    if (tr) {
+      tr.t += real;
+      let p;
+      if (!tr.need) p = clamp(tr.t / 1.1);
+      else if (!tr.swapped) {
+        const left = this.W.bake.step(7, this.lite ? 10 : 48);
+        p = Math.min(0.5, (tr.t / 0.6) * 0.5);
+        if (p >= 0.5) { tr.hold += real; if (left === 0 || tr.hold > 4) this._commitBake(); } // (never hold the dusk for long: whatever is not ready follows)
+      }
+      if (tr.need && tr.swapped) p = 0.5 + clamp((tr.t - tr.tc) / 0.7) * 0.5;
+      const night = cur.night;
+      if (p >= 1) { cur.copy(tr.to); cur.night = tr.to.night; this._dip = 0; this.tr = null; }
+      else { cur.mix(tr.from, tr.to, sm(p)); cur.night = tr.need ? (tr.swapped ? tr.to.night : tr.from.night) : night; this._dip = Math.max(tr.need ? Math.sin(Math.PI * p) : 0, tr.d0 * (1 - sm(p))); }
+      this._applyLook(cur);
+      return;
+    }
+    // the real clock moves on while somebody watches: the light follows it, and dusk and dawn play the same change
+    if (this.skyMode === 'clock' && !this.clockOpt && (this._clockT -= real) < 0) {
+      this._clockT = 4;
+      const want = this._wantLook();
+      if (!!want.night !== !!cur.night) this._startTr(want);
+      else { const n = cur.night; cur.copy(want); cur.night = n; this._applyLook(cur); }
+    }
+  }
+  /** Put a look on the lights, the fog, the page behind the canvas (sky, stars, moon) and the shaders (how dark, who is awake). */
+  _applyLook(L, force = false) {
+    const dip = this._dip, dim = 1 - 0.5 * dip, c = _col;
+    this.sun.color.copy(L.sun); this.sun.intensity = L.sunI * dim;
+    this.hemi.color.copy(L.hs); this.hemi.groundColor.copy(L.hg); this.hemi.intensity = L.hI * dim;
+    this.scene.fog.color.copy(L.fog).multiplyScalar(1 - 0.35 * dip);
+    const css = (k, v) => { if (this._cssLast[k] !== v) { this._cssLast[k] = v; this.root.style.setProperty(k, v); } };
+    css('--sky-top', '#' + c.copy(L.top).multiplyScalar(1 - 0.3 * dip).getHexString());
+    css('--sky-bot', '#' + c.copy(L.bot).multiplyScalar(1 - 0.3 * dip).getHexString());
+    css('--stars', (L.stars * (1 - 0.5 * dip)).toFixed(2));
+    css('--moon', L.moon.toFixed(2));
+    css('--glow', L.nk.toFixed(2));
+    U.uNight.value = L.nk;
+    if (Math.abs(L.hour - this._winHour) > 0.02) {
+      this._winHour = L.hour;
+      U.uWin.value.set(tab(WIN.home, L.hour), tab(WIN.office, L.hour), tab(WIN.shop, L.hour));
+      litShare.home = U.uWin.value.x; litShare.shop = U.uWin.value.z; // the modelled windows of the detailed fronts are made with the same shares
+    }
+    if (this._cloudMat) this._cloudMat.opacity = lerp(0.92, 0.42, L.nk);
+    if (this.W) {
+      // the light's compass direction, in this street's frame
+      const F = this.W.frame, e = Math.sin(L.lightAz) * Math.cos(L.lightAlt), n = Math.cos(L.lightAz) * Math.cos(L.lightAlt);
+      this.sunDir.set(e * F.dx + n * F.dy, Math.sin(L.lightAlt), e * F.dy - n * F.dx).normalize();
+    }
+  }
+
   // ------------------------------------------------------------ show
   /**
    * Open a street. With `opts.keep` (and a street already open) the camera stays exactly where it is: the new
@@ -578,17 +711,18 @@ export class Stage {
     const keep = !!opts.keep && !!this.W && this.running;
     if (keep) this._tok++; else this.hide();
     const token = this._tok;
-    const level = clamp(Math.round(+st.level) || 1, 1, 5), sky = skyAt(opts.clock || new Date());
+    const level = clamp(Math.round(+st.level) || 1, 1, 5);
+    this.clockOpt = opts.clock || null;
+    // a street that is swapped in while the sky is changing is baked for where the sky is heading
+    const sky = keep ? this.cur : this._wantLook(), bakeNight = keep && this.tr ? this.tr.to.night : sky.night;
     const dress = () => {
       this.hooks = hooks;
-      this.root.style.setProperty('--sky-top', sky.top);
-      this.root.style.setProperty('--sky-bot', sky.bot);
-      this.root.classList.toggle('stars', !!sky.stars);
+      if (!keep) { this.cur.copy(sky); this.tr = null; this._applyLook(this.cur); }
     };
     if (!keep) dress();
     let W;
     try {
-      W = await buildWorld(st, opts.geometry, { night: !!sky.night, seed: opts.seed || '', lite: this.lite, soft: keep });
+      W = await buildWorld(st, opts.geometry, { night: !!bakeNight, seed: opts.seed || '', lite: this.lite, soft: keep });
     } catch (e) {
       console.error('world build failed', e);
       return false;
@@ -601,7 +735,6 @@ export class Stage {
       // the camera, in map terms, so it can be put back in the new street's frame
       const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
       view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
-      if (!!this.sky.night !== !!sky.night) hooks.onSwap?.();
       // the city's street life carries on: it is handed to the next street instead of being torn down
       view.crowd = this.crowd; this.crowd = null;
       if (o.stream) o.stream.onTile = null;
@@ -622,23 +755,18 @@ export class Stage {
   _begin(W, st, sky, level, opts) {
     const hooks = this.hooks;
     this.W = W;
-    this.sky = sky;
-    this.sun.color.set(sky.sun); this.sun.intensity = sky.sunI;
-    this.hemi.color.set(sky.hs); this.hemi.groundColor.set(sky.hg); this.hemi.intensity = sky.hI;
-    this.scene.fog.color.set(sky.fog || sky.bot);
-    {
-      // the light's compass direction, in this street's frame
-      const F = W.frame, e = Math.sin(sky.lightAz) * Math.cos(sky.lightAlt), n = Math.cos(sky.lightAz) * Math.cos(sky.lightAlt);
-      this.sunDir = new THREE.Vector3(e * F.dx + n * F.dy, Math.sin(sky.lightAlt), e * F.dy - n * F.dx).normalize();
-    }
+    this.sky = this.cur;
     W.activate();
+    this._applyLook(this.cur, true); // (the light's direction is given in this street's frame; after activate, which sets a first guess of U.uNight)
+    U.uLampN.value = 0; // the lamps nearest the camera are picked again on the first frame (the old list is in the old frame)
+    if (this.tr) W.bake.start(this.tr.to.night); // the sky is still changing: this street's tiles join in
     this.scene.add(W.group);
     // background life on every other street: the detailed area's roads now, each tile's roads as it streams in
     // the city's street life: walkers, bikes, cars and trams on every street, this one included. It is one system
     // for the whole city and outlives the street: when the focus moves it is carried over as it is
     const old = opts.view && opts.view.crowd;
-    if (old && old.night === W.night) { this.crowd = old; old.rebase(W); }
-    else { if (old) old.dispose(); this.crowd = new Crowd(W, { lite: this.lite }); }
+    if (old) { this.crowd = old; old.rebase(W); } // (the crowd does not depend on day or night: its lights are switched by a uniform)
+    else this.crowd = new Crowd(W, { lite: this.lite });
     this.scene.add(this.crowd.group);
     W.stream.onTile = (c, on) => { if (!this.crowd) return; if (on) this.crowd.addTile(c); }; // (tiles that leave are pruned a little later)
     for (const key of W.corridor) { const c = tileOf(key); if (c) this.crowd.addTile(c); } // this street's own tiles now: its lamp posts and parked cars are needed below
@@ -669,7 +797,7 @@ export class Stage {
     {
       // lamp posts and parked cars stand where the city put them (the same whether or not this street is open): the gags use them as they are
       const hb = W.L.hw + W.L.bw, own = this.crowd.props((x, z) => { const q = path.project(x, z); return q.d < hb + 4.5 && q.s > path.sA + 1 && q.s < path.sB - 1; });
-      for (const l of own.lamps) { const q = path.project(l.x, l.z); A.lamps.push({ s: q.s, z: q.v, y: 4.44, X: l.x, Z: l.z }); }
+      for (const l of own.lamps) { const q = path.project(l.x, l.z); A.lamps.push({ s: q.s, z: q.v, y: LAMP_KIND[l.kind].h - 0.3, X: l.x, Z: l.z, kind: l.kind }); }
       for (const c of own.parked) { const q = path.project(c.x, c.z); if (Math.abs(q.v) < hb) A.parked.push({ s: q.s, z: q.v }); }
       A.lamps.sort((a, b) => a.s - b.s); A.parked.sort((a, b) => a.s - b.s);
     }
@@ -718,7 +846,7 @@ export class Stage {
       fxw.dust = (x, y, z, vx = 0, vz = 0, ...rest) => { const p = map(x, z), t = path.at(sc + x, _f); stage.fx.dust(p[0], y + W.hAt(p[0], p[1]), p[1], t.tx * vx - t.tz * vz, t.tz * vx + t.tx * vz, ...rest); };
       for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework', 'shards', 'pips']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y + W.hAt(p[0], p[1]), p[1], ...rest); };
       const ctx = {
-        id, sc, L, st, level, W, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
+        id, sc, L, st, level, W, get night() { return stage.sky.night; }, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
         district: (() => { const p = path.xz(sc, 0), m = W.frame.M(p[0], p[1]), d = spotAt(m[0], m[1]); return { wijk: d.wijk, buurt: d.buurt, level: d.level, pop: d.pop }; })(), // whose neighbourhood this is (wijk and buurt are null off the map); pop = the shares of districts.js here
         world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
@@ -867,7 +995,7 @@ export class Stage {
 
   _clouds(rnd, sky, c0) {
     this.clouds = [];
-    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: sky.night ? 0.42 : 0.92, fog: false });
+    const mat = this._cloudMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: lerp(0.92, 0.42, this.cur.nk), fog: false });
     for (let i = 0; i < 22; i++) {
       const v = new Vox(i + 20), n = rnd.int(4, 7), s = rnd.range(16, 34);
       for (let k = 0; k < n; k++) {
@@ -1146,6 +1274,7 @@ export class Stage {
     this.camera.far = r.dist * 7 + 9000;
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
+    this._skyFrame(real);
     this.scene.fog.near = r.dist * 1.6 + 180;
     this.scene.fog.far = r.dist * 7 + 2400;
     this.fx.zoom = r.dist;
@@ -1177,18 +1306,16 @@ export class Stage {
     }
     this.sun.target.position.set(r.tx, r.ty, r.tz);
     this.sun.position.set(r.tx + this.sunDir.x * (half * 1.7 + 60), r.ty + this.sunDir.y * (half * 1.7 + 60), r.tz + this.sunDir.z * (half * 1.7 + 60));
-    if (this.sky.night) {
-      this.lampT -= real;
-      if (this.lampT < 0) {
-        this.lampT = 0.4;
-        const lamps = r.dist < 260 ? W.anchors.lamps.map((l) => [l, (l.X - r.tx) ** 2 + (l.Z - r.tz) ** 2]).filter((q) => q[1] < 70 * 70).sort((a, b) => a[1] - b[1]) : [];
-        this.lampLights.forEach((pl, i) => {
-          const l = lamps[i];
-          pl.intensity = l ? 26 : 0;
-          if (l) pl.position.set(l[0].X, l[0].y - 0.4 + W.landY(l[0].X, l[0].Z), l[0].Z);
-        });
-      }
+    // the lamps nearest to what the camera looks at: they wash the walls and the people near them (see U.uLampA) and the five nearest also really light things
+    this.lampT -= real;
+    if (this.lampT < 0) {
+      this.lampT = 0.3;
+      const n = this.cur.nk > 0.02 && r.dist < 420 ? this.crowd.lampSet(U.uLampA.value, r.tx, r.tz, this.lite ? 12 : 24, 80) : 0;
+      U.uLampN.value = n; U.uLampR.value = n ? this.crowd.lampReach : 60;
+      this.lampLights.forEach((pl, i) => { const a = i < n && r.dist < 260 ? U.uLampA.value[i] : null; pl.userData.base = a ? 26 : 0; if (a) pl.position.set(a.x, a.y - 0.4, a.z); });
     }
+    for (const pl of this.lampLights) pl.intensity = pl.userData.base * this.cur.nk;
+    U.uTime.value = (performance.now() / 1000) % 1000;
     this._pins();
     if (this.audit) this._beatTick();
     this.renderer.render(this.scene, this.camera);

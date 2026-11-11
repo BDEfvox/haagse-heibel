@@ -248,13 +248,13 @@ function rig(ctx) {
 
 /**
  * The kind of an INVENTED extra (a bystander the toolkit makes up instead of borrowing from the crowd): 'niffo' or 'harry'
- * with a chance that follows the district (`ctx.district.pop[id]` is read as the share of the crowd, each capped at 0.5,
- * and ignored below 0.04), otherwise 'civ'. Missing district or pop = always 'civ'. Uses ctx.rnd.
+ * with a chance that follows the district (`ctx.district.pop[id]` is the share per 100 of the crowd, as in districts.js;
+ * each is capped at a half and ignored below 4 in 100), otherwise 'civ'. Missing district or pop = always 'civ'. Uses ctx.rnd.
  */
 function extraKind(ctx) {
   const pop = ctx.district && ctx.district.pop;
   if (!pop) return 'civ';
-  const share = (id) => { const d = +pop[id]; return d >= 0.04 ? Math.min(0.5, d) : 0; };
+  const share = (id) => { const d = +pop[id] / 100; return d >= 0.04 ? Math.min(0.5, d) : 0; };
   const pn = share('niffo'), ph = share('harry');
   if (pn + ph <= 0) return 'civ';
   const r = ctx.rnd();

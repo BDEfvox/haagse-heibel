@@ -193,6 +193,26 @@ async function boot() {
 
   // ------------------------------------------------------------ cutscene
   const stage = new Stage(cut);
+  // light: follows the real clock (default), or forced day or night; remembered between visits
+  const skyBtn = $('#btn-sky');
+  const SKIES = [['clock', '🕒', 'Light follows the clock', 'force day'], ['day', '☀️', 'Light: day', 'force night'], ['night', '🌙', 'Light: night', 'follow the clock']];
+  let skyIx = 0;
+  try { const v = localStorage.getItem('heibel-sky'); skyIx = Math.max(0, SKIES.findIndex((q) => q[0] === v)); } catch (e) { /* private mode */ }
+  const paintSky = () => {
+    const [, icon, label, next] = SKIES[skyIx];
+    skyBtn.textContent = icon;
+    skyBtn.title = `${label} (click to ${next})`;
+    skyBtn.setAttribute('aria-label', `${label}. Press to ${next}.`);
+  };
+  paintSky();
+  stage.setSky(SKIES[skyIx][0]);
+  skyBtn.onclick = () => {
+    skyIx = (skyIx + 1) % SKIES.length;
+    try { localStorage.setItem('heibel-sky', SKIES[skyIx][0]); } catch (e) { /* ignore */ }
+    paintSky();
+    stage.setSky(SKIES[skyIx][0]);
+    play('click');
+  };
   let busy = false, current = null, count = 0;
   const hooks = {
     onNews(t) {
@@ -283,7 +303,7 @@ async function boot() {
   };
   // zooming all the way out hands over to the map
   hooks.onExit = () => closeStreet(true);
-  hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; };
+  hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; skyBtn.classList.toggle('away', !!on); }; // (the light button steps aside for the SKIP button)
   hooks.onCard = (title, sub, dur) => {
     const c = $('#cine-card');
     c.firstElementChild.textContent = title;

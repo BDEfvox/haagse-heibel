@@ -14,9 +14,11 @@ const AWN = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#fffff
 const STONE = '#efe9dc';
 const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
+/** How much of the night's lights are on at the hour (set by the stage): the share of lit windows in homes, and in shop fronts. */
+export const litShare = { home: 0.62, shop: 0.8 };
 function win(v, gl, x, y, z, w, h, night, rnd, litChance = 0.6) {
   v.box(x, y - 0.08, z + 0.04, w + 0.18, h + 0.18, 0.1, '#f6f3ec');
-  const lit = night && rnd.chance(litChance);
+  const lit = night && rnd.chance(litChance * Math.min(1.3, litShare.home / 0.62));
   (lit ? gl : v).box(x, y, z + 0.07, w, h, 0.08, lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8');
   v.box(x, y + h / 2 - 0.03, z + 0.09, w, 0.06, 0.07, '#f6f3ec');
   v.box(x, y - 0.14, z + 0.14, w + 0.3, 0.08, 0.2, STONE);
@@ -373,7 +375,7 @@ export function house(v, gl, o) {
   // ground floor
   const doorCol = rnd.pick(DOORS);
   if (o.shop) {
-    const S = o.shop, L = S.look, sg = S.sign, lit = night ? gl : v;
+    const S = o.shop, L = S.look, sg = S.sign, lit = night ? gl : v, shopOn = night && litShare.shop > 0.2; // (shop windows go dark in the small hours)
     // room for a cash machine on the left of a bank, and what remains for the window
     let leftPad = o.atm ? 1.7 : 0.45;
     if (w - leftPad - 1.75 < 1.2) leftPad = 0.45;
@@ -384,12 +386,12 @@ export function house(v, gl, o) {
       v.box(gx, y0 + 0.5, z + 0.07, gw, 1.55, 0.08, '#8d949b');
       for (let i = 0; i < 7; i++) v.box(gx, y0 + 0.58 + i * 0.22, z + 0.12, gw, 0.04, 0.03, '#6f767d');
     } else {
-      const glass = L.dark ? (night ? '#2a2118' : '#1b212a') : night ? '#ffe9a8' : '#a9dcf5';
-      (night && !L.dark ? gl : v).box(gx, y0 + 0.5, z + 0.07, gw, 1.55, 0.08, glass);
+      const glass = L.dark || (night && !shopOn) ? (night ? '#2a2118' : '#1b212a') : night ? '#ffe9a8' : '#a9dcf5';
+      (shopOn && !L.dark ? gl : v).box(gx, y0 + 0.5, z + 0.07, gw, 1.55, 0.08, glass);
       dress(L.win, { v, gl, lit, night, rnd, x, w, gx, gw, y0, gh, z, dx, fg: sg.fg, bg: sg.bg });
     }
     v.box(dx, y0, z + 0.05, 0.9, 1.85, 0.1, doorCol);
-    (night ? gl : v).box(dx, y0 + 0.9, z + 0.08, 0.6, 0.75, 0.06, L.dark ? '#2a2118' : night ? '#ffe9a8' : '#a9dcf5');
+    (shopOn ? gl : v).box(dx, y0 + 0.9, z + 0.08, 0.6, 0.75, 0.06, L.dark || (night && !shopOn) ? '#2a2118' : night ? '#ffe9a8' : '#a9dcf5');
     if (L.awn) {
       const a = sg.kind === 'name' ? sg.bg : L.awn[0], b = L.awn[1], n = Math.floor((w - 0.3) / 0.42);
       for (let i = 0; i < 3; i++) {

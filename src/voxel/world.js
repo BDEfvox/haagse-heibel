@@ -250,9 +250,28 @@ export const U = {
   uClip: { value: new THREE.Vector4(1, 1, -1, -1) },
   // far-away building blocks: fine ones within uNear of the camera target, coarse ones beyond, none past uFar
   uNear: { value: 1300 }, uFar: { value: 1e9 }, uMask: { value: null }, uExt: { value: new THREE.Vector2() },
-  // painted windows: lit at night
+  // painted windows and the pools of light under the lamps: how dark it is (0 day, 1 night; it glides through dusk)
   uNight: { value: 0 },
+  // the lit share of windows by the hour: homes, offices, shop fronts; and a clock for the flicker of a television
+  uWin: { value: new THREE.Vector3(0.3, 0.1, 0.5) }, uTime: { value: 0 },
+  // the lamps nearest to what the camera looks at (written by the stage): x, y (head), z, reach; how many; and how far the set reaches
+  uLampA: { value: Array.from({ length: 24 }, () => new THREE.Vector4()) }, uLampN: { value: 0 }, uLampR: { value: 60 },
 };
+/** Warm light from the lamps of U.uLampA at a point (p) facing n; `wrap` softens the dark side (1 = lights everything alike). */
+export const LAMP_GLSL = `
+uniform vec4 uLampA[24]; uniform float uLampN; uniform float uLampR; uniform vec3 uFocus;
+vec3 lampLight(vec3 p, vec3 n, float wrap) {
+  vec3 L = vec3(0.0);
+  for (int i = 0; i < 24; i++) {
+    if (float(i) >= uLampN) break;
+    vec4 a = uLampA[i];
+    vec3 d = a.xyz - p;
+    float r2 = dot(d, d), att = max(0.0, 1.0 - r2 / (a.w * a.w));
+    float fade = 1.0 - smoothstep(uLampR * 0.55, uLampR, distance(a.xz, uFocus.xz)); // the set may change at its edge: lamps there have faded out
+    L += att * att * (a.w * 0.1) * fade * (wrap + (1.0 - wrap) * max(dot(n, d * inversesqrt(r2 + 1e-3)), 0.0));
+  }
+  return L * vec3(1.0, 0.74, 0.4);
+}`;
 const TERR_GLSL = `
 uniform sampler2D uTerr; uniform vec2 uTS; uniform vec2 uTO; uniform vec2 uTX; uniform vec2 uTZ; uniform vec4 uEnc; uniform vec2 uEnc2;
 float terrV(ivec2 p) {
@@ -273,7 +292,7 @@ function cutPatch(mat, tint = true, tile = false) {
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + TERR_GLSL)
+      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + (windows ? '\nvarying vec3 vLW;' : '') + TERR_GLSL)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vCut = 0.0; vWU = aW; vWY = position.y; vWF = vec3(abs(aW), aB.z - 2.0, fract(aB.x * 0.137 + aB.y * 0.291));
         if (aB.z > 0.0) {
@@ -298,33 +317,49 @@ function cutPatch(mat, tint = true, tile = false) {
           }
           ${tile ? 'if (aB.w >= 0.0 && bXZ.x > uClip.x && bXZ.y > uClip.y && bXZ.x < uClip.z && bXZ.y < uClip.w) transformed = vec3(0.0);' : ''}
         }`);
+    if (windows) sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n\tvLW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     if (tint) sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;\nuniform float uNight;\nfloat wHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }')
+      .replace('#include <common>', '#include <common>\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;\nuniform float uNight;\nuniform vec3 uWin;\nuniform float uTime;\nfloat wHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }' + (windows ? '\nvarying vec3 vLW;' + LAMP_GLSL : ''))
       .replace('#include <color_fragment>', `#include <color_fragment>
         float wGlow = 0.0; vec3 wLit = vec3(0.0);
         ${windows ? `float wDu = fwidth(vWU), wDy = fwidth(vWY); // derivatives must not be taken inside a branch
         if (vWF.x > 999.0) {
-          // windows painted on a plain wall: evenly spread along it, one row per floor
+          // windows painted on a plain wall: evenly spread along it, one row per floor. The mode (in thousands) is the kind of
+          // building: 1 homes, 2 ribbons of glass (towers), 3 offices, 4 homes with a shop on the ground floor
           float wMode = floor(vWF.x / 1000.0), wLen = vWF.x - wMode * 1000.0, wTop = vWF.y;
+          bool wRib = wMode > 1.5 && wMode < 2.5;
           float wT = clamp((vWU / vWF.x + 1.0) * 0.5, 0.0, 1.0);
-          float wN = wMode > 1.5 ? 1.0 : max(1.0, floor(wLen / 3.1)), wPitch = wMode > 1.5 ? 3.0 : 2.8;
-          float wX = wT * wN, wFy = (vWY - (wMode > 1.5 ? 3.0 : 0.95)) / wPitch;
+          float wN = wRib ? 1.0 : max(1.0, floor(wLen / 3.1)), wPitch = wRib ? 3.0 : 2.8;
+          float wX = wT * wN, wFy = (vWY - (wRib ? 3.0 : 0.95)) / wPitch, wFl = floor(wFy);
           vec2 wC = vec2(fract(wX), fract(wFy)), wE = vec2(wDu * 0.5 * wN / vWF.x, wDy / wPitch) + 1e-4;
-          vec2 wLo = wMode > 1.5 ? vec2(0.4 / wLen, 0.08) : vec2(0.27, 0.0), wHi = wMode > 1.5 ? vec2(1.0 - 0.4 / wLen, 0.52) : vec2(0.73, 0.47);
+          vec2 wLo = wRib ? vec2(0.4 / wLen, 0.08) : vec2(0.27, 0.0), wHi = wRib ? vec2(1.0 - 0.4 / wLen, 0.52) : vec2(0.73, 0.47);
           vec2 wIn = smoothstep(wLo - wE, wLo + wE, wC) * (1.0 - smoothstep(wHi - wE, wHi + wE, wC));
-          float wOn = wIn.x * wIn.y * step(0.0, wFy) * step(vWY + (wMode > 1.5 ? 1.4 : 1.5), wTop) * (1.0 - smoothstep(0.05, 0.3, vCut));
+          float wOn = wIn.x * wIn.y * step(0.0, wFy) * step(vWY + (wRib ? 1.4 : 1.5), wTop) * (1.0 - smoothstep(0.05, 0.3, vCut));
           wOn *= 1.0 - smoothstep(0.35, 0.9, max(wE.x, wE.y)); // too far away to tell windows apart: let them melt into the wall
-          float wR = wHash(vec3(floor(wX) + wLen, floor(wFy), vWF.z * 91.0));
+          float wR = wHash(vec3(floor(wX) + wLen, wFl, vWF.z * 91.0));
+          float wRf = wHash(vec3(wFl * 3.7 + 11.0, wLen * 0.37, vWF.z * 57.0)); // one die for the whole floor
+          float wB = vWF.z;
           vec3 wGlass = mix(vec3(0.27, 0.57, 0.8), vec3(0.016, 0.03, 0.07), uNight);
           wGlass *= 0.86 + 0.28 * wR;
           diffuseColor.rgb = mix(diffuseColor.rgb, wGlass, wOn);
-          wGlow = wOn * uNight * step(wMode > 1.5 ? 0.6 : 0.7, wR);
-          wLit = mix(vec3(1.0, 0.7, 0.2), vec3(1.0, 0.86, 0.5), fract(wR * 7.3));
+          // who is up: homes window by window, offices a floor at a time (and only now and then), a shop's ground floor until late
+          float wOff = (wMode > 2.5 && wMode < 3.5) ? 1.0 : wRib ? step(0.45, fract(wB * 7.31)) : 0.0;
+          float lit = wOff > 0.5 ? step(1.0 - uWin.y, wRf) * step(0.15, wR) : step(1.0 - uWin.x, wR);
+          float shop = (wMode > 3.5 ? 1.0 : 0.0) * step(wFl, 0.5) * step(1.0 - uWin.z, fract(wB * 13.7 + 0.3));
+          float tv = (1.0 - wOff) * lit * step(0.92, fract(wR * 17.3)); // a few homes show a flickering blue television
+          wGlow = wOn * uNight * max(lit, shop);
+          wLit = wOff > 0.5 ? mix(vec3(0.82, 0.93, 1.0), vec3(1.0, 0.95, 0.8), fract(wR * 5.1)) : mix(vec3(1.0, 0.7, 0.2), vec3(1.0, 0.86, 0.5), fract(wR * 7.3));
+          wLit = mix(wLit, vec3(0.42, 0.6, 1.0) * (0.7 + 0.3 * sin(uTime * 9.0 + wR * 60.0) * sin(uTime * 2.3 + wR * 20.0)), tv);
+          wLit = mix(wLit, vec3(1.0, 0.9, 0.66), shop * (1.0 - lit));
         }` : ''}
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.6, 0.62, 0.58), smoothstep(0.2, 0.85, vCut) * 0.93);`)
-      .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, wLit, wGlow);\n\t#include <opaque_fragment>');
+      .replace('#include <opaque_fragment>', `${windows ? `
+        // the nearest lamps wash the wall facing them
+        if (uLampN > 0.5 && uNight > 0.01) outgoingLight += diffuseColor.rgb * lampLight(vLW, inverseTransformDirection(normal, viewMatrix), 0.0) * (1.9 * uNight);` : ''}
+        outgoingLight = mix(outgoingLight, wLit, wGlow);
+        #include <opaque_fragment>`);
   };
-  mat.customProgramCacheKey = () => 'cut11' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
+  mat.customProgramCacheKey = () => 'cut12' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
   return mat;
 }
 /** Ground pieces outside the detailed area leave a hole where that area is. */
@@ -341,9 +376,9 @@ function clipPatch(mat) {
 /** Far-away building blocks pick their own level of detail: see U.uNear. */
 function blockPatch(mat, fine) {
   mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, { uFocus: U.uFocus, uNear: U.uNear, uFar: U.uFar, uClip: U.uClip, uMask: U.uMask, uExt: U.uExt });
+    Object.assign(sh.uniforms, { uFocus: U.uFocus, uNear: U.uNear, uFar: U.uFar, uClip: U.uClip, uMask: U.uMask, uExt: U.uExt, uNight: U.uNight, uWin: U.uWin });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uFocus;\nuniform float uNear;\nuniform float uFar;\nuniform vec4 uClip;\nuniform sampler2D uMask;\nuniform vec2 uExt;')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uFocus;\nuniform float uNear;\nuniform float uFar;\nuniform vec4 uClip;\nuniform sampler2D uMask;\nuniform vec2 uExt;\nvarying vec3 vBW;\nvarying vec3 vBN;\nvarying vec2 vBI;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         {
           vec2 bm = vec2(instanceMatrix[3].x, -instanceMatrix[3].z);
@@ -356,9 +391,27 @@ function blockPatch(mat, fine) {
           if (bc.x > uClip.x - pad && bc.z > uClip.y - pad && bc.x < uClip.z + pad && bc.z < uClip.w + pad) hide = true;
           ${fine ? 'if (texelFetch(uMask, ivec2(floor((bm - uExt) / 256.0)), 0).r > 0.5) hide = true;' : ''}
           if (hide) transformed *= 0.0;
-        }`);
+        }`)
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        vBW = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz; vBN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal); vBI = instanceMatrix[3].xz;`);
+    // the far city does not go black at night: its walls carry lit windows, as small speckle that melts into a glow with distance
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBW;\nvarying vec3 vBN;\nvarying vec2 vBI;\nuniform float uNight;\nuniform vec3 uWin;')
+      .replace('#include <opaque_fragment>', `
+        if (uNight > 0.01 && abs(vBN.y) < 0.5) {
+          bool bx = abs(vBN.x) > 0.5;
+          vec2 g = vec2((bx ? vBW.z : vBW.x) / ${fine ? '3.2' : '7.0'}, vBW.y / ${fine ? '3.0' : '6.0'});
+          vec2 c = floor(g), f = fract(g);
+          float bid = fract(sin(dot(vBI, vec2(12.9898, 78.233))) * 43758.5453);
+          float share = bid < 0.28 ? uWin.y : uWin.x;
+          float h = fract(sin(dot(c + vBI * 0.01 + (bx ? 7.0 : 0.0), vec2(127.1, 311.7))) * 43758.5453);
+          float dm = step(0.22, f.x) * step(f.x, 0.78) * step(0.3, f.y) * step(f.y, 0.7);
+          float pat = mix(dm, 0.4, clamp(max(fwidth(g.x), fwidth(g.y)) * 1.6, 0.0, 1.0));
+          outgoingLight = mix(outgoingLight, mix(vec3(1.0, 0.72, 0.28), vec3(1.0, 0.88, 0.55), h), step(1.0 - share, h) * pat * uNight * 0.85);
+        }
+        #include <opaque_fragment>`);
   };
-  mat.customProgramCacheKey = () => 'block1' + (fine ? 'f' : 'c');
+  mat.customProgramCacheKey = () => 'block2' + (fine ? 'f' : 'c');
   return mat;
 }
 export const CUT = {
@@ -426,6 +479,8 @@ function drawGeneric(v, gl, b, look, night, simple = false) {
   v.setB(o.cx, o.cz, h + 2, rad); gl.setB(o.cx, o.cz, h + 2, rad);
   const wall = look.wall, roofCol = look.roof;
   const small = b.area < 22, one = b.rects.length === 1;
+  // what the building is used for decides how its windows light up at night (see cutPatch): 1 homes, 2 towers, 3 offices, 4 a shop below the homes
+  const kd = hash2(Math.round(o.cx * 3), Math.round(o.cz * 3)), wMode = tall ? 2 : b.area > 160 && kd < 0.14 ? 3 : kd < 0.34 ? 4 : 1;
   for (const r of b.rects) {
     const span = Math.min(r.w, r.d);
     // a sloping roof where the register says there is one: on a terraced house, and on the wings of a big old block alike
@@ -435,7 +490,7 @@ function drawGeneric(v, gl, b, look, night, simple = false) {
     const hw = sloped ? Math.max(2.4, h - rise * 0.55) : h;
     if (sloped) { v.setB(o.cx, o.cz, hw + 2, rad); gl.setB(o.cx, o.cz, hw + 2, rad); }
     // the windows are painted on by the shader (see cutPatch): a grid on houses, ribbons of glass on towers
-    v.setW(small || hw <= 3.4 ? 0 : tall ? 2 : 1);
+    v.setW(small || hw <= 3.4 ? 0 : wMode);
     v.box(r.x, 0, r.z, r.w, hw, r.d, small ? P.shade(wall, 0.8) : wall, 0.035);
     v.setW(0);
     if (sloped) {
@@ -919,13 +974,49 @@ class Buf {
   cut() { return this.a.slice(0, this.n); }
 }
 /**
+ * The pools of light the lamps throw on the ground, as one small map over the whole tile (a texel a metre, whatever
+ * the tile's level of detail, so it fits the ground's uv). Drawn by the ground shader only at night (`poolPatch`).
+ * Strength falls off smoothly to a soft edge; where pools overlap they add up, so a lit street shows dark gaps
+ * between the lamps. Lamps just outside the tile (`ghosts`) are included so a pool is not cut at the border.
+ */
+function poolTexture(L) {
+  if (!L || (!L.a.length && !L.ghosts.length)) return null;
+  const N = 256, data = new Uint8Array(N * N), acc = new Float32Array(N * N);
+  const splat = (x, z, kind) => {
+    const R = LAMP_KIND[kind].R, amp = kind === 1 ? 1 : kind === 2 ? 0.55 : 0.85;
+    const i0 = Math.max(0, Math.floor(x - R)), i1 = Math.min(N - 1, Math.ceil(x + R)), j0 = Math.max(0, Math.floor(z - R)), j1 = Math.min(N - 1, Math.ceil(z + R));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const d = Math.hypot(i + 0.5 - x, j + 0.5 - z) / R;
+      if (d < 1) { const f = 1 - d * d; acc[j * N + i] += f * f * amp; }
+    }
+  };
+  for (let i = 0; i + 4 < L.a.length; i += 5) splat(L.a[i], L.a[i + 1], L.a[i + 4]);
+  for (let i = 0; i + 2 < L.ghosts.length; i += 3) splat(L.ghosts[i], L.ghosts[i + 1], L.ghosts[i + 2]);
+  for (let i = 0; i < data.length; i++) data[i] = Math.min(255, acc[i] * 255);
+  const tex = new THREE.DataTexture(data, N, N, THREE.RedFormat, THREE.UnsignedByteType);
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+/** The ground (or water) shader adds warm light where the baked pools are, in proportion to how dark it is (`U.uNight`). */
+function poolPatch(mat, pool, k) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uPool = { value: pool }; sh.uniforms.uNight = U.uNight; sh.uniforms.uPoolK = { value: k };
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uPool;\nuniform float uNight;\nuniform float uPoolK;')
+      .replace('#include <opaque_fragment>', 'outgoingLight += diffuseColor.rgb * (texture2D(uPool, vMapUv).r * uNight * uPoolK) * vec3(2.7, 2.0, 1.1);\n\t#include <opaque_fragment>');
+  };
+  mat.customProgramCacheKey = () => 'pool1';
+  return mat;
+}
+/**
  * The ground for one painted grid, in the grid's own coordinates: a stepped land surface with the grid as
  * its texture (kerbs, verges and rough ground are real steps), the water surface lying lower, and walls along
  * every shore. `mt` turns grid coords into map metres. Leaves `grid.off` (height of every cell above the terrain).
  */
-function buildGround(city, grid, { mt, gs = 4, clip = false }) {
+function buildGround(city, grid, { mt, gs = 4, clip = false, lamps = null }) {
   // (clip is no longer used: streets do not bring their own ground any more)
-  const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell, tex = groundTexture(grid), meshes = [];
+  const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell, tex = groundTexture(grid), meshes = [], pool = poolTexture(lamps);
   const n = Math.max(1, Math.round(gs / cell)), nbx = Math.ceil(w / n), nbz = Math.ceil(h / n), lw = nbx + 1;
   // terrain heights on the block lattice; inside a block the ground is interpolated, so pieces meet without cracks
   const lat = new Float32Array(lw * (nbz + 1));
@@ -1032,6 +1123,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false }) {
     geo.setAttribute('uv', new THREE.BufferAttribute(U2.cut(), 2));
     geo.setIndex(new THREE.BufferAttribute(nv > 65535 ? IX.cut() : Uint16Array.from(IX.a.subarray(0, IX.n)), 1));
     const mat = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5 });
+    if (pool) poolPatch(mat, pool, 1);
     const land = new THREE.Mesh(geo, clip ? clipPatch(mat) : mat);
     land.receiveShadow = true;
     land.renderOrder = -2;
@@ -1044,7 +1136,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false }) {
     const cj = Math.min(cz - 1, Math.floor((j * cell) / ws)) * cx;
     for (let i = 0; i < w; i++) if (WET[a[j * w + i]]) { wet[cj + Math.min(cx - 1, Math.floor((i * cell) / ws))] = 1; any = true; }
   }
-  if (!any) return { meshes, tex };
+  if (!any) return { meshes, tex, pool };
   {
     // the water surface, under every stretch of water (and a little beyond)
     const pos = [], uv = [], idx = [];
@@ -1067,6 +1159,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false }) {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     geo.setIndex(idx);
     const mat = new THREE.MeshLambertMaterial({ map: tex });
+    if (pool) poolPatch(mat, pool, 0.4); // the water throws a little of it back
     const water = new THREE.Mesh(geo, clip ? clipPatch(mat) : mat);
     water.receiveShadow = true;
     water.renderOrder = -2;
@@ -1120,7 +1213,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false }) {
       meshes.push(walls);
     }
   }
-  return { meshes, tex };
+  return { meshes, tex, pool };
 }
 const WALL = new THREE.MeshLambertMaterial({ vertexColors: true });
 const WALLT = clipPatch(new THREE.MeshLambertMaterial({ vertexColors: true }));
@@ -1484,6 +1577,12 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     if (live) W.stream.update(x, z, dist, az);
     else if (phase === 'drop') W.stream.update(x, z, Math.min(dist, 500), az, true);
   };
+  /** Bake the tiles on screen for day or night in the background: `bake.step()` returns how many are still to do, `bake.commit()` swaps them in. */
+  W.bake = {
+    start: (n) => { if (W.stream) W.stream.rebake(n); },
+    step: (ms, cap) => (W.stream ? W.stream.stageStep(ms, cap) : 0),
+    commit: (n) => { if (W.stream) W.stream.commit(); W.night = n; },
+  };
   W.ms = { fetch: Math.round(t1 - t0), build: Math.round(performance.now() - t1) };
   W.dispose = () => {
     if (W.stream) W.stream.dispose();
@@ -1501,13 +1600,203 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   return W;
 }
 
+// ---------------------------------------------------------------- street lamps
+// Where the lamps stand is a pure function of the tile's own data (`lampsOf`): the crowd's instanced posts, the pools
+// of light baked into the ground and the cutscene anchors all read the same list. Real mapped lamps (tile key `lp`)
+// are used where they exist and the rules fill the gaps.
+/** The kinds of lamp: head height (m), how far the arm reaches towards the road (m), radius of the pool of light (m). */
+export const LAMP_KIND = [
+  { h: 5.2, arm: 0.8, R: 7 }, // 0 residential street: a post with a short arm
+  { h: 9, arm: 2.1, R: 12 }, // 1 main road: a mast with an arm over the road
+  { h: 3.8, arm: 0.3, R: 5 }, // 2 cycle and park paths: a low post
+  { h: 5.4, arm: 0.8, R: 7.5 }, // 3 squares and pedestrian streets
+];
+const LAMP_GAP = [27, 33, 32, 20]; // metres between lamps along the street (residential ones alternate sides)
+const SLIDE = [0, 2.5, -2.5, 5, -5];
+const lSegDist = (px, pz, ax, az, bx, bz) => {
+  const dx = bx - ax, dz = bz - az, l = dx * dx + dz * dz, u = l > 1e-9 ? Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / l)) : 0;
+  return Math.hypot(ax + dx * u - px, az + dz * u - pz);
+};
+const inFlat = (px, pz, r) => {
+  let c = false;
+  for (let i = 0, j = r.length - 2; i + 1 < r.length; j = i, i += 2) if ((r[i + 1] > pz) !== (r[j + 1] > pz) && px < ((r[j] - r[i]) * (pz - r[i + 1])) / (r[j + 1] - r[i + 1]) + r[i]) c = !c;
+  return c;
+};
+/**
+ * All the lamps of one tile, in tile coordinates (x east, z south): flat [x, z, hx, hz, kind, ...] and the `ghosts`
+ * just outside the tile ([x, z, kind, ...]) whose pools reach in. Pieces of road are cut at tile borders, so the
+ * spacing is measured along the road's own direction in map metres, and the same lamp falls out of both tiles.
+ */
+function lampsOf(t, env) {
+  const { roads, rails, flats, water, trees, ox, oy, loc } = env;
+  const GC = 16, gi = (i, j) => (i + 2) * 64 + (j + 2), cellOfXZ = (v) => Math.floor(v / GC);
+  const segs = new Map(), blds = new Map(), tgrid = new Map();
+  const put = (m, k, v) => { const l = m.get(k); if (l) l.push(v); else m.set(k, [v]); };
+  const addSeg = (ax, az, bx, bz, hw, ri, kind) => {
+    const s = [ax, az, bx, bz, hw, ri, kind];
+    for (let j = cellOfXZ(Math.min(az, bz)); j <= cellOfXZ(Math.max(az, bz)); j++) for (let i = cellOfXZ(Math.min(ax, bx)); i <= cellOfXZ(Math.max(ax, bx)); i++) put(segs, gi(i, j), s);
+  };
+  roads.forEach((r, ri) => {
+    if (r.flags & 4 || r.a.length < 4) return;
+    const a = r.a, kind = r.cls === 20 ? 2 : r.cls <= 7 || r.cls === 9 ? 1 : 0; // 2 water, 1 carriageway, 0 something to walk or cycle on
+    for (let i = 0; i + 3 < a.length; i += 2) addSeg(a[i], a[i + 1], a[i + 2], a[i + 3], r.w / 2 + (kind === 2 ? 0.4 : 0), ri, kind);
+  });
+  rails.forEach((r) => { if (!(r.flags & 4)) for (let i = 0; i + 3 < r.a.length; i += 2) addSeg(r.a[i], r.a[i + 1], r.a[i + 2], r.a[i + 3], 1.9, -1, 3); });
+  for (const f of flats) {
+    if (f.length < 6) continue;
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let i = 0; i + 1 < f.length; i += 2) { x0 = Math.min(x0, f[i]); x1 = Math.max(x1, f[i]); z0 = Math.min(z0, f[i + 1]); z1 = Math.max(z1, f[i + 1]); }
+    const b = { f, x0: x0 - 1, x1: x1 + 1, z0: z0 - 1, z1: z1 + 1 };
+    for (let j = cellOfXZ(b.z0); j <= cellOfXZ(b.z1); j++) for (let i = cellOfXZ(b.x0); i <= cellOfXZ(b.x1); i++) put(blds, gi(i, j), b);
+  }
+  for (let i = 0; i + 1 < trees.length; i += 2) put(tgrid, gi(cellOfXZ(trees[i]), cellOfXZ(trees[i + 1])), i);
+  const near = (m, x, z) => m.get(gi(cellOfXZ(x), cellOfXZ(z))) || [];
+  const onRoad = (x, z, skip, margin) => {
+    const ci = cellOfXZ(x), cj = cellOfXZ(z);
+    for (let j = cj - 1; j <= cj + 1; j++) for (let i = ci - 1; i <= ci + 1; i++) {
+      const l = segs.get(gi(i, j));
+      if (l) for (const s of l) if (s[5] !== skip && s[6] !== 0 && lSegDist(x, z, s[0], s[1], s[2], s[3]) < s[4] + margin) return true;
+    }
+    return false;
+  };
+  const wbox = water.map((r) => { let a = 1e9, b = -1e9, c = 1e9, d = -1e9; for (let i = 0; i + 1 < r.length; i += 2) { a = Math.min(a, r[i]); b = Math.max(b, r[i]); c = Math.min(c, r[i + 1]); d = Math.max(d, r[i + 1]); } return [a, b, c, d]; });
+  const inWater = (x, z) => { for (let k = 0; k < water.length; k++) { const q = wbox[k]; if (x >= q[0] && x <= q[1] && z >= q[2] && z <= q[3] && inFlat(x, z, water[k])) return true; } return false; };
+  const inBuilding = (x, z) => {
+    for (const b of near(blds, x, z)) {
+      if (x < b.x0 || x > b.x1 || z < b.z0 || z > b.z1) continue;
+      if (inFlat(x, z, b.f)) return true;
+      for (let i = 0, j = b.f.length - 2; i + 1 < b.f.length; j = i, i += 2) if (lSegDist(x, z, b.f[j], b.f[j + 1], b.f[i], b.f[i + 1]) < 0.75) return true;
+    }
+    return false;
+  };
+  const nearTree = (x, z) => {
+    const ci = cellOfXZ(x), cj = cellOfXZ(z);
+    for (let j = cj - 1; j <= cj + 1; j++) for (let i = ci - 1; i <= ci + 1; i++) { const l = tgrid.get(gi(i, j)); if (l) for (const k of l) if (Math.hypot(trees[k] - x, trees[k + 1] - z) < 1.6) return true; }
+    return false;
+  };
+  const out = [], ghosts = [];
+  const taken = new Map();
+  const free = (x, z, d) => { const ci = cellOfXZ(x), cj = cellOfXZ(z); for (let j = cj - 1; j <= cj + 1; j++) for (let i = ci - 1; i <= ci + 1; i++) { const l = taken.get(gi(i, j)); if (l) for (const k of l) if (Math.hypot(out[k] - x, out[k + 1] - z) < d) return false; } return true; };
+  const accept = (x, z, hx, hz, kind, gap = 6) => {
+    if (x < 0 || z < 0 || x >= TILE || z >= TILE) return false;
+    if (!free(x, z, gap)) return false;
+    put(taken, gi(cellOfXZ(x), cellOfXZ(z)), out.length);
+    out.push(x, z, hx, hz, kind);
+    return true;
+  };
+  const okSpot = (x, z, skip, margin = 0.55) => !onRoad(x, z, skip, margin) && !inWater(x, z) && !inBuilding(x, z) && !nearTree(x, z);
+  // 1. the mapped lamps, where there are any: kept unless they stand in the road, the water, a building or against a trunk
+  const real = [];
+  if (t.lp) for (let i = 0; i + 1 < t.lp.length; i += 2) {
+    const x = t.lp[i] / 10, z = TILE - t.lp[i + 1] / 10;
+    if (x < 0 || z < 0 || x >= TILE || z >= TILE || onRoad(x, z, -2, -0.4) || inWater(x, z) || inBuilding(x, z) || nearTree(x, z)) continue;
+    // the nearest street decides what kind of lamp it is and which way it leans
+    let best = 1e9, bs = null, bc = 99;
+    const ci = cellOfXZ(x), cj = cellOfXZ(z);
+    for (let j = cj - 1; j <= cj + 1; j++) for (let k = ci - 1; k <= ci + 1; k++) for (const s of segs.get(gi(k, j)) || []) {
+      if (s[6] === 2 || s[6] === 3) continue;
+      const d = lSegDist(x, z, s[0], s[1], s[2], s[3]);
+      if (d < best) { best = d; bs = s; bc = roads[s[5]].cls; }
+    }
+    let hx = 0, hz = 1, kind = 0;
+    if (bs && best < 25) {
+      const dx = bs[2] - bs[0], dz = bs[3] - bs[1], l = dx * dx + dz * dz || 1, u = Math.max(0, Math.min(1, ((x - bs[0]) * dx + (z - bs[1]) * dz) / l));
+      hx = bs[0] + dx * u - x; hz = bs[1] + dz * u - z;
+      const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+      kind = bc <= 4 ? 1 : bc === 8 ? 3 : bc >= 10 ? 2 : 0;
+    }
+    if (accept(x, z, hx, hz, kind, 4)) real.push(x, z);
+  }
+  const nearReal = (x, z) => { for (let i = 0; i < real.length; i += 2) if (Math.hypot(real[i] - x, real[i + 1] - z) < 13) return true; return false; };
+  // 2. the rules, street by street
+  roads.forEach((r, ri) => {
+    const cls = r.cls, a = r.a;
+    if (r.flags & 4 || a.length < 4 || cls === 1 || cls === 9 || cls === 12 || cls === 13 || cls === 20) return;
+    const n = a.length >> 1;
+    let len = 0;
+    for (let i = 1; i < n; i++) len += Math.hypot(a[i * 2] - a[i * 2 - 2], a[i * 2 + 1] - a[i * 2 - 1]);
+    if (len < 7) return;
+    const w = Math.max(r.w, 1.5);
+    let kind, sides, off;
+    if (cls <= 4) { kind = 1; sides = 2; off = w / 2 + 0.9; }
+    else if (cls <= 7) { kind = 0; sides = 1; off = w / 2 + 0.7; }
+    else if (cls === 8) { kind = 3; sides = 2; off = Math.max(1.2, w / 2 - 0.4); }
+    else if (cls === 10) { kind = 2; sides = 1; off = w / 2 + 0.6; }
+    else {
+      // a footpath: only the ones that are not just a pavement along a road, and only the long ones (parks, alleys)
+      if (len < 45) return;
+      const mx = a[(n >> 1) * 2], mz = a[(n >> 1) * 2 + 1];
+      if (onRoad(mx, mz, ri, 9)) return;
+      kind = 2; sides = 1; off = Math.max(1.4, w / 2 + 0.9);
+    }
+    const gap = LAMP_GAP[kind];
+    // the tile's piece of the street, with a short extension past a border: pools of lamps just across it reach in
+    const P = [];
+    const ends = (i) => { const x = a[i * 2], z = a[i * 2 + 1]; return x < 0.3 || z < 0.3 || x > TILE - 0.3 || z > TILE - 0.3; };
+    if (ends(0)) { const dx = a[0] - a[2], dz = a[1] - a[3], l = Math.hypot(dx, dz) || 1; P.push(a[0] + (dx / l) * 14, a[1] + (dz / l) * 14); }
+    for (let i = 0; i < a.length; i++) P.push(a[i]);
+    if (ends(n - 1)) { const dx = a[n * 2 - 2] - a[n * 2 - 4], dz = a[n * 2 - 1] - a[n * 2 - 3], l = Math.hypot(dx, dz) || 1; P.push(a[n * 2 - 2] + (dx / l) * 14, a[n * 2 - 1] + (dz / l) * 14); }
+    // the street's own direction in map metres (x east, y north), turned so it does not matter which way the piece runs
+    let Dx = a[n * 2 - 2] - a[0], Dz = a[n * 2 - 1] - a[1];
+    const Dl = Math.hypot(Dx, Dz) || 1; Dx /= Dl; Dz /= Dl;
+    if (Dx < -1e-6 || (Math.abs(Dx) <= 1e-6 && Dz < 0)) { Dx = -Dx; Dz = -Dz; }
+    const proj = (x, z) => (ox + x) * Dx + (oy + TILE - z) * -Dz;
+    for (let i = 0; i + 3 < P.length; i += 2) {
+      const ax = P[i], az = P[i + 1], bx = P[i + 2], bz = P[i + 3], sl = Math.hypot(bx - ax, bz - az);
+      if (sl < 1e-4) continue;
+      const tx = (bx - ax) / sl, tz = (bz - az) / sl, u0 = proj(ax, az), u1 = proj(bx, bz), lo = Math.min(u0, u1), hi = Math.max(u0, u1);
+      if (hi - lo < 1e-4) continue;
+      for (let k = Math.ceil(lo / gap); k * gap < hi; k++) {
+        const f = (k * gap - u0) / (u1 - u0);
+        if (f < 0 || f >= 1) continue;
+        const px = ax + (bx - ax) * f, pz = az + (bz - az) * f;
+        for (const sd of sides === 2 ? [1, -1] : [(k & 1) * 2 - 1]) {
+          // the right-hand side of the direction of travel is +1; the arm reaches back towards the street
+          const nx = -tz * sd, nz = tx * sd, x0 = px + nx * off, z0 = pz + nz * off;
+          if (x0 < 0 || z0 < 0 || x0 >= TILE || z0 >= TILE) {
+            if (!onRoad(x0, z0, ri, 0.55) && !inWater(x0, z0) && x0 > -16 && z0 > -16 && x0 < TILE + 16 && z0 < TILE + 16) ghosts.push(x0, z0, kind);
+            continue;
+          }
+          // a spot taken by a trunk, a gateway or a side street: nudge the lamp a little along the street before giving up on it
+          for (const dj of SLIDE) {
+            const x = x0 + tx * dj, z = z0 + tz * dj;
+            if (x < 0 || z < 0 || x >= TILE || z >= TILE || nearReal(x, z) || !okSpot(x, z, ri)) continue;
+            if (accept(x, z, -nx, -nz, kind)) break;
+          }
+        }
+      }
+    }
+  });
+  // 3. squares: along the edges, every 20 m, a metre inside
+  for (const g of t.g || []) {
+    if (g[0] !== 8 || g[1] < 300) continue;
+    const ring = loc(g[2], 0);
+    let ar = 0;
+    for (let i = 0, j = ring.length - 2; i + 1 < ring.length; j = i, i += 2) ar += ring[j] * ring[i + 1] - ring[i] * ring[j + 1];
+    const sg = ar > 0 ? 1 : -1;
+    let carry = 10;
+    for (let i = 0, j = ring.length - 2; i + 1 < ring.length; j = i, i += 2) {
+      const ax = ring[j], az = ring[j + 1], bx = ring[i], bz = ring[i + 1], sl = Math.hypot(bx - ax, bz - az);
+      if (sl < 1e-3) continue;
+      const tx = (bx - ax) / sl, tz = (bz - az) / sl, nx = -tz * sg, nz = tx * sg; // inwards (the sign of the area says which way the ring turns)
+      let s = carry;
+      for (; s < sl; s += 20) {
+        const x = ax + tx * s + nx * 1.0, z = az + tz * s + nz * 1.0;
+        if (inFlat(x, z, ring) && !nearReal(x, z) && okSpot(x, z, -2, 0.4)) accept(x, z, -nx, -nz, 3, 9);
+      }
+      carry = s - sl;
+    }
+  }
+  return { a: Float32Array.from(out), ghosts: Float32Array.from(ghosts) };
+}
+
 // ---------------------------------------------------------------- streamed tiles
 // Away from the detailed area the city is drawn tile by tile (256 m), only around the camera and only when
 // it is low enough to tell the difference. Tiles carry real building outlines, ground, water and trees.
 // A tile is built once, in its own coordinates, and placed into whichever street's frame is on screen: moving
 // the focus to another street keeps every tile that is already there.
 const _built = new Map(), _byNum = new Map(); // key → tile (most recently used last); the same tiles by number, for height look-ups
-let _builtNight = null;
+let _builtNight = null; // the look the tiles are baked for (while a rebake runs: the one they are being baked for)
 const tileNum = (tx, ty) => (tx + 512) * 2048 + ty + 512;
 function dropTile(key) {
   const c = _built.get(key);
@@ -1634,7 +1923,9 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     vx.setT(); vx.setW(0);
   }
   paintTop(grid, rails, flats);
-  const G = buildGround(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1) });
+  // the lamps of this tile: the crowd stands its posts there and the ground gets their pools of light
+  const lamps = lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
+  const G = buildGround(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
   g.add(...G.meshes);
   v.setT(); gl.setT();
   // buildings are lifted onto the terrain by the shader and may stick out of the tile: give them a generous bounding sphere
@@ -1685,7 +1976,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     cells.push({ ci, cx: ccx, cz: ccz, plain, units: F.units.filter((u) => u.ci === ci), detail: null, job: null });
   }
   return {
-    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night,
+    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t,
     dispose() {
       for (const cell of cells) { dropJob(cell); if (cell.detail) for (const sg of cell.detail.signs) P.releaseSign(sg.m); }
       g.traverse((o) => {
@@ -1694,6 +1985,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
         if (o.material && o.material.map) o.material.dispose();
       });
       G.tex.dispose();
+      if (G.pool) G.pool.dispose();
     },
   };
 }
@@ -1707,7 +1999,7 @@ function placeTile(c, f) {
 let _stream = null; // the streamer of the world on screen
 /** Tiles carry a few things that differ by night (lanterns): when night falls or lifts, start afresh. */
 function syncNight(night) {
-  if (_builtNight === night) return;
+  if (_builtNight === night || _builtNight === null && !_built.size) { _builtNight = night; return; }
   if (_stream) for (const key of [..._stream.live.keys()]) _stream._detach(key);
   for (const k of [..._built.keys()]) dropTile(k);
   _builtNight = night;
@@ -1738,6 +2030,7 @@ class Streamer {
     this.want = []; this.lodOf = new Map(); this.sig = '';
     this.budget = W.lite ? 44 : 230; this.rmax = W.lite ? 380 : 820; this.far = W.lite ? 900 : 2100;
     this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
+    this.staged = new Map(); this.target = null; this.busy = false; this.fm = [0, 0]; this.lazyT = 0; // busy: a rebake is waiting for its swap
     /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves. */
     this.onTile = null;
     _stream = this;
@@ -1767,6 +2060,8 @@ class Streamer {
   update(x, z, dist, az = 0, warm = false) {
     if (this.dead) return;
     const f = this.W.frame, ix = this.city.ix, now = performance.now();
+    this.fm = f.M(x, z);
+    if (this.target !== null) this._lazy(now);
     // three rings: the finest ground under a low camera, full tiles around it, plain far tiles out to the edge of the view
     const r1 = clamp(dist * 0.9 + 320, 440, this.rmax), r0 = dist < 700 || warm ? 280 : -1e9, r2 = Math.max(r1, Math.min(dist * 0.62 + 260, this.far));
     // the camera looks across what it is aimed at: there is more to see beyond the target than in front of it
@@ -1817,7 +2112,7 @@ class Streamer {
         if (!needs(key)) continue;
         const was = _built.get(key);
         try {
-          const c = ensureTile(this.city, key, t, this.lodOf.get(key), this.W.night, this.W.lite);
+          const c = ensureTile(this.city, key, t, this.lodOf.get(key), _builtNight, this.W.lite);
           if (!was) this._attach(key, c);
           this.built++;
         } catch (e) { console.error('tile failed', key, e); this.failed.set(key, performance.now() + 1e7); }
@@ -1864,8 +2159,11 @@ class Streamer {
         if (!cell.detail && cell.units.length && d < bd) { bd = d; best = [c, cell]; }
       }
     }
-    if (!best) return;
-    const [c, cell] = best, t0 = performance.now(), city = this.city;
+    if (best) this._buildCell(best[0], best[1]);
+  }
+  /** Work a few milliseconds on the detailed fronts of one cell; true when the cell has them all (and shows them). */
+  _buildCell(c, cell) {
+    const t0 = performance.now(), city = this.city;
     const job = (cell.job ||= { v: new Vox(1 + cell.ci, true), gl: new Vox(7 + cell.ci, true), i: 0, signs: [] });
     while (job.i < cell.units.length && performance.now() - t0 < 5) {
       const u = cell.units[job.i++];
@@ -1882,7 +2180,7 @@ class Streamer {
         }
       }
     }
-    if (job.i < cell.units.length) return;
+    if (job.i < cell.units.length) return false;
     job.v.setT(); job.gl.setT(); job.v.setB(); job.gl.setB();
     const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(cell.cx, 20, cell.cz), 90); return m; };
     const meshes = [];
@@ -1894,8 +2192,96 @@ class Streamer {
     cell.detail = { meshes, signs: job.signs };
     cell.job = null;
     this._signs = null;
+    return true;
   }
   _plain(c, cell) { plainCell(c, cell); this._signs = null; }
+  // ---- day and night: the baked parts of a tile (lit windows of the detailed fronts, lanterns, landmark lights) are rebuilt
+  // on the side, with the old tiles still on screen, and swapped in together (see commit)
+  /** Start baking every tile on screen for `night`. Tiles that are not on screen are simply let go. */
+  rebake(night) {
+    this.target = night; _builtNight = night; this.busy = true;
+    for (const key of [..._built.keys()]) { const c = _built.get(key); if (c.night !== night && this.live.get(key) !== c) dropTile(key); }
+    for (const [key, c] of [...this.staged]) if (c.night !== night) { this._unstage(key); }
+    this.busy = this._staleKeys(true).length > 0; // (nothing to swap, e.g. the change was taken back: the stragglers can catch up at once)
+  }
+  _dropStaged(c) { for (const cell of c.cells) { dropJob(cell); if (cell.detail) for (const sg of cell.detail.signs) P.releaseSign(sg.m); } c.dispose(); }
+  _unstage(key) { const c = this.staged.get(key); this.staged.delete(key); if (c) this._dropStaged(c); }
+  _staleKeys(all) {
+    const [mx, my] = this.fm, out = [];
+    for (const [key, c] of this.live) if (c.night !== this.target && (all || c.lod < 2)) { const [tx, ty] = key.split('_').map(Number); out.push([Math.hypot((tx + 0.5) * TILE - mx, (ty + 0.5) * TILE - my), key]); }
+    return out.sort((a, b) => a[0] - b[0]).map((q) => q[1]);
+  }
+  /**
+   * Build replacements for the tiles on screen, nearest first, `ms` milliseconds at a time (a tile can take longer).
+   * Where the old tile shows detailed house fronts the new one gets them too before it may replace it, so nothing reverts to blocks.
+   * Returns how many tiles still have to be done.
+   */
+  stageStep(ms = 7, cap = 64) {
+    if (this.target === null) return 0;
+    const t0 = performance.now();
+    const keys = this._staleKeys(false).slice(0, cap);
+    let left = 0;
+    for (const key of keys) {
+      const old = this.live.get(key);
+      let c = this.staged.get(key);
+      const open = () => this._open(old, c);
+      if (c && !open()) continue;
+      if (performance.now() - t0 > ms) { left++; continue; }
+      if (!c) {
+        try { c = buildTile(this.city, key, old.src, this.target, this.W.lite, old.lod); } catch (e) { console.error('rebake failed', key, e); old.night = this.target; continue; }
+        this.staged.set(key, c);
+      }
+      for (const nc of c.cells) {
+        const oc = old.cells.find((q) => q.ci === nc.ci);
+        if (oc && oc.detail && !nc.detail) { if (performance.now() - t0 > ms) break; this._buildCell(c, nc); }
+      }
+      if (open()) left++;
+    }
+    return left;
+  }
+  /** Does the staged tile still lack detailed fronts that the one on screen shows? */
+  _open(old, c) { return c.cells.some((nc) => { const oc = old.cells.find((q) => q.ci === nc.ci); return oc && oc.detail && !nc.detail; }); }
+  /** Swap every staged tile for the one on screen, all in this frame. */
+  commit() {
+    for (const [key, c] of [...this.staged]) {
+      const old = this.live.get(key);
+      this.staged.delete(key);
+      // (a tile that was replaced in the meantime is already baked the new way, and may be finer than this copy)
+      if (!old || c.night !== this.target || old.night === c.night) { this._dropStaged(c); continue; }
+      this._swap(key, old, c);
+    }
+    this.busy = false;
+    this._signs = null;
+  }
+  _swap(key, old, c) {
+    placeTile(c, this.W.frame);
+    this.group.add(c.g); this.group.remove(old.g);
+    this.live.set(key, c);
+    _built.set(key, c); _byNum.set(c.num, c);
+    old.dispose();
+  }
+  /**
+   * After the swap, whatever is still baked the old way (tiles beyond the cap of a phone, or what was not ready in time) catches up one
+   * tile at a time, whenever there is a moment: near tiles with their detailed fronts, each swapped when it is complete; far ones at once.
+   */
+  _lazy(now) {
+    if (this.busy || now - this.lazyT < 120) return;
+    this.lazyT = now;
+    if (this._staleKeys(false).length) {
+      this.stageStep(5, 3);
+      for (const [key, c] of [...this.staged]) {
+        const old = this.live.get(key);
+        if (!old) { this._unstage(key); continue; }
+        if (old.night === c.night) { this._unstage(key); continue; }
+        if (!this._open(old, c)) { this.staged.delete(key); this._swap(key, old, c); this._signs = null; }
+      }
+      return;
+    }
+    const key = this._staleKeys(true)[0];
+    if (!key) { this.target = null; return; } // everything on screen is baked the new way: nothing more to watch
+    const old = this.live.get(key);
+    try { this._swap(key, old, buildTile(this.city, key, old.src, this.target, this.W.lite, old.lod)); } catch (e) { old.night = this.target; console.error('rebake failed', key, e); }
+  }
   /** The shop signs of the detailed fronts on screen, in scene coordinates. */
   signs() {
     if (this._signs && this._signsFrame === this.W.frame) return this._signs;
@@ -1910,6 +2296,7 @@ class Streamer {
   /** Leave the scene. The tiles themselves stay in memory for the next street. */
   dispose() {
     this.dead = true;
+    for (const key of [...this.staged.keys()]) this._unstage(key);
     for (const key of [...this.live.keys()]) this._detach(key);
     this.ready.clear();
     if (_stream === this) _stream = null;

@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { clamp } from './kit.js';
 import { PERSON_K } from './cast.js';
-import { zebrasOn } from './world.js';
+import { zebrasOn, U, LAMP_KIND, LAMP_GLSL } from './world.js';
 import { ARCHETYPES, spotAt } from './districts.js';
 
 export const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33'];
@@ -127,13 +127,14 @@ const CAR = () => model([
   [0.73, 0.88, -0.2, 0.04, 0.36, 1.4, '#9fd4ee'], [-0.73, 0.88, -0.2, 0.04, 0.36, 1.4, '#9fd4ee'],
   [0.68, 0, 0.95, 0.3, 0.56, 0.6, '#1c1c1c'], [-0.68, 0, 0.95, 0.3, 0.56, 0.6, '#1c1c1c'], [0.68, 0, -0.95, 0.3, 0.56, 0.6, '#1c1c1c'], [-0.68, 0, -0.95, 0.3, 0.56, 0.6, '#1c1c1c'],
   [0, 0.3, 1.65, 1.5, 0.16, 0.08, '#444444'],
-  [-0.5, 0.5, 1.66, 0.3, 0.16, 0.04, '#fff3b0', 5], [0.5, 0.5, 1.66, 0.3, 0.16, 0.04, '#fff3b0', 5],
-  [-0.5, 0.5, -1.66, 0.3, 0.14, 0.04, '#ff2d2d', 5], [0.5, 0.5, -1.66, 0.3, 0.14, 0.04, '#ff2d2d', 5],
+  [-0.5, 0.5, 1.66, 0.34, 0.18, 0.05, '#fff6c9', 5], [0.5, 0.5, 1.66, 0.34, 0.18, 0.05, '#fff6c9', 5],
+  [-0.5, 0.5, -1.66, 0.34, 0.15, 0.05, '#ff2d2d', 5], [0.5, 0.5, -1.66, 0.34, 0.15, 0.05, '#ff2d2d', 5],
 ], 1.156, 1.13, 1.333);
 const BIKE = () => model([
   [0, 0, -0.5, 0.08, 0.56, 0.56, '#1f1f1f'], [0, 0, 0.5, 0.08, 0.56, 0.56, '#1f1f1f'],
   [0, 0.3, 0, 0.08, 0.1, 0.9, W_, 1], [0, 0.36, -0.25, 0.08, 0.46, 0.08, W_, 1], [0, 0.8, -0.25, 0.16, 0.08, 0.3, '#2b2b2b'],
   [0, 0.36, 0.4, 0.08, 0.62, 0.08, W_, 1], [0, 0.96, 0.4, 0.5, 0.07, 0.07, '#2b2b2b'], [0, 0.62, 0.62, 0.3, 0.2, 0.26, '#8d6e4c'],
+  [0, 0.88, 0.45, 0.1, 0.09, 0.05, '#fff6c9', 5], [0, 0.55, -0.79, 0.07, 0.07, 0.04, '#ff2d2d', 5], // a small white lamp in front, a red one behind
 ], 1.19, 1.19, 1.19);
 const RIDER_Y = 0.52, RIDER_Z = -0.28, RIDER_S = 1.2 * PERSON_K;
 // Fat-bike (20 x 4 inch tyres, long moped-style bench seat, big round headlight). Real metres, front towards +z.
@@ -142,7 +143,7 @@ const FATBIKE = () => model([
   [0, 0.3, 0.0, 0.16, 0.14, 1.0, W_, 1], [0, 0.42, -0.1, 0.2, 0.3, 0.62, '#202226'], [0, 0.4, 0.62, 0.1, 0.62, 0.1, '#202226'],
   [0, 0.78, -0.3, 0.27, 0.12, 0.96, '#17171a'], [0, 0.7, -0.78, 0.22, 0.1, 0.12, W_, 1], [0, 0.55, 0.62, 0.22, 0.05, 0.34, W_, 1],
   [0, 0.9, 0.52, 0.08, 0.3, 0.08, '#202226'], [0, 1.18, 0.5, 0.64, 0.06, 0.07, '#202226'],
-  [0, 1.0, 0.68, 0.26, 0.26, 0.12, '#fff6c8', 5], [0, 0.82, -0.8, 0.16, 0.07, 0.04, '#ff2d2d', 5],
+  [0, 0.98, 0.68, 0.34, 0.34, 0.14, '#fffbe0', 5], [0, 0.82, -0.8, 0.16, 0.07, 0.04, '#ff2d2d', 5],
 ]);
 // Cargo bike (bakfiets): long, a wooden box with two helmeted children in front of the rider
 const CARGO = () => model([
@@ -157,17 +158,22 @@ const CARGO = () => model([
 // where the rider sits on each: y offset of the figure's origin, z of the driver, z of a passenger (0 = none)
 const RIDE = { bike: { y: RIDER_Y, z: RIDER_Z, z2: 0 }, fatbike: { y: 0.33, z: -0.1, z2: -0.5 }, cargo: { y: 0.4, z: -0.46, z2: 0 } };
 const BIKES_ = { bike: () => BIKE(), fatbike: FATBIKE, cargo: CARGO };
-// a street lamp; its arm reaches along +x (towards the road). At night the head glows.
-const LAMP = (night) => model([
-  [0, 0, 0, 0.16, 4.7, 0.16, '#3d434c'], [0.4, 4.6, 0, 0.9, 0.1, 0.12, '#3d434c'],
-  [0.78, 4.44, 0, 0.44, 0.16, 0.3, night ? '#ffe9a8' : '#dfe4e8', night ? 5 : 0],
-]);
+// street lamps in the three shapes of LAMP_KIND (squares use the residential one); the arm reaches along +x, towards the road.
+// The head is part 6: it glows at night (uniform U.uNight in the shader), so a lamp never has to be swapped for a lit one.
+const POST = '#3d434c', DAY_LAMP = '#dfe4e8';
+const LAMPS = [
+  () => model([[0, 0, 0, 0.14, 5.1, 0.14, POST], [0, 0.0, 0, 0.3, 0.35, 0.3, POST], [0.4, 4.98, 0, 0.84, 0.09, 0.1, POST], [0.82, 4.9, 0, 0.5, 0.16, 0.3, DAY_LAMP, 6], [0.82, 5.06, 0, 0.56, 0.05, 0.36, POST]]),
+  () => model([[0, 0, 0, 0.24, 8.8, 0.24, POST], [0, 0, 0, 0.5, 0.5, 0.5, POST], [0, 8.2, 0, 0.3, 0.1, 0.3, POST], [1.0, 8.78, 0, 2.2, 0.12, 0.14, POST], [2.0, 8.66, 0, 0.8, 0.2, 0.4, DAY_LAMP, 6], [2.0, 8.86, 0, 0.86, 0.06, 0.46, POST]]),
+  () => model([[0, 0, 0, 0.1, 3.5, 0.1, POST], [0.12, 3.46, 0, 0.3, 0.07, 0.08, POST], [0.2, 3.36, 0, 0.36, 0.14, 0.26, DAY_LAMP, 6], [0.2, 3.5, 0, 0.42, 0.05, 0.32, POST]]),
+];
+const LAMP_POOL = [0, 1, 2, 0]; // kind -> pool
 // one section of an HTM tram (red skirt, cream top), 5.4 m long; a tram is five of these following the track
-const TRAM = (night) => model([
+const TRAM = () => model([
   [0, 0.3, 0, 2.4, 1.05, 5.2, '#c8102e'], [0, 1.35, 0, 2.4, 1.6, 5.2, '#f3ecd9'], [0, 2.95, 0, 2.15, 0.2, 5.0, '#8d99a6'],
-  [1.21, 1.6, 0, 0.03, 0.95, 4.4, night ? '#ffe9a8' : '#3b5b7a', night ? 5 : 0], [-1.21, 1.6, 0, 0.03, 0.95, 4.4, night ? '#ffe9a8' : '#3b5b7a', night ? 5 : 0],
+  [1.21, 1.6, 0, 0.03, 0.95, 4.4, '#3b5b7a', 7], [-1.21, 1.6, 0, 0.03, 0.95, 4.4, '#3b5b7a', 7],
   [0, 0.05, -1.5, 2.0, 0.3, 0.9, '#222222'], [0, 0.05, 1.5, 2.0, 0.3, 0.9, '#222222'],
   [0, 0.5, 2.7, 1.8, 2.0, 0.3, '#333333'],
+  [-0.7, 0.75, 2.87, 0.34, 0.22, 0.05, '#fff6c9', 5], [0.7, 0.75, 2.87, 0.34, 0.22, 0.05, '#fff6c9', 5], // the headlights (the lead section only: see lit flag)
 ]);
 const TRAM_SEG = 5.5, TRAM_N = 5;
 
@@ -175,10 +181,15 @@ function crowdMat() {
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
   mat.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 aPart;\nattribute vec4 iAnim;\nattribute vec3 iC1;\nattribute vec3 iC2;\nattribute vec3 iC3;\nattribute vec3 iC4;\nvarying float vGlow;')
+      .replace('#include <common>', '#include <common>\nattribute vec3 aPart;\nattribute vec4 iAnim;\nattribute vec3 iC1;\nattribute vec3 iC2;\nattribute vec3 iC3;\nattribute vec3 iC4;\nvarying float vGlow;\nvarying vec3 vLit;\nvarying vec3 vLamp;\nuniform float uNight;' + LAMP_GLSL)
       .replace('#include <color_vertex>', `#include <color_vertex>
-        vGlow = aPart.x > 4.5 ? 1.0 : 0.0;
+        // parts 5 (vehicle lights: on when the instance's flag iC2.x is set), 6 (lamp heads) and 7 (tram windows) glow at night
+        vGlow = aPart.x > 4.5 ? uNight * (aPart.x < 5.5 ? iC2.x : 1.0) : 0.0;
+        vLit = aPart.x > 6.5 ? vec3(1.0, 0.8, 0.42) : aPart.x > 5.5 ? vec3(1.0, 0.82, 0.45) : vColor.rgb;
         vColor.rgb *= aPart.x < 0.5 || aPart.x > 4.5 ? vec3(1.0) : aPart.x < 1.5 ? iC1 : aPart.x < 2.5 ? iC2 : aPart.x < 3.5 ? iC3 : iC4;`)
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        // a little warm light on whoever stands near a lamp (the lamps nearest to what the camera looks at: see U.uLampA)
+        vLamp = uLampN > 0.5 ? lampLight((modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz, vec3(0.0, 1.0, 0.0), 1.0) * (aPart.x < 4.5 ? 1.0 : 0.0) : vec3(0.0);`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         {
           float limb = aPart.y, ride = iAnim.z;
@@ -201,14 +212,37 @@ function crowdMat() {
           if (iAnim.w != 0.0) { float ct = cos(iAnim.w), st = sin(iAnim.w); vec2 r = transformed.yz; transformed.y = r.x * ct - r.y * st; transformed.z = r.x * st + r.y * ct; }
         }`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vGlow;')
-      .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, vColor.rgb, vGlow);\n\t#include <opaque_fragment>');
+      .replace('#include <common>', '#include <common>\nvarying float vGlow;\nvarying vec3 vLit;\nvarying vec3 vLamp;\nuniform float uNight;')
+      .replace('#include <opaque_fragment>', 'outgoingLight += vColor.rgb * vLamp * (0.9 * uNight);\n\toutgoingLight = mix(outgoingLight, vLit, vGlow);\n\t#include <opaque_fragment>');
+    Object.assign(sh.uniforms, { uNight: U.uNight, uLampA: U.uLampA, uLampN: U.uLampN, uLampR: U.uLampR, uFocus: U.uFocus });
   };
-  mat.customProgramCacheKey = () => 'crowd3';
+  mat.customProgramCacheKey = () => 'crowd4';
   return mat;
 }
+/**
+ * The pale patch of road in front of a car that is driving: a flat fan, added to what is behind it (additive, no depth
+ * write). It is one more mesh that shares the cars' own matrices and their lights-on flag, so parked cars have none.
+ */
+function makeBeams(cars) {
+  const g = new THREE.BufferGeometry();
+  // brightest on the middle line next to the car, fading to nothing at the sides and at the far end: a soft fan, no hard edges
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1.1, 0.07, 2.3, 0, 0.07, 2.3, 1.1, 0.07, 2.3, -3.2, 0.07, 10.5, 0, 0.07, 10.5, 3.2, 0.07, 10.5]), 3));
+  g.setAttribute('aI', new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 0.04, 0]), 1));
+  g.setAttribute('iOn', cars.c2);
+  g.setIndex([0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4]);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uNight: U.uNight },
+    vertexShader: 'attribute vec3 iOn;\nattribute float aI;\nuniform float uNight;\nvarying float vI;\nvoid main() { vI = aI * iOn.x * uNight; gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying float vI;\nvoid main() { gl_FragColor = vec4(vec3(1.0, 0.93, 0.7) * vI * 0.5, 1.0); }',
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const m = new THREE.InstancedMesh(g, mat, 1);
+  m.instanceMatrix = cars.mesh.instanceMatrix;
+  m.count = 0; m.frustumCulled = false; m.renderOrder = 2;
+  return m;
+}
 let _shared = null;
-const shared = () => (_shared ||= { person: PERSON(), car: CAR(), bike: BIKE(), fatbike: null, cargo: null, lampDay: LAMP(false), lampNight: LAMP(true), tramDay: TRAM(false), tramNight: TRAM(true), mat: crowdMat() });
+const shared = () => (_shared ||= { person: PERSON(), car: CAR(), bike: BIKE(), fatbike: null, cargo: null, lamps: LAMPS.map((f) => f()), tram: TRAM(), mat: crowdMat() });
 
 /** One instanced mesh with a free list of slots. */
 class Pool {
@@ -229,7 +263,10 @@ class Pool {
       // The shader is shared with the people, and reads these for every pool. A pool that leaves them out gets whatever
       // the graphics driver has lying around (by the book 0, 0, 0, 1: every car and lamp post tipped over by a radian),
       // so cars, bikes, lamp posts and trams carry their own, all zeros: no limbs, no tipping, no extra colours.
-      for (const k of ['iC2', 'iC3', 'iC4']) g.setAttribute(k, new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3));
+      // (iC2.x is the lights-on flag of vehicles: see Pool.take; a pool keeps it so the headlight patches can share it)
+      this.c2 = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+      g.setAttribute('iC2', this.c2);
+      for (const k of ['iC3', 'iC4']) g.setAttribute(k, new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3));
       g.setAttribute('iAnim', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
     }
     this.mesh = new THREE.InstancedMesh(g, mat, cap);
@@ -245,7 +282,13 @@ class Pool {
     this.hi = 0; // highest slot ever used + 1: only these are drawn (the free list hands out low slots first)
     this.mesh.count = 0;
   }
-  take() { if (!this.free.length) return -1; const i = this.free.pop(); if (i >= this.hi) { this.hi = i + 1; this.mesh.count = this.hi; } return i; }
+  take() {
+    if (!this.free.length) return -1;
+    const i = this.free.pop();
+    if (i >= this.hi) { this.hi = i + 1; this.mesh.count = this.hi; }
+    if (!this.anim) { this.c2.array[i * 3] = 1; this.c2.needsUpdate = true; } // vehicles drive with their lights on; parked cars switch them off
+    return i;
+  }
   give(i) { this.hide(i); this.free.push(i); }
   hide(i) { const o = i * 16; this.m[o] = this.m[o + 5] = this.m[o + 10] = 0; this.dirty = true; }
   /** Stand slot i at (x, y, z), facing `hd`, at scale s. */
@@ -340,12 +383,14 @@ export class Crowd {
     this.cars = new Pool(S.car, S.mat, Math.round(1350 * k), false);
     this.bikes = new Pool(S.bike, S.mat, Math.round(270 * k), false);
     this.vpools.set('bike', this.bikes);
-    this.lamps = new Pool(W.night ? S.lampNight : S.lampDay, S.mat, Math.round(1000 * k), false);
-    this.trams = new Pool(W.night ? S.tramNight : S.tramDay, S.mat, Math.round(120 * k), false);
+    this.lampPools = [Math.round(2000 * k), Math.round(700 * k), Math.round(500 * k)].map((cap, i) => new Pool(S.lamps[i], S.mat, cap, false));
+    this.trams = new Pool(S.tram, S.mat, Math.round(120 * k), false);
+    // pale patches of road in front of the cars that are driving: one more mesh on the cars' own matrices
+    this.beams = makeBeams(this.cars);
     this.max = { [PED]: Math.round(780 * k), [BIKE_]: Math.round(250 * k), [CAR_]: Math.round(320 * k), [TRAM_]: Math.round(22 * k), parked: Math.round(980 * k) };
     this.count = { [PED]: 0, [BIKE_]: 0, [CAR_]: 0, [TRAM_]: 0, parked: 0 };
     this.group = new THREE.Group();
-    this.group.add(this.people.mesh, this.cars.mesh, this.bikes.mesh, this.lamps.mesh, this.trams.mesh);
+    this.group.add(this.people.mesh, this.cars.mesh, this.bikes.mesh, ...this.lampPools.map((p) => p.mesh), this.trams.mesh, this.beams);
     this.owners = new Map(); // tile key → { lanes, parked, lamps, agents, groups, hot, pend, cx, cz, r, on }
     this.agents = [];
     this.ends = new Map(); // lane ends by 6 m cell, for finding the way on at a junction
@@ -467,16 +512,6 @@ export class Crowd {
         if (!one) split(laneLine(a, park && !rev ? -0.75 : -(w / 2 - 0.6), true), BIKE_, cls, yes);
       }
       if (cls >= 2 && cls <= 7) {
-        // lamp posts at the kerb, every 30 m, the two sides staggered
-        for (const side of [1, -1]) {
-          const line = laneLine(a, side * (w / 2 + 0.7), false), n = line.length >> 1;
-          for (let i = side > 0 ? 3 : 8; i + 1 < n; i += 10) {
-            const x = line[i * 2], z = line[i * 2 + 1];
-            if (walk[this._cls(x, z)] !== 2) continue;
-            const dx = line[i * 2 + 2] - x, dz = line[i * 2 + 3] - z; // the road lies to the left of a right-hand kerb line
-            o.lamps.push(x, z, Math.atan2(side * dx, side * dz));
-          }
-        }
         // pavements on both sides; walkers can cross from one to the other, at the zebras by preference
         let len = 0;
         for (let i = 2; i + 1 < a.length; i += 2) len += Math.hypot(a[i] - a[i - 2], a[i + 1] - a[i - 1]);
@@ -492,6 +527,12 @@ export class Crowd {
     for (const rl of t.rails || []) {
       if (rl.kind === 2 || rl.flags & 4 || rl.a.length < 4) continue;
       split(laneLine(conv(rl.a), 0, false), TRAM_, 1, yes);
+    }
+    // lamp posts: where the tile's own data puts them (world.js, lampsOf), turned into scene coordinates; flat [x, z, heading, kind]
+    const LS = t.lamps && t.lamps.a;
+    if (LS) for (let i = 0; i + 4 < LS.length; i += 5) {
+      const p = toScene(LS[i], LS[i + 1]), q = toScene(LS[i] + LS[i + 2], LS[i + 1] + LS[i + 3]);
+      o.lamps.push(p[0], p[1], Math.atan2(-(q[1] - p[1]), q[0] - p[0]), LS[i + 4]);
     }
     this.owners.set(t.key, o);
     this.pedIx = null;
@@ -531,7 +572,7 @@ export class Crowd {
         this._end(l, 0, true); this._end(l, 1, true);
       }
       for (let i = 0; i < o.parked.length; i += 4) { const p = mv(o.parked[i], o.parked[i + 1]); o.parked[i] = p[0]; o.parked[i + 1] = p[1]; o.parked[i + 2] += turn; }
-      for (let i = 0; i < o.lamps.length; i += 3) { const p = mv(o.lamps[i], o.lamps[i + 1]); o.lamps[i] = p[0]; o.lamps[i + 1] = p[1]; o.lamps[i + 2] += turn; }
+      for (let i = 0; i < o.lamps.length; i += 4) { const p = mv(o.lamps[i], o.lamps[i + 1]); o.lamps[i] = p[0]; o.lamps[i + 1] = p[1]; o.lamps[i + 2] += turn; }
       for (let i = 0; i < o.hot.length; i += 3) { const p = mv(o.hot[i], o.hot[i + 1]); o.hot[i] = p[0]; o.hot[i + 1] = p[1]; }
       for (const g of o.groups) {
         const c = mv(g.x, g.z); g.x = c[0]; g.z = c[1];
@@ -539,7 +580,7 @@ export class Crowd {
         for (const b of g.bikes) { const q = mv(b.x, b.z); b.x = q[0]; b.z = q[1]; b.hd += turn; }
       }
       for (const a of o.agents) {
-        if (a.fixed) { const p = mv(a.x, a.z); a.x = p[0]; a.z = p[1]; a.hd += turn; (a.kind === 3 ? this.lamps : this.cars).put(a.slot, a.x, W2.hAt(a.x, a.z), a.z, a.hd, 1); }
+        if (a.fixed) { const p = mv(a.x, a.z); a.x = p[0]; a.z = p[1]; a.hd += turn; (a.kind === 3 ? a.lp : this.cars).put(a.slot, a.x, W2.hAt(a.x, a.z), a.z, a.hd, 1); }
       }
     }
     for (const a of this.agents) {
@@ -566,7 +607,7 @@ export class Crowd {
   _free(a, unlink = true) {
     if (a.dead) return;
     a.dead = true;
-    if (a.kind === 3) this.lamps.give(a.slot);
+    if (a.kind === 3) a.lp.give(a.slot);
     else if (a.kind === PED) { a.pp.anim.array[a.slot * 4 + 3] = 0; a.pp.give(a.slot); }
     else if (a.kind === BIKE_) { a.vp.give(a.slot); a.pp.give(a.rider); if (a.pass >= 0) a.pp.give(a.pass); }
     else if (a.kind === TRAM_) for (const s of a.tail) this.trams.give(s.slot);
@@ -616,7 +657,7 @@ export class Crowd {
     o.on = true;
     // parked cars and lamp posts go up as soon as nobody can see them appear (see _reveal)
     for (let i = 0; i < o.parked.length; i += 4) o.pend.push(i);
-    for (let i = 0; i < o.lamps.length; i += 3) o.pend.push(-1 - i);
+    for (let i = 0; i < o.lamps.length; i += 4) o.pend.push(-1 - i);
     this._reveal(o);
     // how many per 100 m of lane, by kind and by how big the street is
     const DENS = {
@@ -638,16 +679,19 @@ export class Crowd {
     for (let q = pend.length - 1; q >= 0; q--) {
       const i = pend[q], lamp = i < 0, j = lamp ? -1 - i : i, x = lamp ? o.lamps[j] : o.parked[j], z = lamp ? o.lamps[j + 1] : o.parked[j + 1];
       if (!this.warm && this._seen(x, z)) continue;
-      pend[q] = pend[pend.length - 1]; pend.pop();
+      // a post that finds no free slot stays on the waiting list (it must not count as standing there)
       if (lamp) {
-        const slot = this.lamps.take();
+        const kind = o.lamps[j + 3], lp = this.lampPools[LAMP_POOL[kind]], slot = lp.take();
         if (slot < 0) continue;
-        this.lamps.put(slot, x, W.hAt(x, z), z, o.lamps[j + 2], 1);
-        o.agents.add({ kind: 3, fixed: true, slot, x, z, hd: o.lamps[j + 2], dead: false, lane: { owner: o } });
+        pend[q] = pend[pend.length - 1]; pend.pop();
+        lp.put(slot, x, W.hAt(x, z), z, o.lamps[j + 2], 1);
+        o.agents.add({ kind: 3, fixed: true, slot, x, z, hd: o.lamps[j + 2], lk: kind, lp, dead: false, lane: { owner: o } });
       } else {
         if (this.count.parked >= this.max.parked) continue;
         const slot = this.cars.take();
         if (slot < 0) continue;
+        pend[q] = pend[pend.length - 1]; pend.pop();
+        this.cars.c2.array[slot * 3] = 0; // parked cars stand dark
         this.cars.put(slot, x, W.hAt(x, z), z, o.parked[j + 2], 1);
         this.cars.tint(this.cars.c1, slot, P_CAR[o.parked[j + 3] % P_CAR.length]);
         this.count.parked++;
@@ -702,7 +746,7 @@ export class Crowd {
       if (a.pass >= 0) this._dress(pool, a.pass, a.look.pass);
     } else if (ak === TRAM_) {
       a.tail = [];
-      for (let i = 0; i < TRAM_N; i++) { const slot = this.trams.take(); if (slot < 0) break; a.tail.push({ slot }); }
+      for (let i = 0; i < TRAM_N; i++) { const slot = this.trams.take(); if (slot < 0) break; this.trams.c2.array[slot * 3] = i === 0 ? 1 : 0; a.tail.push({ slot }); } // (only the lead section has headlights)
       if (a.tail.length < TRAM_N) { for (const t of a.tail) this.trams.give(t.slot); return null; }
       a.v0 = 8.5;
     } else {
@@ -962,12 +1006,36 @@ export class Crowd {
     }
     return out;
   }
+  /**
+   * The lamps (with a post standing) nearest to (x, z), written into `out` (a list of Vector4: x, height of the lamp head, z,
+   * reach of its light) for the shaders. Returns how many; `this.lampReach` is how far from (x, z) the set is complete.
+   * Nothing is allocated: the candidates live in two small arrays.
+   */
+  lampSet(out, x, z, K, R) {
+    const cd = (this._cd ||= new Float32Array(32)), ca = (this._ca ||= new Array(32).fill(null));
+    let n = 0;
+    const R2 = R * R;
+    for (const o of this.owners.values()) {
+      for (const a of o.agents) {
+        if (a.kind !== 3 || a.dead) continue;
+        const dx = a.x - x, dz = a.z - z, d2 = dx * dx + dz * dz;
+        if (d2 > R2 || (n >= K && d2 >= cd[K - 1])) continue;
+        let j = n < K ? n++ : K - 1;
+        while (j > 0 && cd[j - 1] > d2) { cd[j] = cd[j - 1]; ca[j] = ca[j - 1]; j--; }
+        cd[j] = d2; ca[j] = a;
+      }
+    }
+    const W = this.W;
+    for (let i = 0; i < n; i++) { const a = ca[i], k = LAMP_KIND[a.lk]; out[i].set(a.x, W.hAt(a.x, a.z) + k.h, a.z, k.R * 1.15); ca[i] = null; }
+    this.lampReach = n >= K ? Math.sqrt(cd[K - 1]) : R;
+    return n;
+  }
   /** Lamp posts and parked cars that pass a test on their position (the open street takes its anchors from these). */
   props(test) {
     const lamps = [], parked = [];
     for (const o of this.owners.values()) {
       const wait = o.pend.length ? new Set(o.pend) : null; // (not up yet: not there)
-      for (let i = 0; i < o.lamps.length; i += 3) if (test(o.lamps[i], o.lamps[i + 1]) && !(wait && wait.has(-1 - i))) lamps.push({ x: o.lamps[i], z: o.lamps[i + 1] });
+      for (let i = 0; i < o.lamps.length; i += 4) if (test(o.lamps[i], o.lamps[i + 1]) && !(wait && wait.has(-1 - i))) lamps.push({ x: o.lamps[i], z: o.lamps[i + 1], kind: o.lamps[i + 3] });
       for (let i = 0; i < o.parked.length; i += 4) if (test(o.parked[i], o.parked[i + 1]) && !(wait && wait.has(i))) parked.push({ x: o.parked[i], z: o.parked[i + 1], hd: o.parked[i + 2] });
     }
     return { lamps, parked };
@@ -1264,12 +1332,14 @@ export class Crowd {
     }
     for (const q of this.pools.values()) q.flush();
     for (const q of this.vpools.values()) q.flush();
-    this.cars.flush(); this.lamps.flush(); this.trams.flush();
+    this.cars.flush(); for (const p of this.lampPools) p.flush(); this.trams.flush();
+    this.beams.count = this.cars.mesh.count; this.beams.visible = U.uNight.value > 0.02;
   }
   dispose() {
     for (const q of this.pools.values()) q.dispose();
     for (const q of this.vpools.values()) q.dispose();
-    this.cars.dispose(); this.lamps.dispose(); this.trams.dispose();
+    this.cars.dispose(); for (const p of this.lampPools) p.dispose(); this.trams.dispose();
+    this.beams.geometry.dispose();
     this.owners.clear(); this.agents = []; this.ends.clear();
   }
 }
