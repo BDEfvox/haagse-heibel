@@ -101,6 +101,14 @@ export const sfx = {
     tone(N(seq[0] - 12), N(seq[0] - 12), 0.5, { vol: 0.2, type: 'triangle' });
   },
   back: () => { tone(700, 350, 0.12, { vol: 0.12 }); tone(350, 175, 0.16, { vol: 0.12, at: 0.09 }); },
+  // set-piece extras
+  typing: () => { for (let i = 0; i < 7; i++) noise(0.025, { vol: 0.09, f0: 5000, f1: 2500, type: 'highpass', at: i * 0.06 + (i % 3) * 0.012 }); },
+  reel: () => { for (let i = 0; i < 8; i++) tone(1900, 1500, 0.025, { vol: 0.06, type: 'square', at: i * 0.05 }); },
+  glass: () => { noise(0.35, { vol: 0.22, f0: 9000, f1: 3000, type: 'highpass' }); for (let i = 0; i < 5; i++) tone(2400 + i * 330, 1800, 0.06, { vol: 0.07, type: 'triangle', at: 0.04 + i * 0.05 }); },
+  bonk: () => { tone(260, 90, 0.14, { vol: 0.3, type: 'triangle' }); tone(520, 180, 0.08, { vol: 0.12, type: 'square', at: 0.02 }); },
+  sting: () => { tone(220, 220, 0.16, { vol: 0.14, type: 'sawtooth' }); tone(330, 330, 0.16, { vol: 0.12, type: 'sawtooth', at: 0.1 }); tone(660, 660, 0.45, { vol: 0.13, type: 'square', at: 0.2 }); },
+  gasp: () => noise(0.35, { vol: 0.12, f0: 800, f1: 2400, type: 'bandpass', q: 2 }),
+  clatter: () => { for (let i = 0; i < 6; i++) { tone(400 + (i * 137) % 500, 200, 0.05, { vol: 0.09, type: 'square', at: i * 0.045 }); } },
 };
 
 // ---------------------------------------------------------------- chiptune loop

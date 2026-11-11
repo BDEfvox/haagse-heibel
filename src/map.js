@@ -33,7 +33,7 @@ export function createMap(el, { buurten, streets, context }, on) {
     bounds: home,
     fitBoundsOptions: { padding: pad() },
     minZoom: 9.5,
-    maxZoom: 18.5,
+    maxZoom: 17.7,
     maxBounds: [[minX - 0.25, minY - 0.14], [maxX + 0.25, maxY + 0.14]],
     attributionControl: false,
     dragRotate: false,
@@ -112,9 +112,56 @@ export function createMap(el, { buurten, streets, context }, on) {
     else api.focusBuurt(p.f.id, true);
   });
 
-  let saved = null;
+  // ---------------------------------------------------------------- zooming in far enough drops you into the street
+  const ENTER = 17.25, CUE = 16.5;
+  let lastZ = 0, lastPt = null, lastAt = 0;
+  const gesturePoint = (ev) => {
+    const r = el.getBoundingClientRect(), t = ev && ev.touches && ev.touches.length ? ev.touches : null;
+    if (t) { let x = 0, y = 0; for (const q of t) { x += q.clientX; y += q.clientY; } return { x: x / t.length - r.left, y: y / t.length - r.top }; }
+    if (ev && typeof ev.clientX === 'number') return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    return { x: r.width / 2, y: r.height / 2 };
+  };
+  map.on('zoom', (e) => {
+    const z = map.getZoom(), up = z > lastZ;
+    lastZ = z;
+    if (!enabled) return;
+    if (e.originalEvent) { lastPt = gesturePoint(e.originalEvent); lastAt = performance.now(); }
+    // the spot being zoomed in on: under the pointer or fingers, otherwise the middle of the map
+    const pt = lastPt && performance.now() - lastAt < 1500 ? lastPt : { x: el.clientWidth / 2, y: el.clientHeight / 2 };
+    on.zoom?.(z, z >= CUE ? pt : null);
+    if (up && z >= ENTER) on.deep?.(pt);
+  });
+  /** The street closest to a screen point, within `maxPx` pixels. */
+  const nearestStreet = (pt, maxPx = 110) => {
+    if (!map.getLayer('street-hit')) return null;
+    for (const r of [10, 36, maxPx]) {
+      const hits = map.queryRenderedFeatures([[pt.x - r, pt.y - r], [pt.x + r, pt.y + r]], { layers: ['street-hit'] });
+      let best = null, bd = Infinity;
+      for (const f of hits) {
+        const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.coordinates;
+        for (const line of lines) {
+          let a = null;
+          for (const ll of line) {
+            const b = map.project(ll);
+            if (a) {
+              const dx = b.x - a.x, dy = b.y - a.y, t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+              const d = Math.hypot(a.x + dx * t - pt.x, a.y + dy * t - pt.y);
+              if (d < bd) { bd = d; best = f; }
+            }
+            a = b;
+          }
+        }
+      }
+      if (best && bd <= r) return best;
+    }
+    return null;
+  };
+
+  const HANDLERS = ['scrollZoom', 'dragPan', 'touchZoomRotate', 'doubleClickZoom', 'keyboard', 'boxZoom'];
   const api = {
-    map, ready,
+    map, ready, nearestStreet,
+    /** Hold the map still (no gestures) while a street is opening or open. */
+    lock(v) { if (v) map.stop(); for (const h of HANDLERS) { if (v) map[h].disable(); else map[h].enable(); } if (!v) map.touchZoomRotate.disableRotation(); },
     setEnabled(v) { enabled = v; if (!v) { setHover(null, null); on.hover?.(null, null, true); } },
     focusBuurt(id, click = false) {
       const f = buurten.features[id];
@@ -124,17 +171,6 @@ export function createMap(el, { buurten, streets, context }, on) {
       for (const poly of polys) for (const [x, y] of poly[0]) { a = Math.min(a, x); c = Math.max(c, x); b = Math.min(b, y); d = Math.max(d, y); }
       on.buurt?.(f.properties, click);
       map.fitBounds([[a, b], [c, d]], { padding: pad(), duration: 900, maxZoom: 16, minZoom: 14, easing: (t) => 1 - Math.pow(1 - t, 3) });
-    },
-    /** Dramatic dive onto a street; resolves when the camera has (nearly) landed. */
-    dive(p, ms = 950) {
-      saved = { center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() };
-      map.flyTo({ center: [p.cx, p.cy], zoom: Math.max(17.2, map.getZoom() + 1.2), pitch: 50, bearing: ((p.bearing || 0) % 180) - 90, duration: ms, essential: true, curve: 1.1, easing: (t) => t * t * (3 - 2 * t) });
-      return new Promise((r) => setTimeout(r, ms));
-    },
-    /** Jump (hidden behind the cutscene) to a calm view around a street, ready for when we come back. */
-    restore(p) {
-      const z = saved ? Math.max(14.6, Math.min(saved.zoom, 16)) : 15;
-      map.jumpTo({ center: p ? [p.cx, p.cy] : saved.center, zoom: z, pitch: 0, bearing: 0 });
     },
     home() { map.fitBounds(home, { padding: pad(), duration: 900 }); },
     streetPoint(p) { return map.project([p.cx, p.cy]); },

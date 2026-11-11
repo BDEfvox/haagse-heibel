@@ -19,10 +19,14 @@ const SKY = {
   5: { top: '#060a22', bot: '#2c1b5c', sun: '#a9bdff', sunI: 1.3, hs: '#6f83e6', hg: '#2c2752', hI: 1.3, pos: [-14, 30, 18], night: true, stars: true, fog: '#1b1444' },
 };
 const AZ0 = 0.4, EL0 = 0.7, FOV = 30, TAN = Math.tan((FOV / 2) * (Math.PI / 180));
-const DMIN = 20, DMAX = 9000;
+/** Half the vertical field of view, as a tangent: lets the page match a map zoom to a camera height. */
+export const VIEW_TAN = TAN;
+// straight down (as near as the camera maths allows), and the height at which zooming out hands over to the map
+const TOP = 1.5608, EXIT = 2900;
+const DMIN = 20, DMAX = 3100;
 const sm = (x) => x * x * (3 - 2 * x);
 const angDiff = (a, b) => { const d = b - a; return Math.atan2(Math.sin(d), Math.cos(d)); };
-const _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3();
+const _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 
 /** Free the GPU buffers of an object that has left the scene for good. */
 const SHARED = new Set([MAT.solid, MAT.glow, MAT.water, CUT.solid, CUT.glow, CUT.depth]);
@@ -35,7 +39,7 @@ function disposeTree(o) {
 const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** Make an object live in a context's street space: its position is (x along, y up, z across) from that spot. */
-function warp(obj, ctx, path) {
+function warp(obj, ctx, path, hAt) {
   obj._ctx = ctx;
   obj.updateMatrix = function () {
     const p = this.position;
@@ -49,7 +53,8 @@ function warp(obj, ctx, path) {
     path.at(this._ctx.sc + ax, _f);
     this.matrix.compose(p, this.quaternion, this.scale);
     _W.makeRotationY(Math.atan2(-_f.tz, _f.tx));
-    _W.setPosition(_f.x - _f.tz * az, 0, _f.z + _f.tx * az);
+    const X = _f.x - _f.tz * az, Z = _f.z + _f.tx * az;
+    _W.setPosition(X, hAt(X, Z), Z); // it stands (or floats) on whatever is there
     _W.multiply(_T.makeTranslation(-ax, 0, -az));
     this.matrix.premultiply(_W);
     this.matrixWorldNeedsUpdate = true;
@@ -83,7 +88,7 @@ export class Stage {
     this.running = false;
     this.mode = 'idle';
     this._tok = 0;
-    this.rig = { az: AZ0, el: EL0, dist: 80, tx: 0, ty: 1.5, tz: 0 };
+    this.rig = { az: AZ0, el: EL0, dist: 80, tx: 0, ty: 1.5, tz: 0, fov: FOV, roll: 0 };
     this.goal = { ...this.rig };
     this.pins = [];
     this.keys = new Set();
@@ -106,7 +111,7 @@ export class Stage {
 
   // ------------------------------------------------------------ input
   _take() {
-    if (!this.W || this.mode === 'drop') return false;
+    if (!this.W || this.mode === 'drop' || this.mode === 'leave' || this.exiting) return false;
     if (this.mode === 'follow') this._setMode('free');
     return true;
   }
@@ -114,8 +119,8 @@ export class Stage {
     const g = this.goal, mpp = (2 * g.dist * TAN) / (this.canvas.clientHeight || 1), kf = (dy * mpp) / Math.max(0.35, Math.sin(g.el)), kr = dx * mpp;
     g.tx += -kr * Math.cos(g.az) - kf * Math.sin(g.az);
     g.tz += kr * Math.sin(g.az) - kf * Math.cos(g.az);
-    const R = this.W.region;
-    g.tx = clamp(g.tx, R.x0 - 500, R.x1 + 500); g.tz = clamp(g.tz, R.z0 - 500, R.z1 + 500);
+    const q = this.W.inCity(g.tx, g.tz); // roam anywhere in the city
+    g.tx = q[0]; g.tz = q[1];
   }
   _bindInput() {
     const c = this.canvas, pts = new Map();
@@ -199,14 +204,17 @@ export class Stage {
   _view(ctx) {
     const path = this.W.path, p = path.xz(ctx.sc, -(this.W.L.hw + this.W.L.bw) * 0.6 - 1.2);
     path.at(ctx.sc, _f);
-    return { tx: p[0], tz: p[1], ty: 1.5, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 65 };
+    return { tx: p[0], tz: p[1], ty: this.W.landY(p[0], p[1]) + 1.5, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 65, fov: FOV, roll: 0 };
   }
   _setMode(mode) {
     if (this.mode === mode) return;
     const was = this.mode;
     this.mode = mode;
     if (mode === 'free') {
+      if (this.cine) this._cineEnd();
       Object.assign(this.goal, this.rig);
+      // coming out of a close-up: back off to a sensible height
+      this.goal.el = clamp(this.goal.el, 0.32, 1.5); this.goal.dist = Math.max(this.goal.dist, 42); this.goal.fov = FOV; this.goal.roll = 0;
       this.focusReq = null;
       if (was === 'follow' && this.autoFree) { this.goal.dist = Math.max(this.goal.dist, this.fit * 1.45); this.autoFree = false; }
     }
@@ -232,6 +240,105 @@ export class Stage {
     if (!this.W || this.mode === 'drop') return;
     if (this.mode === 'follow') this._setMode('free');
     Object.assign(this.goal, this._view(ctx));
+  }
+  /**
+   * Rise straight up to `dist` metres, looking down with north up, so the page can hand over to the map.
+   * Resolves with where the camera ended up.
+   */
+  leave(dist) {
+    return new Promise((resolve) => {
+      const W = this.W, r = this.rig;
+      if (!W) return resolve(null);
+      const here = () => ({ lngLat: W.toLngLat(r.tx, r.tz), dist: r.dist });
+      if (r.dist >= dist * 0.9 || CALM) return resolve(here());
+      if (this.cine) this._cineEnd();
+      this.mode = 'leave';
+      this.leaveTo = { t: 0, dur: clamp(0.45 + 0.4 * Math.log(dist / r.dist), 0.7, 2.1), d0: r.dist, d1: dist, el0: r.el, az0: r.az, done: false, resolve: () => resolve(here()) };
+      this.hooks.onMode?.('leave');
+    });
+  }
+
+  // ------------------------------------------------------------ the cinematic camera
+  // A gag that has the director's camera can ask for shots (see _cam). The stage tracks the subjects live.
+  _cineEnd() {
+    if (!this.cine) return;
+    this.cine = null;
+    this._wasShot = true;
+    this.hooks.onCine?.(false);
+  }
+  /** Stop the current gag from directing the camera (the viewer pressed Skip). */
+  skipCine() { if (this.cine) { this.cineSkip = this.cine.name; this._cineEnd(); } }
+  _wpos(ctx, s, out) {
+    if (!s) return null;
+    if (s.g || s.isObject3D) {
+      if (s.alive === false) return null;
+      const o = s.g || s;
+      if (!o.parent) return null;
+      o.updateWorldMatrix(true, false);
+      return out.setFromMatrixPosition(o.matrixWorld);
+    }
+    const p = this.W.path.xz(ctx.sc + (s.x || 0), s.z || 0);
+    return out.set(p[0], this.W.hAt(p[0], p[1]) + (s.y || 0), p[1]);
+  }
+  _shotGoal(c) {
+    const sp = c.spec, W = this.W, subs = Array.isArray(sp.on) ? sp.on : [sp.on], age = this.time - c.t0, d = sp.drift || {};
+    let X = 0, Y = 0, Z = 0, n = 0, first = null, spread = 0;
+    for (const sub of subs) { const p = this._wpos(c.ctx, sub, _v); if (!p) continue; X += p.x; Y += p.y; Z += p.z; n++; first ||= sub; }
+    if (!n) return null;
+    X /= n; Y /= n; Z /= n;
+    for (const sub of subs) { const p = this._wpos(c.ctx, sub, _v); if (p) spread = Math.max(spread, Math.hypot(p.x - X, p.z - Z)); }
+    W.path.at(c.ctx.sc, _f);
+    const tx = _f.tx, tz = _f.tz, base = Math.atan2(-tz, tx);
+    let az = sp.az ?? 0.35, dist = sp.dist ?? 14;
+    if (sp.face && first && typeof first.heading === 'number') az = Math.atan2(Math.sin(first.heading), Math.cos(first.heading));
+    if (sp.from) {
+      // over the shoulder: stand behind `from`, look past them at the subject
+      const q = this._wpos(c.ctx, sp.from, _v2);
+      if (q) { const dx = q.x - X, dz = q.z - Z; az = Math.atan2(dx * tx + dz * tz, -dx * tz + dz * tx); dist = Math.hypot(dx, dz) + 3.4 + (sp.dist || 0); X += dx * 0.3; Z += dz * 0.3; }
+    }
+    if (sp.fit) dist = Math.max(dist === 14 ? 0 : dist, spread * 2.6 + 7);
+    if (sp.lead && first && typeof first.heading === 'number' && first.moving) { const sh = Math.sin(first.heading), ch = Math.cos(first.heading); X += (tx * sh - tz * ch) * sp.lead; Z += (tz * sh + tx * ch) * sp.lead; }
+    az = clamp(az + (d.az || 0) * age + (c.azFix || 0), -1.75, 1.75);
+    return {
+      tx: X, tz: Z, ty: Y + (sp.y ?? 1.3), az: base + az, el: clamp((sp.el ?? 0.3) + (d.el || 0) * age, -0.2, 1.45),
+      dist: Math.max(5, dist + (d.dist || 0) * age), fov: sp.fov || FOV, roll: clamp(sp.roll || 0, -0.2, 0.2),
+    };
+  }
+  /** Is the line from a shot's subject to its camera free of buildings (as drawn, with their heights)? */
+  _clear(g) {
+    const S = this.W.solid, ce = Math.cos(g.el), se = Math.sin(g.el), sx = Math.sin(g.az) * ce, sz = Math.cos(g.az) * ce;
+    for (let t = 2; t <= g.dist; t += 0.6) {
+      const h = S.get(g.tx + sx * t, g.tz + sz * t);
+      if (h === 0 || h === 255) continue;
+      // skimming a roof is as bad as hitting a wall: near the camera the roof must be well below it
+      if (g.ty + se * t < S.y0 + h * 0.5 + (t > g.dist - 8 ? 3 : 0.5)) return false;
+    }
+    return true;
+  }
+  _cam(ctx, name) {
+    const stage = this;
+    const mine = () => !!stage.cine && stage.cine.ctx === ctx && stage.cine.name === name;
+    const can = () => !CALM && stage.mode === 'follow' && stage.camCtx === ctx && stage.cineSkip !== name && (!stage.cine || mine());
+    const shot = (spec) => {
+      if (!spec || !spec.on || !can()) return;
+      if (!mine()) { stage.cine = { ctx, name }; stage.hooks.onCine?.(true); }
+      Object.assign(stage.cine, { spec, t0: stage.time, until: stage.time + (spec.hold ?? 4), fresh: true });
+    };
+    const P = (on, base, o) => shot({ on, ...base, ...(o || {}) });
+    return {
+      get on() { return can(); },
+      shot,
+      wide: (on, o) => P(on, { dist: 30, el: 0.42, az: 0.45, y: 1.2 }, o),
+      close: (on, o) => P(on, { dist: 8, el: 0.08, y: 1.6, face: true, fov: 26, drift: { dist: -0.2 } }, o),
+      low: (on, o) => P(on, { dist: 7.5, el: -0.1, y: 1.3, face: true, fov: 40, roll: 0.07 }, o),
+      ots: (from, to, o) => P(to, { from, el: 0.2, y: 1.45 }, o),
+      track: (on, o) => P(on, { dist: 13, el: 0.16, az: 0.3, y: 1.2, lead: 2, fov: 32 }, o),
+      top: (on, o) => P(on, { dist: 32, el: 1.32, az: 0, y: 0 }, o),
+      two: (a, b, o) => P([a, b], { el: 0.2, az: 0.25, y: 1.35, fit: true }, o),
+      card: (title, sub = '', dur = 1.6) => { if (mine()) stage.hooks.onCard?.(String(title), String(sub), dur); },
+      freeze: (dur = 1, scale = 0.05) => { if (mine()) stage.slow = { scale, t: dur }; },
+      release: () => { if (mine()) stage._cineEnd(); },
+    };
   }
 
   // ------------------------------------------------------------ show
@@ -277,6 +384,8 @@ export class Stage {
     const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + (opts.seed || '') + '|stage'));
     const path = W.path, len = path.sB - path.sA;
     this.fx = new Fx(this.scene, this.camera, this.overlay);
+    this.fx.ground = W.hAt;
+    this.cine = null; this.cineSkip = null; this._wasShot = false; this.exiting = false; this.leaveTo = null;
     this.runner = new Runner();
     this.actors = [];
     this.extras = [];
@@ -324,24 +433,24 @@ export class Stage {
       const fxw = {
         text(str, at, o = {}) {
           let wp;
-          if (at.isVector3) { const p = map(at.x, at.z); wp = new THREE.Vector3(p[0], at.y, p[1]); stage.fx.text(str, wp, o); }
+          if (at.isVector3) { const p = map(at.x, at.z); wp = new THREE.Vector3(p[0], at.y + W.hAt(p[0], p[1]), p[1]); stage.fx.text(str, wp, o); }
           else { stage.fx.text(str, at, o); const ob = at.g || at; ob.updateWorldMatrix(true, false); wp = _v.setFromMatrixPosition(ob.matrixWorld); }
           // big comic words are the punchlines: nudge the camera towards them
           if ((o.size ?? 22) >= 20) stage._focus(ctx, wp.x, wp.z, 0.66, 2.4, 1);
         },
         shake: (a) => { if (near() && !CALM) stage.fx.shake(a); },
       };
-      for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y, p[1], ...rest); };
+      for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y + W.hAt(p[0], p[1]), p[1], ...rest); };
       const ctx = {
         id, sc, L, st, level, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
-        world: { add: (o) => { warp(o, ctx, path); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
+        world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
         spawn(a, x, z, y) {
           a.g.position.set(x, y ?? 0, z);
           a.baseScale = a.g.scale.x;
           a.alive = true;
           a.ctx = ctx;
-          warp(a.g, ctx, path);
+          warp(a.g, ctx, path, W.hAt);
           stage.dyn.add(a.g);
           stage.actors.push(a);
           return a;
@@ -371,7 +480,15 @@ export class Stage {
           this.gags.add(g);
           if (this.mode === 'follow' && ctx !== this.camCtx && ![...this.gags].some((q) => q.ctx === this.camCtx) && this.time - this.lastSwitch > 4) { this.camCtx = ctx; this.lastSwitch = this.time; this.idleT = 0; }
         },
-        gagEnd: (name) => { const g = ctx._gags?.get(name); if (g) { this.gags.delete(g); ctx._gags.delete(name); } },
+        gagEnd: (name) => {
+          const g = ctx._gags?.get(name);
+          if (g) { this.gags.delete(g); ctx._gags.delete(name); }
+          if (this.cine && this.cine.ctx === ctx && this.cine.name === name) this._cineEnd();
+          if (this.cineSkip === name) this.cineSkip = null;
+        },
+        /** The director's camera for one gag (see _cam). */
+        cam: (name) => this._cam(ctx, name),
+        cineBusy: () => !!this.cine && this.cine.ctx === ctx,
       };
       return ctx;
     };
@@ -381,21 +498,24 @@ export class Stage {
     for (const c of this.locales) c.amb = amb;
     this.ctx = this.camCtx = this.locales[0];
 
-    // ---- the drop from the sky
-    const dur = 4.4;
-    this.drop = { t: 0, dur, d0: this.lite ? 6500 : 8500, c0: path.xz((path.sA + path.sB) / 2, 0) };
+    // ---- the drop from the sky: from wherever the map was looking, at the height that shows the same view
+    const from = typeof opts.from === 'function' ? opts.from() : opts.from;
+    const mid = path.xz((path.sA + path.sB) / 2, 0);
+    const d0 = clamp(from?.dist || 2600, 300, 60000), c0 = from?.lngLat ? W.toScene(from.lngLat[0], from.lngLat[1]) : mid;
+    const dur = CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
+    this.drop = { t: 0, dur, d0, c0, y0: W.landY(c0[0], c0[1]) };
     this.mode = 'drop';
     this.cutEnd = dur + 30;
     this.lastSwitch = dur; this.idleT = 0; this.autoFree = true;
     U.uGrow.value = 0.02;
-    Object.assign(this.rig, { tx: this.drop.c0[0], tz: this.drop.c0[1], ty: 0, az: W.northAz, el: 1.5, dist: this.drop.d0 });
+    Object.assign(this.rig, { tx: c0[0], tz: c0[1], ty: this.drop.y0, az: W.northAz, el: TOP, dist: d0, fov: FOV, roll: 0 });
 
     startAmbient(amb);
     this.locales.forEach((c, i) => startLocale(c, i === 0
       ? { only: opts.only || null, delay: dur + 0.9, signature: true, withHeli: level >= 5 }
       : { delay: dur + rnd.range(6, 24), signature: rnd.chance(0.5) }));
 
-    this._clouds(rnd, sky);
+    this._clouds(rnd, sky, mid);
     // the stork, The Hague's mascot, on a chimney near the action
     if (A.chimneys.length) {
       const m = path.xz(main, 0), c = A.chimneys.reduce((a, b) => ((b.x - m[0]) ** 2 + (b.z - m[1]) ** 2 < (a.x - m[0]) ** 2 + (a.z - m[1]) ** 2 ? b : a));
@@ -412,10 +532,9 @@ export class Stage {
     this._raf = requestAnimationFrame(this._tick);
   }
 
-  _clouds(rnd, sky) {
+  _clouds(rnd, sky, c0) {
     this.clouds = [];
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: sky.night ? 0.42 : 0.92, fog: false });
-    const c0 = this.drop.c0;
     for (let i = 0; i < 22; i++) {
       const v = new Vox(i + 20), n = rnd.int(4, 7), s = rnd.range(16, 34);
       for (let k = 0; k < n; k++) {
@@ -437,6 +556,9 @@ export class Stage {
     cancelAnimationFrame(this._raf);
     this._clearPointers?.();
     this.mode = 'idle';
+    if (this.cine) { this.cine = null; this.hooks?.onCine?.(false); }
+    if (this.leaveTo && !this.leaveTo.done) { this.leaveTo.done = true; this.leaveTo.resolve(); }
+    this.leaveTo = null;
     if (this.runner) this.runner.clear();
     if (this.fx) { this.fx.dispose(); this.fx = null; }
     for (const p of this.pins) p.el.remove();
@@ -488,7 +610,7 @@ export class Stage {
       l.s += l.dir * l.speed * dt;
       if (l.s < 0 || l.s > l.path.len) { this.dyn.remove(l.a.g); disposeTree(l.a.g); this.life.splice(i, 1); continue; }
       l.path.at(l.s, _f);
-      l.a.g.position.set(_f.x - _f.tz * l.lane, 0, _f.z + _f.tx * l.lane);
+      { const X = _f.x - _f.tz * l.lane, Z = _f.z + _f.tx * l.lane; l.a.g.position.set(X, W.hAt(X, Z), Z); }
       l.a.heading = Math.atan2(_f.tx * l.dir, _f.tz * l.dir);
       l.a.moving = l.speed;
       l.a.update(dt);
@@ -497,7 +619,7 @@ export class Stage {
   _addLife(a, path, dir, speed, lane, tram) {
     const l = { a, path, dir, speed, lane, tram, s: dir > 0 ? 0.5 : path.len - 0.5 };
     path.at(l.s, _f);
-    a.g.position.set(_f.x - _f.tz * lane, 0, _f.z + _f.tx * lane);
+    { const X = _f.x - _f.tz * lane, Z = _f.z + _f.tx * lane; a.g.position.set(X, this.W.hAt(X, Z), Z); }
     a.g.rotation.y = a.heading = Math.atan2(_f.tx * dir, _f.tz * dir);
     this.dyn.add(a.g);
     this.life.push(l);
@@ -523,7 +645,7 @@ export class Stage {
       pin.ctx = c || null;
       if (!c) { pin.el.hidden = true; return; }
       const p = this.W.path.xz(c.sc, 0);
-      _v.set(p[0], 5, p[1]).project(this.camera);
+      _v.set(p[0], 5 + this.W.landY(p[0], p[1]), p[1]).project(this.camera);
       const behind = _v.z > 1;
       let x = behind ? -_v.x : _v.x, y = behind ? -1 : _v.y;
       const off = behind || Math.abs(x) > 0.9 || Math.abs(y) > 0.86;
@@ -554,62 +676,123 @@ export class Stage {
     for (const c of this.clouds) c.position.x += c.userData.v * dt;
 
     // ---- camera
+    let shotOn = false, shotBlocked = false;
     if (this.mode === 'drop') {
       const D = this.drop;
       if (!this.hold) D.t += real * (this.debugSpeed || 1);
       const e = clamp(D.t / D.dur), v = this._view(this.camCtx);
       r.dist = Math.exp(lerp(Math.log(D.d0), Math.log(v.dist), sm(e))) * (1 - 0.08 * Math.sin(Math.PI * clamp((e - 0.8) / 0.2)));
-      r.el = lerp(1.5, v.el, sm(clamp((e - 0.3) / 0.7)));
+      r.el = lerp(TOP, v.el, sm(clamp((e - 0.3) / 0.7)));
       r.az = W.northAz + angDiff(W.northAz, v.az) * sm(clamp((e - 0.12) / 0.8));
-      const k = sm(e);
-      r.tx = lerp(D.c0[0], v.tx, k); r.tz = lerp(D.c0[1], v.tz, k); r.ty = 1.5 * k;
+      const k = sm(Math.min(1, e * 1.3)); // be over the street a little before landing
+      r.tx = lerp(D.c0[0], v.tx, k); r.tz = lerp(D.c0[1], v.tz, k); r.ty = lerp(D.y0, v.ty, sm(e));
       U.uGrow.value = 0.02 + 0.98 * ease.outBack(clamp((e - 0.5) / 0.4));
       if (e > 0.55 && !D.whoosh) { D.whoosh = true; if (!document.hidden) sfx.whoosh?.(); }
       if (e >= 1) {
         U.uGrow.value = 1;
         this.mode = 'follow';
         Object.assign(g, v);
-        this.fx.shake(0.22);
+        if (!CALM) this.fx.shake(0.22);
         if (!document.hidden) sfx.thud?.();
         this.hooks.onMode?.('follow');
       }
+    } else if (this.mode === 'leave') {
+      const Lv = this.leaveTo;
+      Lv.t += real;
+      const e = clamp(Lv.t / Lv.dur);
+      r.dist = Math.exp(lerp(Math.log(Lv.d0), Math.log(Lv.d1), sm(e)));
+      r.el = lerp(Lv.el0, TOP, sm(clamp(e / 0.75)));
+      r.az = Lv.az0 + angDiff(Lv.az0, W.northAz) * sm(clamp(e / 0.85));
+      r.ty += (W.landY(r.tx, r.tz) - r.ty) * Math.min(1, real * 4);
+      r.fov = FOV; r.roll = 0;
+      U.uGrow.value = 1 - 0.98 * sm(clamp((e - 0.3) / 0.55));
+      if (e >= 1 && !Lv.done) { Lv.done = true; Lv.resolve(); }
     } else {
+      U.uGrow.value = 1;
       this._keys(real);
+      let rate = this.mode === 'free' ? 10 : 3.2, rateT = rate, snap = false;
       if (this.mode === 'follow') {
         const busy = [...this.gags].some((q) => q.ctx === this.camCtx);
         this.idleT = busy ? 0 : this.idleT + real;
-        if (this.idleT > 3 && this.time - this.lastSwitch > 5) {
+        if (this.idleT > 3 && this.time - this.lastSwitch > 5 && !this.cine) {
           let nb = null;
           for (const q of this.gags) if (q.ctx !== this.camCtx && (!nb || q.t0 > nb.t0)) nb = q;
           if (nb) { this.camCtx = nb.ctx; this.lastSwitch = this.time; this.idleT = 0; this.focusReq = null; }
         }
         Object.assign(g, this._view(this.camCtx));
         g.az += Math.sin(this.time * 0.22) * 0.04;
-        const f = this.focusReq;
-        if (f && this.time < f.until) { g.tx = lerp(g.tx, f.X, 0.85); g.tz = lerp(g.tz, f.Z, 0.85); g.dist *= f.zoom; g.ty = 2; g.el += 0.1; }
-        else if (this.time > this.cutEnd && !this.only) this._setMode('free');
+        const c = this.cine, sg = c && c.spec && this.time < c.until ? this._shotGoal(c) : null;
+        if (sg) {
+          // a directed shot: cut to it (or glide), then keep the subject framed
+          let view = sg, clear = this._clear(sg);
+          if (c.fresh) {
+            c.fresh = false; c.age = 0; c.glide = typeof c.spec.cut === 'number' ? Math.max(0.1, c.spec.cut) : 0; snap = !c.glide;
+            // a building in the way? swing the camera round until it sees the subject
+            c.azFix = 0;
+            if (!clear && sg.el < 0.6) {
+              for (const off of [0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4]) {
+                c.azFix = off;
+                const alt = this._shotGoal(c);
+                if (alt && this._clear(alt)) { view = alt; clear = true; break; }
+                c.azFix = 0;
+              }
+            }
+          }
+          // only a clear sight line lets the buildings around it stand; otherwise everything on the camera's side ducks as usual
+          shotOn = clear;
+          shotBlocked = !clear;
+          Object.assign(g, view);
+          // nothing clear at eye level: watch from higher up, over the flattened buildings, like the normal street view
+          if (!clear) { g.el = Math.max(g.el, 0.56); g.dist = Math.max(g.dist, 17); g.roll = 0; }
+          c.age += real;
+          if (c.glide && c.age < c.glide * 1.6) rate = rateT = 3.4 / c.glide; else { rate = 5; rateT = 11; }
+          this._wasShot = true;
+        } else {
+          if (this._wasShot) { this._wasShot = false; snap = true; } // cut back to the wide view
+          const f = this.focusReq;
+          if (f && this.time < f.until) { g.tx = lerp(g.tx, f.X, 0.85); g.tz = lerp(g.tz, f.Z, 0.85); g.dist *= f.zoom; g.ty += 0.5; g.el += 0.1; }
+          else if (this.time > this.cutEnd && !this.only && !this.cine) this._setMode('free');
+        }
+      } else {
+        g.ty = W.landY(g.tx, g.tz) + 1.5; g.fov = FOV; g.roll = 0;
       }
-      const k = 1 - Math.exp(-real * (this.mode === 'free' ? 10 : 3.2));
-      r.tx += (g.tx - r.tx) * k; r.tz += (g.tz - r.tz) * k; r.ty += ((g.ty ?? 1.5) - r.ty) * k;
-      r.az += angDiff(r.az, g.az) * k; r.el += (g.el - r.el) * k;
-      r.dist *= Math.pow(g.dist / r.dist, k);
+      // high up, the free camera turns to look straight down with north up: the same view as the map it hands over to
+      let gel = g.el, gaz = g.az;
+      if (this.mode === 'free') { const kk = sm(clamp((r.dist - 1200) / 1300)); gel = lerp(g.el, TOP, kk); gaz = g.az + angDiff(g.az, W.northAz) * kk; }
+      if (snap) { r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.az = gaz; r.el = gel; r.dist = g.dist; r.fov = g.fov; r.roll = g.roll; }
+      else {
+        const k = 1 - Math.exp(-real * rate), kt = 1 - Math.exp(-real * rateT);
+        r.tx += (g.tx - r.tx) * kt; r.tz += (g.tz - r.tz) * kt; r.ty += (g.ty - r.ty) * kt;
+        r.az += angDiff(r.az, gaz) * k; r.el += (gel - r.el) * k;
+        r.dist *= Math.pow(g.dist / r.dist, k);
+        r.fov += ((g.fov || FOV) - r.fov) * k; r.roll += ((g.roll || 0) - r.roll) * k;
+      }
+      if (this.mode === 'free' && r.dist >= EXIT && !this.exiting) { this.exiting = true; this.hooks.onExit?.(); }
     }
     const sh = this.fx.shakeAmt * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
     const tx = r.tx + (Math.random() - 0.5) * sh, ty = r.ty + (Math.random() - 0.5) * sh, tz = r.tz + (Math.random() - 0.5) * sh;
-    this.camera.position.set(tx + r.dist * Math.sin(r.az) * ce, ty + r.dist * Math.sin(r.el), tz + r.dist * Math.cos(r.az) * ce);
+    const cx = tx + r.dist * Math.sin(r.az) * ce, cz = tz + r.dist * Math.cos(r.az) * ce;
+    let cy = ty + r.dist * Math.sin(r.el);
+    if (r.dist < 80) cy = Math.max(cy, W.landY(cx, cz) + 0.35); // never under the ground
+    this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(tx, ty, tz);
-    this.camera.near = clamp(r.dist * 0.04, 0.8, 80);
+    if (r.roll) this.camera.rotateZ(r.roll);
+    this.camera.fov = r.fov;
+    this.camera.near = clamp(r.dist * 0.04, 0.6, 80);
     this.camera.far = r.dist * 7 + 9000;
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
     this.scene.fog.near = r.dist * 1.6 + 180;
     this.scene.fog.far = r.dist * 7 + 2400;
+    this.fx.zoom = r.dist;
+    W.lod(r.tx, r.tz, r.dist, this.mode !== 'drop' && this.mode !== 'leave');
 
     // ---- things in the way duck; shadows follow the camera
     U.uFocus.value.set(r.tx, 0, r.tz);
     U.uCamDir.value.set(Math.sin(r.az), Math.cos(r.az));
     U.uTan.value = Math.tan(clamp(r.el, 0.1, 1.45));
-    U.uR.value = r.dist * 0.6 + 20;
+    U.uR.value = shotOn ? r.dist * 0.3 + 3 : r.dist * 0.6 + 20; // a directed shot only clears its own sight line
+    U.uHalf.value = shotBlocked ? 0 : 0.5; // ...unless something is in the way: then everything on the camera's side of the subject ducks
     U.uCut.value = clamp((1.3 - r.el) / 0.15) * clamp((700 - r.dist) / 300);
     for (const s of W.signs) s.m.visible = U.uGrow.value > 0.9 && cutWeight(s.x, s.z) < 0.5;
     const half = clamp(r.dist * 0.55, 45, 260), sc = this.sun.shadow.camera;
@@ -620,8 +803,8 @@ export class Stage {
       sc.updateProjectionMatrix();
       this.sun.shadow.normalBias = (half / 1024) * 1.4;
     }
-    this.sun.target.position.set(r.tx, 0, r.tz);
-    this.sun.position.set(r.tx + this.sunDir.x * (half * 1.7 + 60), this.sunDir.y * (half * 1.7 + 60), r.tz + this.sunDir.z * (half * 1.7 + 60));
+    this.sun.target.position.set(r.tx, r.ty, r.tz);
+    this.sun.position.set(r.tx + this.sunDir.x * (half * 1.7 + 60), r.ty + this.sunDir.y * (half * 1.7 + 60), r.tz + this.sunDir.z * (half * 1.7 + 60));
     if (this.sky.night) {
       this.lampT -= real;
       if (this.lampT < 0) {
@@ -630,7 +813,7 @@ export class Stage {
         this.lampLights.forEach((pl, i) => {
           const l = lamps[i];
           pl.intensity = l ? 26 : 0;
-          if (l) pl.position.set(l[0].X, l[0].y - 0.4, l[0].Z);
+          if (l) pl.position.set(l[0].X, l[0].y - 0.4 + W.landY(l[0].X, l[0].Z), l[0].Z);
         });
       }
     }

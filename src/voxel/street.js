@@ -52,10 +52,11 @@ export function dress(W) {
   const at = (s, off, flip = false) => {
     path.at(s, fr);
     const X = fr.x - fr.tz * off, Z = fr.z + fr.tx * off, th = Math.atan2(-fr.tz, fr.tx) + (flip ? Math.PI : 0);
-    v.setT(th, X, Z); gl.setT(th, X, Z);
-    return { X, Z, th };
+    const y = W.hAt(X, Z);
+    v.setT(th, X, Z, y); gl.setT(th, X, Z, y);
+    return { X, Z, th, y };
   };
-  const holder = (f) => { const g = new THREE.Group(); g.position.set(f.X, 0, f.Z); g.rotation.y = f.th; group.add(g); return g; };
+  const holder = (f) => { const g = new THREE.Group(); g.position.set(f.X, f.y, f.Z); g.rotation.y = f.th; group.add(g); return g; };
   const okT = new Uint8Array(256);
   for (const c of [C.WALK, C.LAND, C.PLAZA, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.PARKING, C.CURB, C.FOOT, C.DIRT, C.PED]) okT[c] = 1;
   const cls = (s, off) => { const p = path.xz(s, off); return G.get(p[0], p[1]); };
@@ -198,7 +199,7 @@ export function dress(W) {
       if (!rnd.chance(dens) || L.zebras.some((z) => Math.abs(z - s) < 3.2)) continue;
       if (cls(s, pz) !== road || cls(s, L.hw + 0.6) !== C.CURB && cls(s, hb + 0.8) !== C.WALK) continue;
       const car = P.makeCar(rnd, 'car', false), f = at(s, pz);
-      car.g.position.set(f.X, 0, f.Z);
+      car.g.position.set(f.X, f.y, f.Z);
       car.g.rotation.y = f.th + Math.PI / 2;
       group.add(car.g);
       A.parked.push({ s, z: pz });
@@ -235,6 +236,7 @@ export function dress(W) {
     const s = rnd.range(sA, sB), off = rnd.range(-70, 70), p = path.xz(s, off);
     if (G.get(p[0], p[1]) !== C.SAND || G.get(p[0] + 2, p[1]) !== C.SAND || G.get(p[0] - 2, p[1] + 2) !== C.SAND) continue;
     const c = rnd.pick(['#e63946', '#ffb703', '#3a86ff', '#ff70a6', '#06d6a0']), [x, z] = p;
+    v.setT(0, 0, 0, W.hAt(x, z));
     v.box(x, 0, z, 0.08, 2.0, 0.08, '#eee');
     for (let k = 0; k < 4; k++) v.box(x - 0.9 + k * 0.6, 2.0, z, 0.6, 0.12, 2.2, k % 2 ? c : '#ffffff');
     v.box(x, 2.12, z, 1.2, 0.12, 1.2, c);

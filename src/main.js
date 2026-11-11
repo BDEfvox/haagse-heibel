@@ -5,7 +5,7 @@ import '@fontsource/fredoka/600.css';
 import '@fontsource/fredoka/700.css';
 import './style.css';
 import { createMap, LV, LV_NAMES } from './map.js';
-import { Stage, preload } from './voxel/stage.js';
+import { Stage, preload, VIEW_TAN } from './voxel/stage.js';
 import { mixFor, THEMES, GAG_NAMES } from './voxel/gags.js';
 import { sfx, startMusic, stopMusic, isMuted, setMuted, unlock } from './audio.js';
 
@@ -22,6 +22,8 @@ const CREDITS = [
   ['3DBAG by tudelft3d and 3DGI', 'https://docs.3dbag.nl/en/copyright/', 'CC BY 4.0'],
   ['CBS Wijken en buurten (via PDOK)', 'https://www.cbs.nl/nl-nl/dossier/nederland-regionaal/geografische-data/wijk-en-buurtkaart-2025', 'CC BY 4.0'],
   ['Politie open data: registered crime per neighbourhood', 'https://data.politie.nl/', 'open data'],
+  ['AHN height model (Rijkswaterstaat, via PDOK)', 'https://www.ahn.nl/', 'CC0'],
+  ['Tree register, Gemeente Den Haag', 'https://data.overheid.nl/dataset/bomen-gpkg', 'CC0'],
   ['Noto Sans font glyphs', 'https://openfontlicense.org/', 'SIL OFL 1.1'],
 ];
 const WHY = {
@@ -46,9 +48,17 @@ async function boot() {
   $('#legend').innerHTML = [1, 2, 3, 4, 5].map((l) => `<div><i style="background:${LV[l]}"></i>${LV_NAMES[l]}</div>`).join('');
 
   // ------------------------------------------------------------ map + tooltip
-  const tip = $('#tip'), mapEl = $('#map'), cut = $('#cutscene'), speed = $('#speed');
+  const tip = $('#tip'), mapEl = $('#map'), cut = $('#cutscene');
   const geomOf = (p) => streets.features[p.id]?.geometry.coordinates;
   let warmT = 0;
+  /** While zoomed in close: a ring on the spot and a hint that zooming further drops you in. */
+  const zoomCue = (pt) => {
+    const cue = $('#zoomcue'), h = $('#hint');
+    cue.classList.toggle('on', !!pt);
+    if (pt) { cue.style.left = pt.x + 'px'; cue.style.top = pt.y + 'px'; }
+    if (pt && !h.dataset.was) { h.dataset.was = h.textContent; h.textContent = 'Keep zooming in to drop into the street'; }
+    else if (!pt && h.dataset.was) { h.textContent = h.dataset.was; delete h.dataset.was; }
+  };
   const badge = (l) => `<span class="lv" style="background:${LV[l]}">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= l ? 'on' : ''}"></i>`).join('')}<b>${LV_NAMES[l].toUpperCase()}</b></span>`;
   const api = createMap(mapEl, { buurten, streets, context }, {
     hover(p, pt, changed) {
@@ -70,6 +80,12 @@ async function boot() {
     },
     street: (p, pt) => openStreet(S[p.id] || p, pt),
     buurt: () => play('click'),
+    // zooming in far enough on a street drops you into it
+    zoom: (z, pt) => zoomCue(pt),
+    deep(pt) {
+      const f = pt && api.nearestStreet(pt);
+      if (f) openStreet(S[f.id] || f.properties, pt);
+    },
   });
 
   // ------------------------------------------------------------ boards
@@ -114,7 +130,7 @@ async function boot() {
       <li><b>Neighbourhood level</b> is real: registered crimes in ${num(meta.year)} per neighbourhood (buurt), published by the Dutch police via CBS. Citywide average: <b>${num(meta.cityRate)}</b> per 1,000 residents.</li>
       <li><b>Street level</b> is an estimate. Street-by-street crime figures are not public in the Netherlands, so every street starts with its neighbourhood's score and gets nudged by what is on it.</li>
       <li><b>What happens on the street</b> follows the neighbourhood's crime mix: the more a kind of crime is registered there, and the more it stands out from the city average, the more often its cartoon plays. Categories that are no laughing matter count towards the level but have no cartoon.</li>
-      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water, parks and trees (OpenStreetMap). Shop signs are generic, not real businesses.</li>
+      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water and parks (OpenStreetMap), ground heights (AHN, stretched a little so slopes and quays show) and street trees (the municipal tree register). Shop signs are generic, not real businesses.</li>
       <li>Registered crime depends on reporting and on how many visitors an area gets — a busy centre always looks worse than a sleepy suburb. The cartoon scenes are jokes, not a safety guide and not a verdict on anyone who lives there.</li>
     </ul>
     <p>Sources and licences: ${CREDITS.map((c) => `<a href="${c[1]}" target="_blank" rel="noopener noreferrer">${c[0]}</a> (${c[2]})`).join(' · ')}. The map data has been simplified, combined and redrawn for this site.</p>`;
@@ -201,6 +217,19 @@ async function boot() {
     }
   };
   hooks.onPin = () => play('whoosh');
+  // zooming all the way out hands over to the map
+  hooks.onExit = () => closeStreet(true);
+  hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; };
+  hooks.onCard = (title, sub, dur) => {
+    const c = $('#cine-card');
+    c.firstElementChild.textContent = title;
+    c.lastElementChild.textContent = sub;
+    c.style.setProperty('--dur', `${Math.min(6, Math.max(0.8, dur))}s`);
+    c.classList.remove('in');
+    void c.offsetWidth;
+    c.classList.add('in');
+    play('slam');
+  };
   hooks.onContextLost = () => { if (current || opening) recover('The graphics card dropped the scene. Pick a street to try again.'); };
   // debug switches from the URL are validated: anything else is ignored
   // (and they only exist on the dev server: on the live site nobody can dress a street up as "Mayhem" with a link)
@@ -218,16 +247,25 @@ async function boot() {
     stopMusic();
     cut.hidden = true;
     cut.classList.remove('open', 'titled', 'swap', 'close');
-    mapEl.classList.remove('dive', 'anticipate', 'rise');
-    speed.classList.remove('on');
-    mapEl.style.transformOrigin = '';
+    delete cut.dataset.cine;
+    mapEl.classList.remove('lock');
+    zoomCue(null);
     current = null;
     opening = false;
     behind(false);
+    api.lock(false);
     api.setEnabled(true);
     history.replaceState(null, '', location.pathname + location.search);
     if (msg) $('#hint').textContent = msg;
   }
+  // ---- a map zoom level and a camera height that show the same stretch of city
+  const EARTH = 40075016.686;
+  const viewH = () => mapEl.clientHeight || window.innerHeight;
+  const distFor = (zoom, lat) => (viewH() * EARTH * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** zoom * 2 * VIEW_TAN);
+  const zoomFor = (dist, lat) => Math.log2((viewH() * EARTH * Math.cos((lat * Math.PI) / 180)) / (512 * 2 * VIEW_TAN * dist));
+  const mapView = () => { const c = api.map.getCenter(); return { lngLat: [c.lng, c.lat], dist: distFor(api.map.getZoom(), c.lat) }; };
+  let entry = null; // the map view we dropped in from: going back rises to that height again
+
   async function openStreet(p0, pt) {
     if (busy || !p0) return;
     busy = true;
@@ -247,34 +285,30 @@ async function boot() {
     unlock();
     await api.ready;
     api.setEnabled(false);
+    api.lock(true);
     tip.hidden = true;
+    zoomCue(null);
     let lngLat;
     if (pt) { const ll = api.map.unproject([pt.x, pt.y]); lngLat = [ll.lng, ll.lat]; }
     const swap = !!current;
     cut.dataset.mode = 'drop';
     delete cut.dataset.roamed;
+    delete cut.dataset.cine;
+    $('#roam').classList.remove('in');
+    $('#cine-card').classList.remove('in');
     $('#btn-follow').hidden = true;
     $('#drag-hint').textContent = '';
-    // the world around the street loads while the map dives
-    const ready = stage.show(p, hooks, stageOpts(p, lngLat));
+    if (!swap) entry = mapView();
+    // the world around the street is built while the map waits; the camera then starts from exactly the map's view
+    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat), from: swap ? null : entry });
     stage.hold = true;
     if (swap) {
       play('whoosh');
       cut.classList.remove('titled');
       cut.classList.add('swap');
     } else {
-      play('click'); play('whoosh');
-      const at = pt || api.streetPoint(p);
-      speed.style.setProperty('--sx', `${((at.x / window.innerWidth) * 100 * 0.714 + 14.3).toFixed(1)}%`);
-      speed.style.setProperty('--sy', `${((at.y / window.innerHeight) * 100 * 0.714 + 14.3).toFixed(1)}%`);
-      mapEl.style.transformOrigin = `${at.x}px ${at.y}px`;
-      mapEl.classList.add('anticipate');
-      await sleep(150);
-      mapEl.classList.remove('anticipate');
-      mapEl.classList.add('dive');
-      speed.classList.add('on');
-      api.dive(p, 900);
-      await sleep(760);
+      play('click');
+      mapEl.classList.add('lock');
     }
     const ok = await ready;
     if (!ok) {
@@ -282,12 +316,8 @@ async function boot() {
       recover('That street would not load. Try another one.');
       return;
     }
-    if (!swap) {
-      cut.style.setProperty('--ix', '50%');
-      cut.style.setProperty('--iy', '50%');
-      cut.hidden = false;
-    }
     if (!opening) return; // the scene was lost while it was being opened; recover() already ran
+    if (!swap) cut.hidden = false;
     current = p;
     opening = false;
     behind(true);
@@ -295,6 +325,8 @@ async function boot() {
     fillHud(p);
     cut.classList.remove('close', 'swap');
     cut.classList.add('open');
+    if (!swap) await sleep(240); // the voxel city fades in over the map before the camera starts to fall
+    play('whoosh');
     stage.hold = false;
     history.replaceState(null, '', `#s=${p.id}`);
     await sleep(520);
@@ -302,36 +334,37 @@ async function boot() {
     cut.classList.add('titled');
     play('jingle', p.level);
     startMusic(p.level);
-    mapEl.classList.remove('dive');
-    speed.classList.remove('on');
-    mapEl.style.transformOrigin = '';
-    if (!swap) api.restore(p);
+    mapEl.classList.remove('lock');
     await sleep(300);
   }
-  async function closeStreet() {
+  async function closeStreet(viaZoom) {
     if (busy || !current) return;
     busy = true;
-    try { await doClose(); } catch (e) { console.error(e); recover(); } finally { busy = false; }
+    try { await doClose(viaZoom === true); } catch (e) { console.error(e); recover(); } finally { busy = false; }
   }
-  async function doClose() {
+  async function doClose(viaZoom) {
     play('back');
     stopMusic();
-    cut.classList.remove('open', 'titled');
+    cut.classList.remove('titled');
+    delete cut.dataset.cine;
+    // rise to the height we came from (zooming out has already done that), then let the map take over at the same view
+    const to = await stage.leave(viaZoom ? 0 : Math.min(9000, Math.max(750, entry ? entry.dist : 2600)));
+    if (to) api.map.jumpTo({ center: to.lngLat, zoom: Math.min(16.7, Math.max(9.6, zoomFor(to.dist, to.lngLat[1]))), pitch: 0, bearing: 0 });
+    cut.classList.remove('open');
     cut.classList.add('close');
-    mapEl.classList.add('rise');
     history.replaceState(null, '', location.pathname + location.search);
-    await sleep(380);
+    await sleep(400);
     cut.hidden = true;
     cut.classList.remove('close');
     stage.hide();
     current = null;
     behind(false);
+    api.lock(false);
     api.setEnabled(true);
-    await sleep(350);
-    mapEl.classList.remove('rise');
   }
   $('#btn-back').onclick = closeStreet;
   $('#btn-follow').onclick = () => { play('click'); stage.follow(); };
+  $('#btn-skip').onclick = () => { play('click'); stage.skipCine(); };
   $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null));
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;

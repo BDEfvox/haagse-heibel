@@ -21,9 +21,16 @@ level, `&only=plofkraak` loops a single gag, and `__heibel.stage` is available i
 (`debugPlay('<gag>')`, `gagNames`). These switches do not exist in the built site, so nobody can
 share a link that shows a street at a level it does not have.
 
-In a street: the camera first follows the action; drag to take over (drag = move, right-drag or
-two fingers = turn, scroll or pinch = zoom, WASD/arrows also work). Red `!` pins mark gags elsewhere
-on the street; **Follow the action** hands the camera back.
+Getting in and out: click a street, or just keep zooming in on the map: past the closest zoom level
+the camera drops into the street under the pointer. The drop starts at the height that shows exactly
+what the map showed. Zooming all the way out of a street hands back to the map at the same spot;
+**◀ MAP** rises to the height you came from.
+
+In a street: the camera first follows the action, and the opening gag is shot like a film scene
+(cuts, close-ups, a title card; **SKIP** or any drag ends it). Drag to take over (drag = move,
+right-drag or two fingers = turn, scroll or pinch = zoom, WASD/arrows also work); you can roam the
+whole city. Red `!` pins mark gags elsewhere on the street; **Follow the action** hands the camera
+back.
 
 ## Where the numbers come from
 
@@ -32,6 +39,8 @@ on the street; **Follow the action** hands the camera back.
 | Neighbourhood borders, residents | CBS / PDOK *Wijken en buurten* 2025 |
 | Registered crimes per neighbourhood, 2025 | Politie open data via CBS table 47018NED |
 | Streets, shops, bars, tram lines, water, parks, trees | OpenStreetMap contributors (ODbL) |
+| Ground heights (dunes, quays, polders) | AHN height model, Rijkswaterstaat via PDOK (CC0) |
+| Street trees | Tree register, Gemeente Den Haag (CC0) |
 | Building outlines, heights, roof type, year built | 3DBAG by tudelft3d and 3DGI (CC BY 4.0) |
 | Map label glyphs (self-hosted in `public/fonts/`) | Noto Sans (SIL OFL 1.1) |
 
@@ -53,7 +62,8 @@ most. Categories that are no laughing matter count towards the level but have no
 
 `npm run data` rebuilds `public/data/` from the live sources (raw downloads are cached in `.cache/`).
 `npm run world` rebuilds `public/data/world/`: map tiles of buildings, ground, roads, rails, trees and
-points of interest, plus two low-resolution rasters of the whole city (slow the first time; cached).
+points of interest, plus three low-resolution rasters of the whole city: ground cover, building
+heights and terrain (slow the first time; cached).
 
 ## Caveats
 
@@ -78,15 +88,20 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
 
 ## How the street scenes work
 
-- `src/voxel/world.js` — loads the map tiles around a street and builds the scene: a pixel-grid
-  ground, real building footprints as voxel blocks (street-facing ones get full house fronts), trees,
-  and a coarse model of the whole city for the horizon and the sky drop
+- `src/voxel/world.js` — loads the map tiles around a street and builds the scene: relief from the
+  height model with a pixel-grid ground on it, water lying below its banks with quay walls, real
+  building footprints as voxel blocks (street-facing ones get full house fronts) and trees
+- Level of detail, also in `world.js`: the whole city is always there as a relief map with plain
+  building blocks (16 m cells near the camera, 32 m further out, chosen in the shader). Close to the
+  ground, 256 m tiles with real outlines, ground, water and trees are streamed in around the camera
+  and dropped again when it moves on; high up they step aside for the blocks
 - `src/voxel/geo.js` — paths you can walk along, the ground raster, footprint boxes
 - `src/voxel/street.js` — lanes and pavements fitted between the real fronts, street furniture, and
   the 48 m "spots" where gags play
 - `src/voxel/gags.js` — background street life plus 23 scripted gags, weighted by crime level and
   crime mix. Gags are written for a straight street; the stage bends them onto the real one
-- `src/voxel/stage.js` — renderer, lighting per level (sunny → night), the sky drop, the
-  follow-the-action camera, free roam, and the cutaway that flattens buildings in the camera's way
+- `src/voxel/stage.js` — renderer, lighting per level (sunny → night), the drop from map height, the
+  follow-the-action camera, the cinematic shots a gag can direct (`ctx.cam(name)`), free roam, the
+  hand-over back to the map, and the cutaway that flattens buildings in the camera's way
 - `src/voxel/kit.js`, `props.js`, `cast.js` — voxel builder, Dutch row houses, trams, cars, people
 - `src/map.js` — MapLibre map with the hover glow; `src/audio.js` — synthesized sound and music

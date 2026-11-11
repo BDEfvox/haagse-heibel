@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@turf/bbox-clip": "^7.4.0",
+    "geotiff": "^3.0.5",
     "pngjs": "^7.0.0",
     "polylabel": "^2.1.0",
     "vite": "^8.3.7"

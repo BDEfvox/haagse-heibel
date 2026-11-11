@@ -5,8 +5,9 @@ import { TAU } from './kit.js';
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _c = new THREE.Color();
 
 class Pool {
-  constructor(scene, cap, mat) {
+  constructor(scene, cap, mat, owner) {
     this.cap = cap;
+    this.owner = owner;
     this.mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, cap);
     this.mesh.frustumCulled = false;
     this.mesh.castShadow = false;
@@ -28,7 +29,7 @@ class Pool {
       rx: Math.random() * TAU, ry: Math.random() * TAU, rz: Math.random() * TAU,
       wx: (Math.random() - 0.5) * (o.spin ?? 10), wy: (Math.random() - 0.5) * (o.spin ?? 10), wz: (Math.random() - 0.5) * (o.spin ?? 10),
       sx: o.sx ?? o.size ?? 0.2, sy: o.sy ?? o.size ?? 0.2, sz: o.sz ?? o.size ?? 0.2,
-      life: o.life ?? 1.2, age: 0, g: o.g ?? 22, drag: o.drag ?? 0.2, grow: o.grow || 0, bounce: o.bounce ?? 0.4, floor: o.floor ?? 0.02, flutter: o.flutter || 0,
+      life: o.life ?? 1.2, age: 0, g: o.g ?? 22, drag: o.drag ?? 0.2, grow: o.grow || 0, bounce: o.bounce ?? 0.4, floor: (o.floor ?? 0.02) + (o.floor < -50 ? 0 : this.owner.ground(o.x, o.z)), flutter: o.flutter || 0,
     });
   }
   update(dt) {
@@ -81,8 +82,13 @@ export class Fx {
   constructor(scene, camera, overlay) {
     this.camera = camera;
     this.overlay = overlay;
-    this.solid = new Pool(scene, 900, new THREE.MeshLambertMaterial());
-    this.glow = new Pool(scene, 500, new THREE.MeshBasicMaterial({ toneMapped: false }));
+    /** Height of the ground at a scene position (debris lands on it). */
+    this.ground = () => 0;
+    /** Camera distance: comic text shrinks and fades as the camera pulls away. */
+    this.zoom = 60;
+    this.alpha = 1;
+    this.solid = new Pool(scene, 900, new THREE.MeshLambertMaterial(), this);
+    this.glow = new Pool(scene, 500, new THREE.MeshBasicMaterial({ toneMapped: false }), this);
     this.texts = [];
     this.shakeAmt = 0;
   }
@@ -164,6 +170,10 @@ export class Fx {
     this.glow.update(dt);
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * (1.2 + this.shakeAmt * 2.4));
     const w = this.overlay.clientWidth, h = this.overlay.clientHeight;
+    // words belong to the street: from further away they shrink, then slowly fade out
+    const want = 1 - Math.min(1, Math.max(0, (this.zoom - 115) / 150));
+    this.alpha += (want - this.alpha) * Math.min(1, dt * 1.6);
+    const a = this.alpha < 0.02 ? 0 : this.alpha, sc = Math.min(1.1, Math.max(0.5, 78 / this.zoom));
     for (let i = this.texts.length - 1; i >= 0; i--) {
       const t = this.texts[i];
       t.t += dt;
@@ -172,8 +182,9 @@ export class Fx {
       else { const o = t.src.g || t.src; o.updateWorldMatrix(true, false); _p.setFromMatrixPosition(o.matrixWorld); }
       _p.y += t.off + (t.t / t.dur) * t.rise;
       _p.project(this.camera);
-      t.el.style.visibility = _p.z > 1 ? 'hidden' : '';
-      t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px)`;
+      t.el.style.visibility = _p.z > 1 || a === 0 ? 'hidden' : '';
+      t.el.style.opacity = a;
+      t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px) scale(${sc.toFixed(3)})`;
     }
   }
   dispose() {

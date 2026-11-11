@@ -1,12 +1,14 @@
 // World data pipeline for the Hague crime map: tiles + whole-city rasters + index.
 // Usage: node scripts/build-world.mjs   (raw responses cached in .cache/world/, delete to refetch)
-// Sources: 3DBAG WFS (buildings), OpenStreetMap via Overpass (everything else), public/data/context.geojson (land mask).
+// Sources: 3DBAG WFS (buildings), OpenStreetMap via Overpass (everything else), public/data/context.geojson (land mask),
+// PDOK AHN WCS (terrain, DTM 0.5 m), Gemeente Den Haag tree register (ArcGIS FeatureServer).
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import bboxClip from '@turf/bbox-clip';
 import { PNG } from 'pngjs';
+import { fromArrayBuffer } from 'geotiff';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CACHE = path.join(ROOT, '.cache', 'world');
@@ -475,27 +477,154 @@ await eachSub('lines', (el) => {
 // ================================================================= 2c. TREES
 console.log('[2c] trees');
 function addTree(x, y) {
-  if (!inWorld(x, y)) return;
+  if (!inWorld(x, y)) return false;
   const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
-  if (!eligible.has(tileKey(tx, ty))) return;
+  if (!eligible.has(tileKey(tx, ty))) return false;
   getTile(tx, ty).t.push(dm(x, tx * TILE), dm(y, ty * TILE));
   stats.trees++;
+  return true;
+}
+// spatial hash (2.5 m cells) of the OSM trees, so register trees can be de-duplicated against them
+const DEDUP = 2.5;
+const osmHash = new Map();
+const hkey = (cx, cy) => cx * 100003 + cy;
+function osmNear(x, y) {
+  const cx = Math.floor(x / DEDUP), cy = Math.floor(y / DEDUP);
+  for (let i = cx - 1; i <= cx + 1; i++) for (let j = cy - 1; j <= cy + 1; j++) {
+    const l = osmHash.get(hkey(i, j));
+    if (l) for (let k = 0; k < l.length; k += 2) if ((l[k] - x) ** 2 + (l[k + 1] - y) ** 2 < DEDUP * DEDUP) return true;
+  }
+  return false;
+}
+function addOsmTree(x, y) {
+  if (!addTree(x, y)) return;
+  const k = hkey(Math.floor(x / DEDUP), Math.floor(y / DEDUP));
+  (osmHash.get(k) || osmHash.set(k, []).get(k)).push(x, y);
 }
 await eachSub('trees', (el) => {
-  if (el.type === 'node') { const [x, y] = proj(el.lon, el.lat); addTree(x, y); return; }
+  if (el.type === 'node') { const [x, y] = proj(el.lon, el.lat); addOsmTree(x, y); return; }
   if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
   const pts = mpts(el.geometry);
   let carry = 0; // distance to next tree
-  addTree(pts[0][0], pts[0][1]);
+  addOsmTree(pts[0][0], pts[0][1]);
   carry = 8;
   for (let i = 0; i + 1 < pts.length; i++) {
     const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
     const len = Math.hypot(bx - ax, by - ay);
     let d = carry;
-    while (d <= len) { addTree(ax + ((bx - ax) * d) / len, ay + ((by - ay) * d) / len); d += 8; }
+    while (d <= len) { addOsmTree(ax + ((bx - ax) * d) / len, ay + ((by - ay) * d) / len); d += 8; }
     carry = d - len;
   }
 });
+
+stats.treesOsm = stats.trees;
+
+// Gemeente Den Haag tree register ("Bomen met ID", ArcGIS FeatureServer on the municipal open-data portal), ~124k points, cached as one file.
+const TREE_SERVICE = 'https://services1.arcgis.com/sbwSZYQOs4GMs7tr/arcgis/rest/services/Bomen_met_ID/FeatureServer/0';
+async function fetchRetry(url, what, asBuffer) {
+  let lastErr;
+  for (let a = 0; a < 5; a++) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(180000), headers: { 'User-Agent': UA } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return asBuffer ? Buffer.from(await r.arrayBuffer()) : await r.json();
+    } catch (e) { lastErr = e; console.log(`  ${what} failed: ${e.message}`); await sleep(3000 * (a + 1)); }
+  }
+  throw lastErr;
+}
+async function treeRegister() {
+  const f = path.join(CACHE, 'trees_register.json.gz');
+  if (fs.existsSync(f)) return JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString());
+  const q = `${TREE_SERVICE}/query?where=1%3D1&returnCountOnly=true&f=json`;
+  const total = (await fetchRetry(q, 'tree count')).count;
+  if (!(total > 50000 && total < 1000000)) throw new Error('implausible tree register size ' + total);
+  const pts = []; // flat lon, lat
+  for (let off = 0; off < total; off += 2000) {
+    const u = `${TREE_SERVICE}/query?where=1%3D1&outFields=OBJECTID&orderByFields=OBJECTID&resultOffset=${off}&resultRecordCount=2000&outSR=4326&geometryPrecision=7&f=json`;
+    const j = await fetchRetry(u, 'tree page ' + off);
+    if (!Array.isArray(j.features)) throw new Error('no features at offset ' + off);
+    for (const ft of j.features) if (ft.geometry && Number.isFinite(ft.geometry.x) && Number.isFinite(ft.geometry.y)) pts.push(ft.geometry.x, ft.geometry.y);
+    await sleep(200);
+  }
+  if (pts.length / 2 < total * 0.95) throw new Error(`tree register incomplete: ${pts.length / 2} of ${total}`);
+  fs.writeFileSync(f, zlib.gzipSync(JSON.stringify(pts)));
+  console.log(`  tree register downloaded: ${pts.length / 2} points`);
+  return pts;
+}
+{
+  const pts = await treeRegister();
+  let seen = 0, dup = 0, added = 0;
+  for (let i = 0; i < pts.length; i += 2) {
+    const [x, y] = proj(pts[i], pts[i + 1]);
+    if (!inWorld(x, y)) continue;
+    seen++;
+    if (osmNear(x, y)) { dup++; continue; }
+    if (addTree(x, y)) added++;
+  }
+  console.log(`  tree register: ${pts.length / 2} points, ${seen} in extent, ${dup} duplicates of OSM trees (<${DEDUP} m), ${added} added`);
+  stats.treesRegister = added;
+}
+
+// ================================================================= 2e. TERRAIN SOURCE (AHN DTM via PDOK WCS)
+console.log('[2e] AHN terrain');
+const AHN_WCS = 'https://service.pdok.nl/rws/ahn/wcs/v1_0';
+const AHN_CH = 2000, AHN_PX = 4; // 2 km chunks at 4 m pixels (500 x 500)
+const TGW = W2 / 4, TGH = H2 / 4; // terrain grid = ground grid (8 m)
+// RD position of every pixel corner of the terrain grid (lattice (TGW+1) x (TGH+1)); pixel samples interpolate between them
+const LAT_X = new Float64Array((TGW + 1) * (TGH + 1)), LAT_Y = new Float64Array((TGW + 1) * (TGH + 1));
+for (let r = 0; r <= TGH; r++) for (let c = 0; c <= TGW; c++) {
+  const [rx, ry] = toRD(latOf(EXT[3] - r * 8), lonOf(EXT[0] + c * 8));
+  LAT_X[r * (TGW + 1) + c] = rx; LAT_Y[r * (TGW + 1) + c] = ry;
+}
+let AHN = null; // {mos, mw, mh, rx0, mtop}
+{
+  let ax0 = Infinity, ax1 = -Infinity, ay0 = Infinity, ay1 = -Infinity;
+  for (let i = 0; i < LAT_X.length; i++) { const x = LAT_X[i], y = LAT_Y[i]; if (x < ax0) ax0 = x; if (x > ax1) ax1 = x; if (y < ay0) ay0 = y; if (y > ay1) ay1 = y; }
+  const rx0 = Math.floor((ax0 - 20) / AHN_CH) * AHN_CH, ry0 = Math.floor((ay0 - 20) / AHN_CH) * AHN_CH;
+  const nx = Math.ceil((ax1 + 20 - rx0) / AHN_CH), ny = Math.ceil((ay1 + 20 - ry0) / AHN_CH);
+  const cpx = AHN_CH / AHN_PX;
+  const mw = nx * cpx, mh = ny * cpx, mtop = ry0 + ny * AHN_CH;
+  const mos = new Float32Array(mw * mh).fill(NaN);
+  // only chunks that contain a pixel of the grid
+  const need = new Set();
+  for (let r = 0; r <= TGH; r += 2) for (let c = 0; c <= TGW; c += 2) {
+    const i = r * (TGW + 1) + c;
+    need.add(Math.floor((LAT_X[i] - rx0) / AHN_CH) * 1000 + Math.floor((LAT_Y[i] - ry0) / AHN_CH));
+  }
+  for (const [dr, dc] of [[0, 0], [TGH, 0], [0, TGW], [TGH, TGW]]) { const i = dr * (TGW + 1) + dc; need.add(Math.floor((LAT_X[i] - rx0) / AHN_CH) * 1000 + Math.floor((LAT_Y[i] - ry0) / AHN_CH)); }
+  let nf = 0, ncache = 0;
+  for (let ci = 0; ci < nx; ci++) for (let cj = 0; cj < ny; cj++) {
+    if (!need.has(ci * 1000 + cj)) continue;
+    const bb = [rx0 + ci * AHN_CH, ry0 + cj * AHN_CH, rx0 + (ci + 1) * AHN_CH, ry0 + (cj + 1) * AHN_CH];
+    const f = path.join(CACHE, `ahn_${ci}_${cj}.tif`);
+    if (fs.existsSync(f)) ncache++;
+    else {
+      const url = `${AHN_WCS}?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=dtm_05m&FORMAT=image/tiff&SUBSET=x(${bb[0]},${bb[2]})&SUBSET=y(${bb[1]},${bb[3]})&SCALEFACTOR=${0.5 / AHN_PX}`;
+      let buf = null, lastErr;
+      for (let a = 0; a < 5 && !buf; a++) {
+        const b = await fetchRetry(url, `ahn ${ci},${cj}`, true);
+        if (b.length > 8 && b[0] === 0x49 && b[1] === 0x49 && b[2] === 42) buf = b; // little-endian TIFF magic; otherwise an OGC exception document
+        else { lastErr = new Error('not a TIFF: ' + b.subarray(0, 200).toString()); await sleep(3000 * (a + 1)); }
+      }
+      if (!buf) throw lastErr;
+      fs.writeFileSync(f, buf);
+      await sleep(300);
+    }
+    nf++;
+    const raw = fs.readFileSync(f);
+    const img = await (await fromArrayBuffer(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength))).getImage();
+    const w = img.getWidth(), h = img.getHeight(), ibb = img.getBoundingBox();
+    if (w !== cpx || h !== cpx || Math.abs(ibb[0] - bb[0]) > 0.01 || Math.abs(ibb[3] - bb[3]) > 0.01 || Math.abs(ibb[2] - bb[2]) > 0.01 || Math.abs(ibb[1] - bb[1]) > 0.01) throw new Error(`ahn chunk ${ci},${cj}: unexpected size/extent ${w}x${h} ${ibb}`);
+    const data = (await img.readRasters({ interleave: true }));
+    const col0 = ci * cpx, row0 = (ny - 1 - cj) * cpx;
+    for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+      const v = data[r * w + c];
+      mos[(row0 + r) * mw + col0 + c] = v > -50 && v < 400 ? v : NaN; // nodata is float max
+    }
+  }
+  console.log(`  AHN DTM: ${nf} chunks (${ncache} cached), mosaic ${mw}x${mh} at ${AHN_PX} m`);
+  AHN = { mos, mw, mh, rx0, mtop };
+}
 
 // ================================================================= 2d. POIs
 console.log('[2d] pois');
@@ -667,6 +796,7 @@ function drawLine(pts, hw, arr, W, H, cell, val) {
 }
 
 // 5a. ground raster at 2 m
+let GROUND8 = null, TERRAIN = null; // 8 m ground classes, reused by the terrain raster
 const G2 = new Uint8Array(W2 * H2).fill(10); // sea
 {
   const ctx = JSON.parse(fs.readFileSync(path.join(ROOT, 'public', 'data', 'context.geojson'), 'utf8'));
@@ -702,6 +832,7 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   }
   const png = new PNG({ width: GW, height: GH, colorType: 0, inputColorType: 0, inputHasAlpha: false });
   png.data = Buffer.from(out.buffer);
+  GROUND8 = out;
   fs.writeFileSync(path.join(OUT, 'city-ground.png'), PNG.sync.write(png, { colorType: 0, inputColorType: 0, inputHasAlpha: false }));
   console.log(`  city-ground.png ${GW}x${GH}`);
 }
@@ -724,16 +855,116 @@ const G2 = new Uint8Array(W2 * H2).fill(10); // sea
   console.log(`  city-height.png ${HW}x${HH}`);
 }
 
+// 5c. terrain raster (AHN DTM, 8 m cells, 8-bit: v <= 100 -> -6 + 0.1 v, else 4 + 0.36 (v - 100))
+{
+  const GW = TGW, GH = TGH, N = GW * GH;
+  const { mos, mw, mh, rx0, mtop } = AHN;
+  const mosAt = (x, y) => {
+    const c = Math.floor((x - rx0) / AHN_PX), r = Math.floor((mtop - y) / AHN_PX);
+    return c >= 0 && c < mw && r >= 0 && r < mh ? mos[r * mw + c] : NaN;
+  };
+  let h = new Float32Array(N).fill(NaN);
+  const buf = [0, 0, 0, 0];
+  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
+    const i00 = r * (GW + 1) + c, i01 = i00 + 1, i10 = i00 + GW + 1, i11 = i10 + 1;
+    let n = 0;
+    for (const [fu, fv] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) { // bilinear inside the pixel, 4 sub-samples
+      const x = (LAT_X[i00] * (1 - fu) + LAT_X[i01] * fu) * (1 - fv) + (LAT_X[i10] * (1 - fu) + LAT_X[i11] * fu) * fv;
+      const y = (LAT_Y[i00] * (1 - fu) + LAT_Y[i01] * fu) * (1 - fv) + (LAT_Y[i10] * (1 - fu) + LAT_Y[i11] * fu) * fv;
+      const v = mosAt(x, y);
+      if (v === v) buf[n++] = v;
+    }
+    if (n) {
+      const s = buf.slice(0, n).sort((a, b) => a - b);
+      h[r * GW + c] = n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+    }
+  }
+  const SEA = 10;
+  let holes = 0, seaHoles = 0;
+  for (let i = 0; i < N; i++) if (h[i] !== h[i]) { if (GROUND8[i] === SEA) { h[i] = 0; seaHoles++; } else holes++; }
+  // fill remaining holes by iterative neighbour averaging (dilation)
+  let pass = 0;
+  for (let left = holes; left > 0 && pass < 1000; pass++) {
+    const nh = Float32Array.from(h);
+    let filled = 0;
+    for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
+      const i = r * GW + c;
+      if (h[i] === h[i]) continue;
+      let s = 0, k = 0;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const rr = r + dr, cc = c + dc;
+        if (rr < 0 || rr >= GH || cc < 0 || cc >= GW) continue;
+        const v = h[rr * GW + cc];
+        if (v === v) { s += v; k++; }
+      }
+      if (k) { nh[i] = s / k; filled++; }
+    }
+    h = nh;
+    left -= filled;
+    if (!filled) break;
+  }
+  let unfilled = 0;
+  for (let i = 0; i < N; i++) if (h[i] !== h[i]) { h[i] = 0; unfilled++; }
+  console.log(`  terrain: ${holes} land holes + ${seaHoles} sea holes, filled in ${pass} passes, ${unfilled} left`);
+  // 3x3 median, then a light [1 2 1] blur in both directions
+  const at = (a, r, c) => a[Math.min(GH - 1, Math.max(0, r)) * GW + Math.min(GW - 1, Math.max(0, c))];
+  const med = new Float32Array(N), w9 = new Array(9);
+  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
+    let k = 0;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) w9[k++] = at(h, r + dr, c + dc);
+    w9.sort((a, b) => a - b);
+    med[r * GW + c] = w9[4];
+  }
+  const tmp = new Float32Array(N), bl = new Float32Array(N);
+  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) tmp[r * GW + c] = (at(med, r, c - 1) + 2 * at(med, r, c) + at(med, r, c + 1)) / 4;
+  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) bl[r * GW + c] = (at(tmp, r - 1, c) + 2 * at(tmp, r, c) + at(tmp, r + 1, c)) / 4;
+  // sea = 0 m; land cells within BLEND cells of the sea fade towards 0 (chamfer distance in cells)
+  const BLEND = 4;
+  const dist = new Float32Array(N);
+  for (let i = 0; i < N; i++) dist[i] = GROUND8[i] === SEA ? 0 : 99;
+  const D1 = 1, D2 = Math.SQRT2;
+  for (let r = 0; r < GH; r++) for (let c = 0; c < GW; c++) {
+    const i = r * GW + c;
+    let d = dist[i];
+    if (c > 0) d = Math.min(d, dist[i - 1] + D1);
+    if (r > 0) { d = Math.min(d, dist[i - GW] + D1); if (c > 0) d = Math.min(d, dist[i - GW - 1] + D2); if (c < GW - 1) d = Math.min(d, dist[i - GW + 1] + D2); }
+    dist[i] = d;
+  }
+  for (let r = GH - 1; r >= 0; r--) for (let c = GW - 1; c >= 0; c--) {
+    const i = r * GW + c;
+    let d = dist[i];
+    if (c < GW - 1) d = Math.min(d, dist[i + 1] + D1);
+    if (r < GH - 1) { d = Math.min(d, dist[i + GW] + D1); if (c < GW - 1) d = Math.min(d, dist[i + GW + 1] + D2); if (c > 0) d = Math.min(d, dist[i + GW - 1] + D2); }
+    dist[i] = d;
+  }
+  const png8 = new Uint8Array(N);
+  TERRAIN = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    let v = bl[i];
+    if (GROUND8[i] === SEA) v = 0;
+    else if (dist[i] < BLEND) v *= dist[i] / BLEND;
+    TERRAIN[i] = v;
+    png8[i] = v <= 4 ? Math.max(0, Math.min(100, Math.round((v + 6) * 10))) : Math.min(255, 100 + Math.round((v - 4) / 0.36));
+  }
+  const png = new PNG({ width: GW, height: GH, colorType: 0, inputColorType: 0, inputHasAlpha: false });
+  png.data = Buffer.from(png8.buffer);
+  fs.writeFileSync(path.join(OUT, 'city-terrain.png'), PNG.sync.write(png, { colorType: 0, inputColorType: 0, inputHasAlpha: false }));
+  console.log(`  city-terrain.png ${GW}x${GH}`);
+}
+
 // ================================================================= 6. INDEX
 const index = {
   proj: { lon0: LON0, lat0: LAT0, kx: KX, ky: KY },
   extent: EXT, tile: TILE, tiles: tileList,
   ground: { file: 'city-ground.png', cell: 8, w: W2 / 4, h: H2 / 4 },
   height: { file: 'city-height.png', cell: 16, w: W2 / 8, h: H2 / 8 },
+  terrain: { file: 'city-terrain.png', cell: 8, w: W2 / 4, h: H2 / 4, enc: [-6, 0.1, 100, 4, 0.36] },
   sources: [
     { name: '3DBAG (TU Delft / Kadaster) building footprints and heights, WFS', url: 'https://data.3dbag.nl/' },
     { name: 'OpenStreetMap contributors via Overpass API (ODbL)', url: 'https://overpass-api.de/' },
     { name: 'CBS/PDOK Wijken en buurten (municipality land mask)', url: 'https://service.pdok.nl/cbs/wijkenbuurten/2025/wfs/v1_0' },
+    { name: 'AHN DTM 0.5 m (Rijkswaterstaat / Het Waterschapshuis, CC0) via PDOK WCS', url: 'https://service.pdok.nl/rws/ahn/wcs/v1_0' },
+    { name: 'Bomen (Gemeente Den Haag tree register, open data, CC0 1.0; layer "Bomen met ID")', url: 'https://services1.arcgis.com/sbwSZYQOs4GMs7tr/arcgis/rest/services/Bomen_met_ID/FeatureServer/0' },
   ],
   generated: new Date().toISOString(),
 };
@@ -747,5 +978,5 @@ console.log(`3DBAG raw features ${stats.bagRaw} (dups ${stats.bagDup}); building
 console.log('ground polygons per class', JSON.stringify(stats.ground));
 console.log('roads per class', JSON.stringify(stats.roads));
 console.log('rails per kind', JSON.stringify(stats.rails));
-console.log(`trees in tiles ${stats.trees}; pois (world) per kind ${JSON.stringify(stats.pois)}`);
+console.log(`trees in tiles ${stats.trees} (OSM ${stats.treesOsm}, register ${stats.treesRegister}); pois (world) per kind ${JSON.stringify(stats.pois)}`);
 console.log(`tiles written ${tileList.length}; tile json ${(tilesBytes / 1e6).toFixed(1)} MB; largest ${largest.k} ${(largest.size / 1e6).toFixed(2)} MB; world dir total ${(total / 1e6).toFixed(1)} MB`);
