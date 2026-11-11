@@ -213,7 +213,27 @@ async function boot() {
     stage.setSky(SKIES[skyIx][0]);
     play('click');
   };
-  let busy = false, current = null, count = 0;
+  // panels fold away and stay that way: the case file, the news bar, the map's menu. On a small screen the case file
+  // and the menu start folded, so the street is what you see first.
+  let ui = {};
+  try { ui = JSON.parse(localStorage.getItem('heibel-ui') || '{}') || {}; } catch (e) { ui = {}; }
+  const smallScreen = matchMedia('(max-width: 760px)').matches;
+  for (const [key, box, btn, name] of [['file', '#file', '#file-fold', 'the case file'], ['news', '#ticker', '#news-fold', 'the news'], ['panel', '#panel', '#panel-fold', 'the menu']]) {
+    const el = $(box), b = $(btn);
+    const set = (shut) => { el.classList.toggle('shut', shut); b.setAttribute('aria-expanded', String(!shut)); b.title = shut ? `Show ${name}` : `Hide ${name}`; };
+    set(key in ui ? !!ui[key] : smallScreen && key !== 'news');
+    b.onclick = () => {
+      const shut = !el.classList.contains('shut');
+      set(shut);
+      ui[key] = shut ? 1 : 0;
+      try { localStorage.setItem('heibel-ui', JSON.stringify(ui)); } catch (e) { /* private mode */ }
+      play('click');
+    };
+  }
+  let busy = false, current = null, count = 0, hintT = 0, settleT = 0;
+  // the street name is big while it introduces the street, then shrinks to a label
+  const settle = (on) => { clearTimeout(settleT); cut.classList.remove('settled'); if (on) settleT = setTimeout(() => cut.classList.add('settled'), 7000); };
+  new MutationObserver(() => { const t = cut.classList.contains('titled'); if (t !== settle.on) { settle.on = t; settle(t); } }).observe(cut, { attributes: true, attributeFilter: ['class'] });
   const hooks = {
     onNews(t) {
       const n = $('#news');
@@ -274,7 +294,11 @@ async function boot() {
   };
   hooks.onMode = (mode) => {
     cut.dataset.mode = mode;
-    $('#drag-hint').textContent = HINTS[mode] || '';
+    const dh = $('#drag-hint');
+    dh.textContent = HINTS[mode] || '';
+    dh.classList.remove('old');
+    clearTimeout(hintT);
+    hintT = setTimeout(() => dh.classList.add('old'), 8000); // said once, then out of the way
     $('#btn-follow').hidden = mode !== 'free';
     if (mode === 'free' && !cut.dataset.roamed) {
       cut.dataset.roamed = '1';

@@ -17,6 +17,7 @@
       </header>
 
       <aside id="panel">
+        <button id="panel-fold" class="fold" aria-expanded="true">MENU<i></i></button>
         <div class="search">
           <input id="search" type="search" placeholder="Find a street…" autocomplete="off" spellcheck="false" />
           <ul id="results" hidden></ul>
@@ -61,11 +62,11 @@
             <div class="meter" id="t-meter"></div>
           </div>
           <div id="file">
-            <h3>CASE FILE</h3>
+            <button id="file-fold" class="fold" aria-expanded="true" aria-controls="file-body">CASE FILE<i></i></button>
             <div id="file-body"></div>
           </div>
           <div id="ticker">
-            <span class="tag">HEIBEL NEWS</span>
+            <button id="news-fold" class="tag fold" aria-expanded="true" aria-controls="news">HEIBEL NEWS<i></i></button>
             <span id="news"></span>
             <span class="count">SHENANIGANS <b id="count">000</b></span>
           </div>

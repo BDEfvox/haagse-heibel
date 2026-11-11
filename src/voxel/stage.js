@@ -777,6 +777,8 @@ export class Stage {
     const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + (opts.seed || '') + '|stage'));
     const path = W.path, len = path.sB - path.sA;
     this.fx = new Fx(this.scene, this.camera, this.overlay);
+    // whose words stay readable from afar: the scene that directs the camera, or the spot the camera is following
+    this.fx.watch = (ctx) => (this.cine ? this.cine.ctx === ctx : this.mode === 'follow' && this.camCtx === ctx);
     this.fx.ground = W.hAt;
     this.cine = null; this.cineSkip = null; this._wasShot = false; this.exiting = false; this.leaveTo = null;
     this.runner = new Runner();
@@ -834,6 +836,7 @@ export class Stage {
       const fxw = {
         text(str, at, o = {}) {
           let wp;
+          o.owner = ctx; // so the words of the scene being watched are kept while far-off ones fade (fx.js)
           if (at.isVector3) { const p = map(at.x, at.z); wp = new THREE.Vector3(p[0], at.y + W.hAt(p[0], p[1]), p[1]); stage.fx.text(str, wp, o); }
           else { stage.fx.text(str, at, o); const ob = at.g || at; ob.updateWorldMatrix(true, false); wp = _v.setFromMatrixPosition(ob.matrixWorld); }
           // big comic words are the punchlines: nudge the camera towards them

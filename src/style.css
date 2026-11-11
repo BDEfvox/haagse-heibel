@@ -127,7 +127,23 @@ button { font-family: inherit; cursor: pointer; }
 
 #file { position: absolute; right: 16px; top: 70px; width: 250px; background: rgba(255, 248, 231, 0.95); border: 3px solid var(--ink); border-radius: 14px; padding: 11px 13px 12px; box-shadow: var(--hard); transform: translateX(130%) rotate(2deg); transition: transform 0.5s cubic-bezier(0.2, 1.3, 0.4, 1) 1.1s; }
 #cutscene.titled #file { transform: rotate(1.2deg); }
-#file h3 { margin: 0 0 7px; font: 400 10px var(--pix); color: var(--hot); letter-spacing: 1px; }
+/* panels fold away (the header is the switch) so the HUD stays out of the way of the street; main.js remembers the state */
+.fold { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; margin: 0; padding: 0; border: 0; background: none; font: 400 10px var(--pix); color: var(--hot); letter-spacing: 1px; text-align: left; }
+.fold i { flex: none; width: 0; height: 0; border: 5px solid transparent; border-top-color: currentColor; margin-top: 5px; transition: transform 0.15s; }
+.shut > .fold i { transform: rotate(-90deg) translate(3px, 2px); }
+.fold:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+#file .fold { margin-bottom: 7px; }
+#file.shut { width: auto; padding: 8px 11px; }
+#file.shut .fold { margin: 0; }
+#file.shut #file-body { display: none; }
+#ticker .fold { width: auto; color: #fff; border: 0; cursor: pointer; }
+#ticker .fold i { margin-left: 2px; }
+#ticker.shut { right: auto; padding-right: 0; }
+#ticker.shut #news { display: none; }
+#ticker.shut .count { padding-right: 12px; }
+#panel .fold { color: var(--ink2); }
+#panel.shut { width: auto; }
+#panel.shut > :not(.fold) { display: none; }
 #file .big { font: 700 30px/1 var(--body); }
 #file .big small { font: 500 12px var(--body); color: #556; display: block; margin-top: 3px; }
 #file .row { display: flex; justify-content: space-between; font-size: 13px; margin-top: 3px; gap: 8px; }
@@ -168,6 +184,10 @@ button { font-family: inherit; cursor: pointer; }
 #file .row em.up { color: #e5383b; }
 #file .row em.down { color: #2a9d5c; }
 #cutscene.swap canvas { filter: brightness(2.2) saturate(0.4); transition: filter 0.2s; }
+/* the hint says its piece and goes; the street name shrinks to a label once it has been read */
+#drag-hint.old { opacity: 0; }
+#title { transform-origin: left top; }
+#cutscene.settled #title { transform: scale(0.6); }
 #drag-hint { position: absolute; left: 16px; bottom: 66px; font: 500 12px var(--body); color: #fff; background: rgba(16, 25, 53, 0.6); padding: 4px 10px; border-radius: 99px; pointer-events: none; }
 
 /* cinematic shots fill the whole frame: the HUD steps aside, a stamped card names the culprit, and there is a way out */
@@ -209,7 +229,8 @@ button { font-family: inherit; cursor: pointer; }
   #panel { top: auto; bottom: 54px; left: 8px; right: 8px; width: auto; max-height: 40%; }
   .boards { display: none; }
   #hint { font-size: 11px; bottom: 8px; }
-  #file { display: none; }
+  #file { top: 64px; right: 8px; max-height: 62vh; overflow: auto; }
+  #file:not(.shut) { width: min(250px, 78vw); }
   #title { top: 60px; max-width: 92vw; }
   #drag-hint { display: none; }
   #ticker .count { display: none; }

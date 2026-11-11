@@ -79,6 +79,9 @@ class Pool {
 const R = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+// popup words are full strength up to TEXT_NEAR metres from the lens and gone by TEXT_FAR
+const TEXT_NEAR = 26, TEXT_FAR = 44;
+
 export class Fx {
   constructor(scene, camera, overlay) {
     this.camera = camera;
@@ -166,7 +169,7 @@ export class Fx {
     }
   }
   /** Comic text at a world position (Vector3-like or object with .position). */
-  text(str, at, { color = '#ffffff', size = 22, dur = 1.3, rise = 1.4, rot = null, cls = '', off = null } = {}) {
+  text(str, at, { color = '#ffffff', size = 22, dur = 1.3, rise = 1.4, rot = null, cls = '', off = null, owner = null } = {}) {
     const el = document.createElement('div');
     el.className = 'comic ' + cls;
     const inner = document.createElement('span');
@@ -178,7 +181,7 @@ export class Fx {
     el.appendChild(inner);
     this.overlay.appendChild(el);
     const src = at.isVector3 ? at.clone() : at;
-    this.texts.push({ el, src, t: 0, dur, rise, off: off ?? (at.isVector3 ? 0 : 2.2) });
+    this.texts.push({ el, src, t: 0, dur, rise, off: off ?? (at.isVector3 ? 0 : 2.2), owner });
     if (this.texts.length > 14) this._kill(0);
   }
   _kill(i) {
@@ -196,7 +199,7 @@ export class Fx {
     // words belong to the street: from further away they shrink, then slowly fade out
     const want = 1 - Math.min(1, Math.max(0, (this.zoom - 115) / 150));
     this.alpha += (want - this.alpha) * Math.min(1, dt * 1.6);
-    const a = this.alpha < 0.02 ? 0 : this.alpha, sc = Math.min(1.1, Math.max(0.5, 78 / this.zoom));
+    const a = this.alpha < 0.02 ? 0 : this.alpha, sc = Math.min(1.1, Math.max(0.5, 78 / this.zoom)), cam = this.camera.position;
     for (let i = this.texts.length - 1; i >= 0; i--) {
       const t = this.texts[i];
       t.t += dt;
@@ -204,10 +207,18 @@ export class Fx {
       if (t.src.isVector3) _p.copy(t.src);
       else { const o = t.src.g || t.src; o.updateWorldMatrix(true, false); _p.setFromMatrixPosition(o.matrixWorld); }
       _p.y += t.off + (t.t / t.dur) * t.rise;
+      // Words stay with whoever says them: a little way from the lens they shrink and fade out, so a busy street does
+      // not fill the picture with far-off shouting. The scene being watched (`watch`, set by the stage) keeps its words.
+      let al = a, k = sc;
+      if (!(this.watch && t.owner && this.watch(t.owner))) {
+        const d = _p.distanceTo(cam);
+        al *= Math.min(1, Math.max(0, (TEXT_FAR - d) / (TEXT_FAR - TEXT_NEAR)));
+        k = Math.min(k, Math.max(0.45, 30 / Math.max(1, d)));
+      }
       _p.project(this.camera);
-      t.el.style.visibility = _p.z > 1 || a === 0 ? 'hidden' : '';
-      t.el.style.opacity = a;
-      t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px) scale(${sc.toFixed(3)})`;
+      t.el.style.visibility = _p.z > 1 || al < 0.02 ? 'hidden' : '';
+      t.el.style.opacity = al;
+      t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px) scale(${k.toFixed(3)})`;
     }
   }
   dispose() {
