@@ -7,6 +7,12 @@ const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd'
 const PANTS = ['#2b3a55', '#3d405b', '#6b705c', '#1d3557', '#5c4033', '#22223b', '#4a4e69'];
 const HAIRS = ['#2b1d14', '#5a3825', '#c58b3c', '#e6c36a', '#111111', '#a33b20', '#cfcfcf'];
 
+/** A colour scaled darker/lighter (hex in, hex out). */
+function shade2(hex, k) {
+  const n = parseInt(hex.slice(1), 16), c = (sh) => Math.max(0, Math.min(255, Math.round(((n >> sh) & 255) * k)));
+  return '#' + ((1 << 24) | (c(16) << 16) | (c(8) << 8) | c(0)).toString(16).slice(1);
+}
+
 function turnTo(g, heading, dt, k = 12) {
   let d = heading - g.rotation.y;
   d = Math.atan2(Math.sin(d), Math.cos(d));
@@ -74,7 +80,9 @@ const ARMS = {
 
 /**
  * Biped. Forward is +z. Options:
- *  kind: 'civ' | 'cop' | 'robber' | 'raccoon' | 'kid' | 'granny' | 'hoodie' | 'chef'
+ *  kind: 'civ' | 'cop' | 'robber' | 'raccoon' | 'kid' | 'granny' | 'hoodie' | 'chef' | 'niffo' | 'harry'
+ *    niffo  a teenager in a parody designer tracksuit (HH monogram, green-red sleeve stripe), cap or hood, pouch, white trainers; struts
+ *    harry  a Hague mullet man: short on top, long at the back, moustache sometimes, dark jacket with a herring badge on the sleeve, jeans, boots
  *
  * Driving a person from a script (all optional, all eased):
  *  a.arms    a key of ARMS, or 'swing' (default)
@@ -95,6 +103,8 @@ export function makePerson(rnd, o = {}) {
   let hat = o.hat || (rnd.chance(0.18) ? 'cap' : null);
   let shoes = '#2a2a2a';
   let stripes = false, mask = false, ears = false, tail = false, skirt = false, hood = false;
+  let capCol = null, mullet = false, stache = false, track = false, jacket = false;
+  const TRACK = '#6b4a2a'; // the "designer" monogram brown
   if (kind === 'cop') { shirt = '#1b2a4a'; pants = '#16223d'; hat = 'cop'; shoes = '#111'; }
   if (kind === 'robber') { stripes = true; pants = '#1c1c1c'; hat = 'beanie'; mask = true; shoes = '#111'; }
   if (kind === 'raccoon') { skin = '#9a9a9a'; shirt = '#8a8a8a'; pants = '#777777'; hair = '#9a9a9a'; hat = null; mask = true; ears = true; tail = true; scale = o.scale ?? 0.85; shoes = '#3a3a3a'; }
@@ -102,6 +112,16 @@ export function makePerson(rnd, o = {}) {
   if (kind === 'granny') { hair = '#dcdcdc'; shirt = o.shirt || '#b388eb'; skirt = true; hat = null; scale = o.scale ?? 1.1; }
   if (kind === 'hoodie') { shirt = o.shirt || '#3a3a3a'; hood = true; hat = null; pants = '#2a2a2a'; }
   if (kind === 'chef') { shirt = '#ffffff'; pants = '#444'; hat = 'chef'; }
+  if (kind === 'niffo') {
+    track = true; scale = o.scale ?? 1.08;
+    shirt = rnd.pick(['#c8a878', '#bf9d6e', '#d6bd92']); pants = shade2(shirt, 0.94); shoes = '#f4f4f4';
+    if (o.hat === 'hood' || ((!o.hat || o.hat === 'none') && rnd.chance(0.5))) { hood = true; hat = null; } else { hat = 'cap'; capCol = rnd.pick(['#1a1a1a', '#c8a878', TRACK, '#f4f4f4']); }
+  }
+  if (kind === 'harry') {
+    jacket = true; mullet = true; stache = rnd.chance(0.6); hat = null; shoes = '#4a3622';
+    shirt = rnd.pick(['#1f2a36', '#26301f', '#1c1c22', '#2b2530', '#2a2f38']);
+    pants = rnd.pick(['#3b5a85', '#2f4a72', '#4a6a96', '#35507a']);
+  }
 
   const g = new THREE.Group();
   const b = new THREE.Group(); // bobbing body root
@@ -121,9 +141,19 @@ export function makePerson(rnd, o = {}) {
     return [p, j];
   };
   const legCol = skirt ? skin : pants;
+  // the green-red stripe down the outside of a tracksuit leg or sleeve (sx = which side is "outside")
+  const stripe = (v, sx, y0, h, half, one) => {
+    v.box(sx * half, y0, -0.05, 0.02, h, 0.05, '#1f8a4c');
+    if (!one) v.box(sx * half, y0, 0.0, 0.02, h, 0.05, '#d62828'); // (lower parts: green only, to save vertices)
+  };
   const leg = (x) => limb(x, 0.7,
-    (v) => v.box(0, -0.37, 0, 0.3, 0.37, 0.32, legCol),
-    (v) => { v.box(0, -0.34, 0, 0.28, 0.34, 0.3, legCol); v.box(0, -0.34, 0.05, 0.32, 0.14, 0.44, shoes); });
+    (v) => { v.box(0, -0.37, 0, 0.3, 0.37, 0.32, legCol); if (track) stripe(v, Math.sign(x), -0.37, 0.37, 0.155); },
+    (v) => {
+      v.box(0, -0.34, 0, 0.28, 0.34, 0.3, legCol);
+      v.box(0, -0.34, 0.05, 0.32, 0.14, 0.44, shoes);
+      if (track) stripe(v, Math.sign(x), -0.2, 0.2, 0.145, true);
+      if (jacket) v.box(0, -0.34, 0.05, 0.34, 0.05, 0.46, '#2a2118'); // chunky boot sole
+    });
   const [legL, kneeL] = leg(-0.2), [legR, kneeR] = leg(0.2);
 
   b.add(sculpt((v) => {
@@ -141,7 +171,21 @@ export function makePerson(rnd, o = {}) {
     }
     if (kind === 'chef') v.box(0, 0.5, 0.05, 0.7, 0.75, 0.42, '#f1f1f1');
     if (kind === 'hoodie') { v.box(0, 0.86, 0.235, 0.4, 0.2, 0.02, '#2c2c2c'); v.box(-0.07, 1.2, 0.235, 0.03, 0.26, 0.02, '#e8e8e8'); v.box(0.07, 1.2, 0.235, 0.03, 0.26, 0.02, '#e8e8e8'); } // pouch and cords
-    if (kind === 'civ' || kind === 'kid') v.box(0, 1.42, 0.02, 0.4, 0.08, 0.44, skin); // collar line
+    if (kind === 'civ' || kind === 'kid' || kind === 'niffo') v.box(0, 1.42, 0.02, 0.4, 0.08, 0.44, skin); // collar line
+    if (track) {
+      // "HH" monogram on the chest, a two-tone check low down and across the back
+      for (const hx of [-0.17, 0.17]) { v.box(hx - 0.06, 1.06, 0.235, 0.035, 0.22, 0.02, TRACK); v.box(hx + 0.06, 1.06, 0.235, 0.035, 0.22, 0.02, TRACK); v.box(hx, 1.15, 0.235, 0.09, 0.035, 0.02, TRACK); }
+      for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) if ((r + c) % 2 === 0) v.box(-0.27 + c * 0.18, 0.8 + r * 0.2, -0.235, 0.18, 0.2, 0.02, TRACK);
+      v.box(0, 0.7, 0, 0.8, 0.07, 0.48, TRACK); // waistband
+      for (let i = 0; i < 3; i++) v.box(-0.26 + i * 0.26, 1.34 - i * 0.22, 0.25, 0.16, 0.22, 0.02, '#2b2b2b'); // cross-body strap (over the monogram)
+      v.box(0.26, 0.66, 0.235, 0.24, 0.2, 0.1, '#2b2b2b'); // the pouch
+    }
+    if (jacket) {
+      v.box(0, 0.7, 0, 0.8, 0.09, 0.48, shade2(shirt, 0.7)); // hem band
+      v.box(0, 1.4, 0.0, 0.5, 0.12, 0.52, shade2(shirt, 0.8)); // stand-up collar
+      v.box(0, 0.78, 0.235, 0.04, 0.72, 0.02, '#14161a'); // zip
+      v.box(-0.22, 0.86, 0.235, 0.2, 0.05, 0.02, '#14161a'); v.box(0.22, 0.86, 0.235, 0.2, 0.05, 0.02, '#14161a'); // pocket flaps
+    }
     if (tail) {
       for (let i = 0; i < 4; i++) v.box(0, 0.62 + i * 0.1, -0.34 - i * 0.16, 0.24, 0.24, 0.18, i % 2 ? '#3a3a3a' : '#a0a0a0');
     }
@@ -149,8 +193,15 @@ export function makePerson(rnd, o = {}) {
 
   const armCol = stripes ? '#f5f5f5' : shirt;
   const arm = (x) => limb(x, 1.46,
-    (v) => v.box(0, -0.38, 0, 0.24, 0.38, 0.28, armCol),
-    (v) => { v.box(0, -0.16, 0, 0.23, 0.16, 0.27, armCol); v.box(0, -0.34, 0, 0.22, 0.18, 0.26, skin); });
+    (v) => {
+      v.box(0, -0.38, 0, 0.24, 0.38, 0.28, armCol);
+      if (track) stripe(v, Math.sign(x), -0.38, 0.38, 0.125);
+      if (jacket && x > 0) { // the sleeve badge: a pale patch with a little herring on it (swims towards the front), seen from the side
+        v.box(0.125, -0.26, 0, 0.025, 0.18, 0.2, '#e9e5d3');
+        v.box(0.14, -0.2, 0.0, 0.025, 0.06, 0.12, '#4a6070'); v.box(0.14, -0.2, -0.085, 0.025, 0.1, 0.04, '#4a6070');
+      }
+    },
+    (v) => { v.box(0, -0.16, 0, 0.23, 0.16, 0.27, armCol); v.box(0, -0.34, 0, 0.22, 0.18, 0.26, skin); if (track) stripe(v, Math.sign(x), -0.16, 0.16, 0.12, true); });
   const [armL, handL] = arm(-0.51), [armR, handR] = arm(0.51);
 
   const head = new THREE.Group();
@@ -179,12 +230,21 @@ export function makePerson(rnd, o = {}) {
     } else if (hat === 'beanie') {
       v.box(0, 0.5, 0, 0.7, 0.26, 0.66, '#151515');
     } else if (hat === 'cap') {
-      const c = rnd.pick(SHIRTS);
+      const c = capCol || rnd.pick(SHIRTS);
       v.box(0, 0.58, 0, 0.7, 0.16, 0.66, c);
       v.box(0, 0.58, 0.4, 0.5, 0.06, 0.22, c);
+      if (kind === 'niffo') v.box(0, 0.18, -0.3, 0.7, 0.4, 0.08, hair); // hair out the back under the cap
     } else if (hat === 'chef') {
       v.box(0, 0.6, 0, 0.6, 0.4, 0.56, '#ffffff');
       v.box(0, 0.94, 0, 0.74, 0.2, 0.7, '#ffffff');
+    } else if (mullet) {
+      // short on top and at the sides, long at the back: it hangs past the collar and tapers to a point
+      v.box(0, 0.54, -0.02, 0.7, 0.16, 0.66, hair);
+      v.box(-0.345, 0.38, -0.17, 0.04, 0.2, 0.26, hair); v.box(0.345, 0.38, -0.17, 0.04, 0.2, 0.26, hair); // sideburns
+      v.box(0, 0.08, -0.3, 0.7, 0.48, 0.1, hair);
+      v.box(0, -0.2, -0.32, 0.56, 0.3, 0.1, hair);
+      v.box(0, -0.42, -0.33, 0.36, 0.24, 0.1, hair);
+      if (stache) v.box(0, 0.165, 0.335, 0.3, 0.045, 0.03, hair);
     } else if (kind !== 'raccoon') {
       v.box(0, 0.56, -0.02, 0.7, 0.14, 0.66, hair);
       v.box(0, 0.2, -0.3, 0.7, 0.4, 0.08, hair);
@@ -232,7 +292,7 @@ export function makePerson(rnd, o = {}) {
     g, b, head, armL, armR, handL, handR, legL, legR, kneeL, kneeR, kind, scale,
     heading: 0, moving: 0, vel: 0, speed: o.speed ?? rnd.range(2.2, 3.2),
     ph: rnd() * TAU, t: rnd() * 10, arms: 'swing', gait: 'walk', pose: null, held: null, alive: true,
-    mood: 'neutral', lookAt: null, talk: 0, laughT: 0, nodT: 0, shakeT: 0,
+    mood: 'neutral', lookAt: null, talk: 0, laughT: 0, nodT: 0, shakeT: 0, swagger: kind === 'niffo', // swagger: a plain 'walk' is a strut
     face(h) { this.heading = h; g.rotation.y = h; },
     /** A passing expression: back to `mood` after `dur` seconds. */
     emote(m, dur = 1.2) { emoteM = m; emoteT = dur; return this; },
@@ -273,7 +333,7 @@ export function makePerson(rnd, o = {}) {
       } else if (this.pose === 'crouch') {
         ll = rl = -1.3; lk = rk = 2.2; by = -0.5; lean = 0.4;
       } else if (mv > 0) {
-        const sneak = this.gait === 'sneak', strut = this.gait === 'strut', stag = this.gait === 'stagger';
+        const sneak = this.gait === 'sneak', strut = this.gait === 'strut' || (this.swagger && this.gait === 'walk'), stag = this.gait === 'stagger';
         this.ph += dt * (sneak ? 5 : 3.2 + mv * 1.9);
         const amp = sneak ? 1.0 : clamp(0.45 + mv * 0.11, 0, 1.15);
         const s = Math.sin(this.ph), c = Math.cos(this.ph);

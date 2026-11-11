@@ -7,6 +7,7 @@ import './style.css';
 import { createMap, LV, LV_NAMES } from './map.js';
 import { Stage, preload, VIEW_TAN, EXIT_DIST } from './voxel/stage.js';
 import { mixFor, THEMES, GAG_NAMES } from './voxel/gags.js';
+import { setDistrictData } from './voxel/districts.js';
 import { sfx, startMusic, stopMusic, isMuted, setMuted, unlock } from './audio.js';
 
 const $ = (s) => document.querySelector(s);
@@ -39,6 +40,7 @@ async function boot() {
   const get = (f) => fetch(`./data/${f}`).then((r) => { if (!r.ok) throw new Error(`${f}: ${r.status}`); return r.json(); });
   const [buurten, streets, context, meta] = await Promise.all([get('buurten.geojson'), get('streets.geojson'), get('context.geojson'), get('meta.json'),
     document.fonts.load('16px "Press Start 2P"'), document.fonts.load('600 16px Fredoka')]);
+  setDistrictData(buurten); // who lives where: the crowd's neighbourhood table (voxel/districts.js)
   const byCode = new Map(buurten.features.map((f) => [f.properties.code, f]));
   const S = streets.features.map((f) => f.properties);
   S.forEach((p, i) => { p.id = streets.features[i].id; p.lname = p.name.toLowerCase(); });

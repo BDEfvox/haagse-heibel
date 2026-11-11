@@ -53,6 +53,8 @@ Pavement lines: `padZ(ctx, 'walkB0' | 'walkB1' | 'walkF0' | 'walkF1', x)` (B = h
 `R.run(gen)` / `R.stop(task)` · `yield* R.settle(maxSeconds)` wait for running tasks (stop endless ones first!) ·
 `yield* R.close()` closes the road to traffic and waits for it to clear, `R.open()` ·
 `R.borrow(p)` / `R.give(p)` a passer-by from the crowd (`takePed(ctx, xr, null, cx)` or `yield* needPed(ctx, xr)`; `gather(ctx, R, x, n)` gives up to n onlookers; `filmIt(p, x, z)` makes one film with a phone) ·
+`extraKind(ctx)` the kind ('niffo' | 'harry' | 'civ') for an extra YOU invent, weighted by `ctx.district.pop` (use it in `makePerson(rnd, { kind: extraKind(ctx) })`; the toolkit's own `spawnPed`/`needPed`/passer-by `resident` already do) ·
+`fatbike(ctx, R, x, z, { passenger })` a spawned electric fat-bike with a rider (and a passenger if `passenger: true`) on it, returns `{ bike, rider, passenger }`; move it with `go`/`drive`/`rideTo`-style code, the rig cleans it up ·
 `R.panic(x, r, n)` bystanders flee · `yield* R.police(dir, z, speed, delay)` a police car crosses · `yield* R.cop(target, speed, delay, line)` a foot cop chases.
 
 ## 4. Moving people
@@ -69,7 +71,7 @@ A person standing on something or flying: set `a.air = true` and `a.g.position.y
 
 ## 5. Acting: `makePerson(rnd, { kind, scale, shirt, pants, hair, hat })`
 
-kinds: `civ cop robber raccoon kid granny hoodie chef`. Fields you set (they ease in):
+kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a parody designer tracksuit (HH monogram, green-red sleeve stripe, cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
 
 - `a.arms`: `swing` (default) `up` (panic) `carry` `fist` `hold` `wave` `sneak` `spray` `bag` (hand at the shoulder holding a slung sack) `laugh` `point` `shrug` `cheer` `hips` `cover` (hands over head/ears) `push` `drive` `facepalm` `phone` `count` (counting notes) `rub` (rubbing hands) `reach` `drag` `cross` `beg` `stop` (halt hand) `write`
 - `a.mood`: `neutral happy laugh smug sly angry shock scared sad dizzy sleepy focus whistle`; `a.emote('shock', 1.2)` for a passing one.
@@ -82,7 +84,9 @@ kinds: `civ cop robber raccoon kid granny hoodie chef`. Fields you set (they eas
   Your own props: `sculpt((v) => { v.box(x, yBottom, z, w, h, d, '#colour'); })`, glowing: `sculpt(fn, MAT.glow)`, both: `piece((v, gl) => {...})`.
 - Animals: `makeDog(rnd)`, `makeCat(rnd)`, `makeBird(rnd, 'gull' | 'pigeon')` (`a.fly = true`, move with a tween).
 
-## 6. Vehicles: `makeCar(rnd, 'car' | 'police' | 'van' | 'taxi', L.night)`, `makeScooter(rnd, [riders])`, `makeBike(rnd)`
+## 6. Vehicles: `makeCar(rnd, 'car' | 'police' | 'van' | 'taxi', L.night)`, `makeScooter(rnd, [riders])`, `makeFatbike(rnd, [riders])`, `makeBike(rnd)`
+
+`makeFatbike` is an electric fat-bike like the scooter (1.75 m, 4 inch tyres, long bench for two, big round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
 
 Enter with `yield* R.enter(car, x, z, 0)` then `car.face(E)`. A car is 4.4 m long (`car.len`, `car.wid`). The body sits
 on springs: it **rolls in bends, dives when braking and squats when accelerating by itself** from how you drive it.

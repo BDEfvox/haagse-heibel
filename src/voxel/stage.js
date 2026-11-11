@@ -9,6 +9,7 @@ import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
 import { makeBird, makePerson, PERSON_K } from './cast.js';
 import { Crowd, PED, SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
+import { spotAt } from './districts.js';
 import { sfx } from '../audio.js';
 
 // Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open.
@@ -716,6 +717,7 @@ export class Stage {
       for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework', 'shards', 'pips']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y + W.hAt(p[0], p[1]), p[1], ...rest); };
       const ctx = {
         id, sc, L, st, level, W, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
+        district: (() => { const p = path.xz(sc, 0), m = W.frame.M(p[0], p[1]), d = spotAt(m[0], m[1]); return { wijk: d.wijk, buurt: d.buurt, level: d.level, pop: d.pop }; })(), // whose neighbourhood this is (wijk and buurt are null off the map); pop = the shares of districts.js here
         world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
         spawn(a, x, z, y) {
@@ -772,7 +774,8 @@ export class Stage {
         promote: (ag) => {
           if (!ag || ag.dead) return null;
           const k = stage.crowd.take(ag), q = path.project(k.x, k.z), t = path.at(q.s, _f), wx = Math.sin(k.hd), wz = Math.cos(k.hd), along = wx * t.tx + wz * t.tz;
-          const a = makePerson(crnd, { kind: k.look.kid ? 'kid' : 'civ', scale: k.scale / PERSON_K, shirt: SHIRTS[k.look.shirt], pants: PANTS[k.look.pants], skin: SKINS[k.look.skin], hair: HAIRS[k.look.hair], hat: 'none' });
+          const cl = k.look.cols, arch = k.look.kind === 'niffo' || k.look.kind === 'harry' ? k.look.kind : null; // archetype walkers keep their look (riders are never offered: near() is asked for walkers)
+          const a = makePerson(crnd, { kind: arch || (k.look.kid ? 'kid' : 'civ'), scale: k.scale / PERSON_K, shirt: cl?.shirt ?? SHIRTS[k.look.shirt], pants: cl?.pants ?? PANTS[k.look.pants], skin: SKINS[k.look.skin], hair: cl?.hair ?? HAIRS[k.look.hair], hat: 'none' });
           a.look = k.look; a.walkSpeed = k.speed; a.dir = along >= 0 ? 1 : -1;
           a.exitX = a.dir > 0 ? L.x1 - 0.5 : L.x0 + 0.5;
           a.side = q.v >= 0 ? 1 : -1; a.wf = 0.5; a.lineZ = q.v; a.fixedZ = true;

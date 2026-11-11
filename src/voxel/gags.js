@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from './cast.js';
-import { makeCar, makeBike, makeScooter, makeHeli, makeBoat } from './props.js';
+import { makeCar, makeBike, makeScooter, makeFatbike, makeHeli, makeBoat } from './props.js';
 import { SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
 import * as S from './setting.js';
 import * as ACTS from './acts/index.js';
@@ -246,6 +246,21 @@ function rig(ctx) {
   return R;
 }
 
+/**
+ * The kind of an INVENTED extra (a bystander the toolkit makes up instead of borrowing from the crowd): 'niffo' or 'harry'
+ * with a chance that follows the district (`ctx.district.pop[id]` is read as the share of the crowd, each capped at 0.5,
+ * and ignored below 0.04), otherwise 'civ'. Missing district or pop = always 'civ'. Uses ctx.rnd.
+ */
+function extraKind(ctx) {
+  const pop = ctx.district && ctx.district.pop;
+  if (!pop) return 'civ';
+  const share = (id) => { const d = +pop[id]; return d >= 0.04 ? Math.min(0.5, d) : 0; };
+  const pn = share('niffo'), ph = share('harry');
+  if (pn + ph <= 0) return 'civ';
+  const r = ctx.rnd();
+  return r < pn ? 'niffo' : r < pn + ph ? 'harry' : 'civ';
+}
+
 /** Borrow up to n walkers near x to watch. */
 function gather(ctx, R, x, n, xr = 14) {
   const out = [];
@@ -281,7 +296,7 @@ function resident(ctx, R, x, look, o = {}) {
   const order = allow.slice().sort((p, q) => (PREF[p].includes(far) ? 0 : 1) - (PREF[q].includes(far) ? 0 : 1));
   let kind = 'passerby', spec = {};
   for (const k of order) { const f = fits[k](); if (f) { kind = k; spec = f; break; } }
-  const person = (chef) => makePerson(rnd, chef ? { kind: 'chef' } : look || {});
+  const person = (chef) => makePerson(rnd, chef ? { kind: 'chef' } : kind === 'passerby' && !(look && look.kind) ? { ...look, kind: extraKind(ctx) } : look || {});
   const tgt = o.at || { x, z: padZ(ctx, 'walkB0', x) };
   const res = { kind, spec, owner: person(kind === 'shop'), second: null, borrowed: false, cleanup() {} };
   res.second = kind === 'passerby' ? res.owner : person(kind === 'shop');
@@ -410,13 +425,14 @@ function* goEach(ctx, a, x, z, speed, each) {
 }
 /** A person riding a bike that is a separate actor: the rider is parked on the saddle every frame. */
 // (saddle top 1.05 m at 0.30 m behind the bike's centre; hip sits 0.05 m above it, see makeBike)
-const seat = (bike, rider, y = 0.52) => {
-  const b = bike.g.position, h = bike.g.rotation.y;
-  rider.g.position.set(b.x - Math.sin(h) * 0.28, b.y + y, b.z - Math.cos(h) * 0.28);
+// (a vehicle may carry its own `seatY` / `seatBack`, e.g. the fat-bike)
+const seat = (bike, rider, y = bike.seatY ?? 0.52) => {
+  const b = bike.g.position, h = bike.g.rotation.y, back = bike.seatBack ?? 0.28;
+  rider.g.position.set(b.x - Math.sin(h) * back, b.y + y, b.z - Math.cos(h) * back);
   rider.heading = h;
   rider.g.rotation.z = bike.g.rotation.z; // lean into the bend together
 };
-function* rideTo(ctx, bike, rider, x, z, speed, each, y = 0.52) {
+function* rideTo(ctx, bike, rider, x, z, speed, each, y = bike.seatY ?? 0.52) {
   for (;;) {
     const p = bike.g.position, dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz);
     if (d <= 0.06) return;
@@ -429,8 +445,21 @@ function* rideTo(ctx, bike, rider, x, z, speed, each, y = 0.52) {
     if (each && each(dt, s) === true) return;
   }
 }
-const mount = (bike, rider, y = 0.52) => { rider.air = true; rider.pose = 'ride'; rider.arms = 'swing'; rider.g.rotation.order = 'YXZ'; seat(bike, rider, y); };
+const mount = (bike, rider, y = bike.seatY ?? 0.52) => { rider.air = true; rider.pose = 'ride'; rider.arms = 'swing'; rider.g.rotation.order = 'YXZ'; seat(bike, rider, y); };
 const dismount = (rider, x, z) => { rider.pose = null; rider.air = false; rider.g.position.set(x, 0, z); };
+/**
+ * An electric fat-bike with a rider (and a passenger if `o.passenger`, true or an actor) already on it, spawned through the rig at (x, z).
+ * Returns { bike, rider, passenger }; the riders are part of the bike (`go`/`drive`/`rideTo`-style movement moves them), the rig cleans it all up.
+ * The rider is a niffo (or the district's extra kind). Facing +x until you `bike.face(...)`.
+ */
+function fatbike(ctx, R, x, z, o = {}) {
+  const { rnd } = ctx, mk = () => makePerson(rnd, { kind: rnd.chance(0.65) ? 'niffo' : extraKind(ctx) });
+  const rider = mk(), passenger = o.passenger ? (o.passenger === true ? mk() : o.passenger) : null;
+  const bike = makeFatbike(rnd, passenger ? [rider, passenger] : [rider]);
+  R.spawn(bike, x, z, 0);
+  bike.face(E);
+  return { bike, rider, passenger };
+}
 /** A thin glowing line between two street-space points: `aim(ax, ay, az, bx, by, bz)`. */
 function lineObj(R, col = '#e8f7ff', w = 0.045) {
   const o = R.add(sculpt((v) => v.box(0.5, 0, 0, 1, w, w, col), MAT.glow));
@@ -706,7 +735,7 @@ function fromCrowd(ctx, cx, xr, ok) {
 function spawnPed(ctx, atX = null, opts = {}) {
   const { L, rnd } = ctx, ex0 = L.x0 + 0.5, ex1 = L.x1 - 0.5;
   const dir = opts.dir ?? rnd.sign();
-  const kind = opts.kind || (rnd() < 0.12 ? 'kid' : 'civ'), ix = (l) => Math.floor(rnd() * l.length);
+  const kind = opts.kind || (rnd() < 0.12 ? 'kid' : extraKind(ctx)), ix = (l) => Math.floor(rnd() * l.length);
   // dressed from the crowd's wardrobe, so they can melt into the crowd afterwards looking the same
   const look = { shirt: ix(SHIRTS), pants: ix(PANTS), skin: ix(SKINS), hair: ix(HAIRS), kid: kind === 'kid' };
   const a = makePerson(rnd, { kind, shirt: SHIRTS[look.shirt], pants: PANTS[look.pants], skin: SKINS[look.skin], hair: HAIRS[look.hair], hat: 'none' });
@@ -770,7 +799,7 @@ function* needPed(ctx, xr = 13, filter = null) {
   }
   if (!p) p = fromCrowd(ctx, 0, xr, ok);
   if (!p) {
-    const np = spawnPed(ctx, null, { kind: 'civ', keep: true });
+    const np = spawnPed(ctx, null, { kind: extraKind(ctx), keep: true });
     yield* waitUntil(() => ok(np) || !np.alive, 9);
     p = np.alive && !np.busy ? np : ctx.peds.find(ok);
     if (!p) np.keep = false;
@@ -907,7 +936,7 @@ const T = {
   X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter,
   edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo, yell, padZ, once,
   spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-  seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
+  extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
   tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake,
   exhaust, spawnPed, unped, stroll, release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
 };
