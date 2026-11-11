@@ -26,8 +26,8 @@ the camera drops into the street under the pointer. The drop starts at the heigh
 what the map showed. Zooming all the way out of a street hands back to the map at the same spot;
 **◀ MAP** rises to the height you came from.
 
-In a street: the camera first follows the action, and the opening gag is shot like a film scene
-(cuts, close-ups, a title card; **SKIP** or any drag ends it). Drag to take over (drag = move,
+In a street: the camera first follows the action, and every crime plays as a short film scene that
+fills the whole picture (cuts, close-ups, low angles, a title card; **SKIP** or any drag ends it). Drag to take over (drag = move,
 right-drag or two fingers = turn, scroll or pinch = zoom, WASD/arrows also work); you can roam the
 whole city. Red `!` pins mark gags elsewhere on the street; **Follow the action** hands the camera
 back.
@@ -113,10 +113,18 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
 - `src/voxel/street.js` — lanes and pavements fitted between the real fronts, and the 48 m "spots"
   where gags play, with the doors, windows and furniture found there
 - `src/voxel/furnish.js` — street furniture for every street, placed per map tile
-- `src/voxel/gags.js` — background street life plus 23 scripted gags, weighted by crime level and
-  crime mix. Gags are written for a straight street; the stage bends them onto the real one
+- `src/voxel/gags.js` — background street life, the set-piece toolkit (movement, acting, driving), four
+  ambient gags, the crime-mix weighting and the director that picks what plays. Gags are written for a
+  straight street; the stage bends them onto the real one
+- `src/voxel/acts/` — the nineteen crime scenes, one file each. Every scene follows a storyboard
+  (`storyboards/`, index in [STORYBOARDS.md](STORYBOARDS.md)) beat for beat; [ACTS.md](ACTS.md) explains
+  how to write one. On the dev server `__heibel.audit('<scene>')` plays a scene on fast-forward and
+  measures, beat by beat, whether what the storyboard says must be seen is in the picture
 - `src/voxel/stage.js` — renderer, lighting per level (sunny → night), the drop from map height, the
   follow-the-action camera, the cinematic shots a gag can direct (`ctx.cam(name)`), free roam, the
   hand-over back to the map, and the cutaway that flattens buildings in the camera's way
-- `src/voxel/kit.js`, `props.js`, `cast.js` — voxel builder, Dutch row houses, trams, cars, people
-- `src/map.js` — MapLibre map with the hover glow; `src/audio.js` — synthesized sound and music
+- `src/voxel/kit.js`, `props.js`, `cast.js` — voxel builder, Dutch row houses, trams, cars on springs
+  (they roll in bends, dive under braking; wheels turn and steer), and people with faces (moods, eyes
+  that look, mouths that talk and laugh), elbows and knees
+- `src/map.js` — MapLibre map with the hover glow; `src/audio.js` — synthesized sound effects and the
+  city's tune, "Hofstad Hoempa" (an original chiptune, written as note data in that file)

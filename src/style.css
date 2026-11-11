@@ -166,16 +166,12 @@ button { font-family: inherit; cursor: pointer; }
 #cutscene.swap canvas { filter: brightness(2.2) saturate(0.4); transition: filter 0.2s; }
 #drag-hint { position: absolute; left: 16px; bottom: 66px; font: 500 12px var(--body); color: #fff; background: rgba(16, 25, 53, 0.6); padding: 4px 10px; border-radius: 99px; pointer-events: none; }
 
-/* cinematic shots: letterbox bars, a stamped card for the culprit, and a way out */
-#hud .lbox { position: absolute; left: 0; right: 0; height: 11%; background: #05060d; pointer-events: none; transition: transform 0.35s cubic-bezier(0.3, 1, 0.4, 1); }
-#hud .lbox.top { top: 0; transform: translateY(-102%); }
-#hud .lbox.bot { bottom: 0; transform: translateY(102%); }
-#cutscene[data-cine] .lbox { transform: none; }
+/* cinematic shots fill the whole frame: the HUD steps aside, a stamped card names the culprit, and there is a way out */
 #file, #title, #hud-btns, #drag-hint, #credit, #ticker { transition: opacity 0.25s, transform 0.4s cubic-bezier(0.2, 1.4, 0.4, 1); }
 #cutscene[data-cine] #file, #cutscene[data-cine] #title, #cutscene[data-cine] #hud-btns, #cutscene[data-cine] #drag-hint, #cutscene[data-cine] #credit, #cutscene[data-cine] #ticker .count { opacity: 0; pointer-events: none; }
 #btn-skip { position: absolute; right: 16px; top: 14px; font: 400 10px var(--pix); padding: 10px 11px; display: none; }
 #cutscene[data-cine] #btn-skip { display: block; }
-#cine-card { position: absolute; left: 5%; bottom: 17%; opacity: 0; pointer-events: none; max-width: 90%; }
+#cine-card { position: absolute; left: 5%; bottom: 11%; opacity: 0; pointer-events: none; max-width: 90%; }
 #cine-card.in { animation: card var(--dur, 1.6s) both; }
 #cine-card b { display: block; font: 400 clamp(20px, 4.4vw, 50px)/1.15 var(--pix); color: #ffd60a; transform: skewX(-7deg); text-shadow: 4px 0 0 #101935, -4px 0 0 #101935, 0 4px 0 #101935, 0 -4px 0 #101935, 4px 4px 0 #101935, -4px -4px 0 #101935, 4px -4px 0 #101935, -4px 4px 0 #101935, 8px 9px 0 #e63946; }
 #cine-card small { display: inline-block; margin-top: 10px; font: 600 clamp(13px, 1.7vw, 20px) var(--body); color: #fff; background: #101935; border: 2px solid #fff; padding: 3px 12px; transform: rotate(-1.5deg); }
@@ -216,5 +212,4 @@ button { font-family: inherit; cursor: pointer; }
 }
 @media (prefers-reduced-motion: reduce) {
   #map.dive, #map.anticipate, #map.rise, #speed.on, #zoomcue.on { animation: none; }
-  #hud .lbox { transition: none; }
 }

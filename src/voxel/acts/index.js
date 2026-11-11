@@ -1,0 +1,20 @@
+// The crime scenes that live in their own files. Each exports a factory: (toolkit) => { w, crime, avail, lock, *run(ctx) }.
+export { default as bennyHill } from './bennyHill.js';
+export { default as bikeThief } from './bikeThief.js';
+export { default as burglar } from './burglar.js';
+export { default as carBreakIn } from './carBreakIn.js';
+export { default as carChase } from './carChase.js';
+export { default as doorbell } from './doorbell.js';
+export { default as fenderBender } from './fenderBender.js';
+export { default as fireworks } from './fireworks.js';
+export { default as graffiti } from './graffiti.js';
+export { default as herringHeist } from './herringHeist.js';
+export { default as parkingTicket } from './parkingTicket.js';
+export { default as phishing } from './phishing.js';
+export { default as pickpocket } from './pickpocket.js';
+export { default as plofkraak } from './plofkraak.js';
+export { default as scooterSnatch } from './scooterSnatch.js';
+export { default as scuffle } from './scuffle.js';
+export { default as seagullFries } from './seagullFries.js';
+export { default as shadyDeal } from './shadyDeal.js';
+export { default as shopHeist } from './shopHeist.js';

@@ -26,8 +26,9 @@ class Pool {
     this.mesh.instanceColor.needsUpdate = true;
     this.parts.push({
       i, x: o.x, y: o.y, z: o.z, vx: o.vx || 0, vy: o.vy || 0, vz: o.vz || 0,
-      rx: Math.random() * TAU, ry: Math.random() * TAU, rz: Math.random() * TAU,
-      wx: (Math.random() - 0.5) * (o.spin ?? 10), wy: (Math.random() - 0.5) * (o.spin ?? 10), wz: (Math.random() - 0.5) * (o.spin ?? 10),
+      // o.rot = [rx, ry, rz] fixes the orientation (a skid mark lies flat and stays put); otherwise it tumbles
+      rx: o.rot ? o.rot[0] : Math.random() * TAU, ry: o.rot ? o.rot[1] : Math.random() * TAU, rz: o.rot ? o.rot[2] : Math.random() * TAU,
+      wx: o.rot ? 0 : (Math.random() - 0.5) * (o.spin ?? 10), wy: o.rot ? 0 : (Math.random() - 0.5) * (o.spin ?? 10), wz: o.rot ? 0 : (Math.random() - 0.5) * (o.spin ?? 10),
       sx: o.sx ?? o.size ?? 0.2, sy: o.sy ?? o.size ?? 0.2, sz: o.sz ?? o.size ?? 0.2,
       life: o.life ?? 1.2, age: 0, g: o.g ?? 22, drag: o.drag ?? 0.2, grow: o.grow || 0, bounce: o.bounce ?? 0.4, floor: (o.floor ?? 0.02) + (o.floor < -50 ? 0 : this.owner.ground(o.x, o.z)), flutter: o.flutter || 0,
     });
@@ -140,6 +141,28 @@ export class Fx {
     for (let i = 0; i < 70; i++) {
       const a = Math.random() * TAU, b = R(-Math.PI / 2, Math.PI / 2), s = R(5, 9);
       this.glow.emit({ x, y, z, vx: Math.cos(a) * Math.cos(b) * s, vz: Math.sin(a) * Math.cos(b) * s, vy: Math.sin(b) * s, color: pick(cols), size: R(0.12, 0.22), life: R(0.9, 1.6), g: 5, drag: 1.6, floor: -99 });
+    }
+  }
+  /** A flat mark on the ground (tyre rubber, a scorch, a puddle): `ang` = its direction, seen from above. */
+  mark(x, y, z, ang = 0, { w = 0.22, l = 0.9, color = '#1b1b1b', life = 9 } = {}) {
+    this.solid.emit({ x, y: y + 0.03, z, color, sx: w, sy: 0.02, sz: l, life, g: 0, drag: 0, rot: [0, ang, 0], floor: -99 });
+  }
+  /** Dust kicked up low over the ground, drifting the way (vx, vz) points. */
+  dust(x, y, z, vx = 0, vz = 0, n = 3, col = '#d9d2c2') {
+    for (let i = 0; i < n; i++) this.solid.emit({ x: x + R(-0.2, 0.2), y: y + R(0.05, 0.25), z: z + R(-0.2, 0.2), vx: vx + R(-0.6, 0.6), vz: vz + R(-0.6, 0.6), vy: R(0.3, 1.2), color: col, size: R(0.14, 0.3), life: R(0.4, 0.8), g: -0.6, drag: 2.4, grow: 1.4, spin: 3 });
+  }
+  /** Broken glass: small bright slivers that scatter and skitter. */
+  shards(x, y, z, n = 18, speed = 5) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * TAU, s = R(0.3, 1) * speed;
+      this.glow.emit({ x: x + R(-0.3, 0.3), y: y + R(-0.2, 0.3), z, vx: Math.cos(a) * s, vz: Math.sin(a) * s, vy: R(1, 5), color: pick(['#dff6ff', '#bfe9fb', '#ffffff', '#9fd4ee']), sx: R(0.06, 0.18), sy: 0.02, sz: R(0.06, 0.16), life: R(0.8, 1.6), g: 20, bounce: 0.35 });
+    }
+  }
+  /** Stars for a knock on the head, sweat for a fright: little glowing bits that hop up from a point. */
+  pips(x, y, z, n = 4, colors = ['#ffe066', '#fff3b0'], size = 0.12) {
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU + Math.random();
+      this.glow.emit({ x, y, z, vx: Math.cos(a) * 1.6, vz: Math.sin(a) * 1.6, vy: R(2.2, 3.6), color: pick(colors), size: R(size * 0.7, size * 1.2), life: R(0.5, 0.8), g: 9, bounce: 0 });
     }
   }
   /** Comic text at a world position (Vector3-like or object with .position). */

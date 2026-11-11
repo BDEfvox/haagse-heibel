@@ -488,7 +488,10 @@ async function boot() {
   const m = location.hash.match(/s=(\d+)/), q = params.get('q');
   const deep = m ? S[+m[1]] : q ? S.find((p) => p.lname === q.toLowerCase()) : null;
   if (deep) openStreet(deep);
-  if (import.meta.env.DEV) window.__heibel = { api, stage, S, openStreet, closeStreet };
+  if (import.meta.env.DEV) {
+    window.__heibel = { api, stage, S, openStreet, closeStreet };
+    import('./dev/audit.js').then((m) => Object.assign(window.__heibel, m.makeAudit(window.__heibel))); // the storyboard audit (dev server only)
+  }
 }
 
 boot().catch((e) => {

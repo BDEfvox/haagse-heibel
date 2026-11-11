@@ -284,18 +284,49 @@ export function streetSign(g, v, x, z, text, y = 0.15) {
 }
 
 // ---------------------------------------------------------------- vehicles
+const angd = (d) => Math.atan2(Math.sin(d), Math.cos(d));
+const cl = (v, a, b) => Math.max(a, Math.min(b, v));
+/**
+ * A vehicle on springs. Scripts only steer it (heading) and say how fast it goes (moving); from that the body
+ * rolls out of a bend (two-wheelers lean into it), squats under power, dives under braking, and the wheels turn
+ * and steer. `a.slip` says how hard it is cornering (tyre smoke and skid marks key off it), `a.drift` turns the
+ * body against the direction of travel (a powerslide), `a.jolt()` knocks the suspension.
+ */
 function vehicleActor(g, extra = {}) {
   const a = {
-    g, heading: 0, moving: 0, t: 0, alive: true, speed: 8, vehicle: true,
+    g, heading: 0, moving: 0, vel: 0, t: 0, alive: true, speed: 8, vehicle: true,
+    roll: 0, pitch: 0, slip: 0, drift: 0, rideH: 0, _rv: 0, _pv: 0, _mv: 0, _spin: 0, _steer: 0,
     face(h) { this.heading = h; g.rotation.y = h; },
+    /** Knock the suspension: pitch > 0 = nose down (a hard stop, a kerb), side > 0 = rocks to its left. */
+    jolt(pitch = 0, side = 0) { this._pv += pitch * 5; this._rv += side * 5; },
     update(dt) {
       this.t += dt;
       const mv = this.moving;
-      this.moving = 0;
-      let d = this.heading - g.rotation.y;
-      d = Math.atan2(Math.sin(d), Math.cos(d));
-      g.rotation.y += d * Math.min(1, dt * 9);
-      if (this.body) this.body.position.y = mv > 0 ? Math.abs(Math.sin(this.t * 16)) * 0.035 : 0;
+      this.moving = 0; this.vel = mv;
+      const turn = angd(this.heading - g.rotation.y) * Math.min(1, dt * (this.turnRate || 9));
+      g.rotation.y += turn;
+      const body = this.body;
+      if (body && dt > 0 && !this.rigid) {
+        const yawRate = turn / dt, acc = cl((mv - this._mv) / dt, -40, 40), two = this.two;
+        this._mv = mv;
+        const rollT = (two ? cl(-yawRate * mv * 0.05, -0.5, 0.5) : cl(yawRate * mv * 0.02, -0.26, 0.26)) + (this.lean || 0); // a.lean: a script leaning it by hand
+        const pitchT = two ? cl(-acc * 0.012, -0.4, 0.08) : cl(-acc * 0.012, -0.085, 0.11);
+        this._rv += ((rollT - this.roll) * 70 - this._rv * 7.5) * dt; this.roll += this._rv * dt;
+        this._pv += ((pitchT - this.pitch) * 95 - this._pv * 8.5) * dt; this.pitch += this._pv * dt;
+        this.slip = Math.abs(yawRate) * mv + Math.abs(this.drift) * mv * 2;
+        if (two) { g.rotation.z = this.roll; body.rotation.x = Math.min(0.05, this.pitch); }
+        else {
+          body.rotation.z = this.roll; body.rotation.x = this.pitch;
+          body.rotation.y += (this.drift - body.rotation.y) * Math.min(1, dt * 8);
+        }
+        body.position.y = this.rideH + (mv > 0 ? Math.abs(Math.sin(this.t * 16)) * 0.03 : 0) + Math.abs(this.roll) * 0.25;
+        if (this.wheels) {
+          this._spin += (mv * dt) / this.wheelR;
+          const st = cl(angd(this.heading - g.rotation.y) * 2.5 + yawRate * 0.22 - this.drift * 1.2, -0.6, 0.6);
+          this._steer += (st - this._steer) * Math.min(1, dt * 12);
+          for (const w of this.wheels) { w.userData.spin.rotation.x = this._spin; if (w.userData.front) w.rotation.y = this._steer; }
+        }
+      }
       if (this.tick) this.tick(dt, mv);
     },
     ...extra,
@@ -303,29 +334,60 @@ function vehicleActor(g, extra = {}) {
   return a;
 }
 
+/** A wheel that visibly turns: two crossed blocks make an eight-sided tyre, with a hub cap and one bright spoke. */
+function makeWheel(r, w, side) {
+  const g = new THREE.Group(), spin = new THREE.Group();
+  const s = r * 1.84;
+  const t1 = sculpt((v) => v.box(0, -s / 2, 0, w, s, s, '#1a1a1a'));
+  const t2 = sculpt((v) => v.box(0, -s / 2, 0, w, s, s, '#1a1a1a'));
+  t2.rotation.x = Math.PI / 4;
+  const hub = sculpt((v) => {
+    v.box(side * (w / 2 + 0.005), -r * 0.5, 0, 0.02, r, r, '#c9d1d6');
+    v.box(side * (w / 2 + 0.012), -r * 0.12, 0, 0.02, r * 0.24, r * 1.5, '#7d868c');
+    v.box(side * (w / 2 + 0.012), -r * 0.75, 0, 0.02, r * 1.5, r * 0.24, '#7d868c');
+  });
+  spin.add(t1, t2, hub);
+  g.add(spin);
+  g.userData.spin = spin;
+  return g;
+}
+
 const CARCOLS = ['#e63946', '#f4a261', '#2a9d8f', '#3a86ff', '#ffd166', '#8338ec', '#f1faee', '#ff70a6', '#06d6a0', '#577590'];
-/** type: car | police | van | taxi. Forward +z. */
+/**
+ * type: car | police | van | taxi. Forward +z. The van's back doors open (`a.doors` 0..1); `a.hazard` blinks the
+ * indicators; `a.exhaust` is where the smoke comes out (local to the car).
+ */
 export function makeCar(rnd, type = 'car', night = false) {
   const g = new THREE.Group(), body = new THREE.Group();
   g.add(body);
   const col = type === 'police' ? '#f8f9fa' : type === 'van' ? '#30343f' : type === 'taxi' ? '#ffd60a' : rnd.pick(CARCOLS);
-  const van = type === 'van';
+  const van = type === 'van', dark = shade(col, 0.72);
   // modelled at the old small size, then body is scaled up to a real car (4.4 x 1.85 x 1.5; van 5.2 x 2.0 x 2.2)
   const L = van ? 3.9 : 3.3, W = 1.6;
   const SX = van ? 2.0 / W : 1.85 / W, SY = van ? 2.2 / 1.78 : 1.5 / 1.33, SZ = van ? 5.2 / L : 4.4 / L;
   body.scale.set(SX, SY, SZ);
   const solid = new Vox(3), gl = new Vox(4);
   solid.box(0, 0.28, 0, W, van ? 0.75 : 0.55, L, col);
+  solid.box(0, 0.2, 0, W - 0.16, 0.1, L - 0.3, '#15171c'); // floor pan
   if (van) {
     solid.box(0, 1.03, -0.3, W - 0.06, 0.75, L - 0.9, col);
     solid.box(0, 1.1, L / 2 - 0.5, W - 0.2, 0.5, 0.08, '#9fd4ee');
-    solid.box(0, 0.5, -L / 2 - 0.01, 1.2, 1.1, 0.04, '#3d4250');
+    solid.box(0, 1.78, -0.3, W - 0.3, 0.05, L - 1.3, dark); // roof ribs
+    solid.box(W / 2 - 0.02, 1.1, L / 2 - 0.95, 0.03, 0.42, 0.7, '#9fd4ee'); solid.box(-W / 2 + 0.02, 1.1, L / 2 - 0.95, 0.03, 0.42, 0.7, '#9fd4ee'); // cab windows
+    solid.box(0, 0.42, -L / 2 + 0.12, W - 0.2, 1.3, 0.04, '#0e0f13'); // the dark of the load space behind the doors
   } else {
     solid.box(0, 0.83, -0.2, W - 0.14, 0.5, 1.7, col);
     solid.box(0, 0.88, 0.67, W - 0.3, 0.38, 0.04, '#9fd4ee');
     solid.box(0, 0.88, -1.07, W - 0.3, 0.38, 0.04, '#9fd4ee');
     solid.box(W / 2 - 0.07, 0.88, -0.2, 0.04, 0.36, 1.4, '#9fd4ee');
     solid.box(-W / 2 + 0.07, 0.88, -0.2, 0.04, 0.36, 1.4, '#9fd4ee');
+    for (const sx of [-1, 1]) solid.box(sx * (W / 2 - 0.065), 0.86, -0.2, 0.05, 0.42, 0.08, col); // door pillar
+  }
+  for (const sx of [-1, 1]) {
+    solid.box(sx * (W / 2 + 0.07), 0.84, van ? L / 2 - 0.62 : 0.52, 0.14, 0.1, 0.1, dark); // mirrors
+    solid.box(sx * (W / 2 + 0.004), 0.34, van ? 0.75 : -0.2, 0.012, van ? 0.62 : 0.45, 0.025, dark); // door seam
+    solid.box(sx * (W / 2 + 0.012), 0.66, van ? 0.55 : -0.34, 0.02, 0.04, 0.12, '#d9dee2'); // door handle
+    for (const sz of [-1, 1]) solid.box(sx * (W / 2 - 0.1), 0.2, sz * (L / 2 - 0.7), 0.22, 0.42, 0.78, '#121316'); // wheel arch
   }
   if (type === 'police') {
     // Dutch striping: blue + orange-red slashes
@@ -336,31 +398,75 @@ export function makeCar(rnd, type = 'car', night = false) {
     solid.box(0, 1.33, -0.2, 1.0, 0.1, 0.3, '#333');
   }
   if (type === 'taxi') solid.box(0, 1.33, -0.2, 0.5, 0.18, 0.24, '#111');
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) solid.box(sx * (W / 2 - 0.12), 0, sz * (L / 2 - 0.7), 0.3, 0.56, 0.6, '#1c1c1c');
-  solid.box(0, 0.3, L / 2, W - 0.1, 0.16, 0.08, '#444');
+  // bumpers, grille, Dutch yellow plates, exhaust
+  solid.box(0, 0.26, L / 2 + 0.02, W + 0.02, 0.16, 0.1, '#33363d');
+  solid.box(0, 0.26, -L / 2 - 0.02, W + 0.02, 0.16, 0.1, '#33363d');
+  solid.box(0, 0.46, L / 2 + 0.005, 0.66, 0.1, 0.03, '#1d1f24');
+  solid.box(0, 0.29, L / 2 + 0.075, 0.42, 0.09, 0.012, '#ffd200');
+  solid.box(0, 0.29, -L / 2 - 0.075, 0.42, 0.09, 0.012, '#ffd200');
+  solid.box(-0.45, 0.2, -L / 2 - 0.06, 0.08, 0.07, 0.14, '#7d868c');
   (night ? gl : solid).box(-0.5, 0.5, L / 2 + 0.01, 0.3, 0.16, 0.04, night ? '#fff6c9' : '#fff3b0');
   (night ? gl : solid).box(0.5, 0.5, L / 2 + 0.01, 0.3, 0.16, 0.04, night ? '#fff6c9' : '#fff3b0');
   gl.box(-0.5, 0.5, -L / 2 - 0.01, 0.3, 0.14, 0.04, '#ff2d2d');
   gl.box(0.5, 0.5, -L / 2 - 0.01, 0.3, 0.14, 0.04, '#ff2d2d');
   body.add(solid.mesh());
   body.add(gl.mesh(MAT.glow));
-  const a = vehicleActor(g, { body, type, len: L * SZ, wid: W * SX, hgt: van ? 2.2 : 1.5 });
+  // indicators (all four blink with a.hazard)
+  const blink = sculpt((v) => { for (const sx of [-1, 1]) for (const sz of [-1, 1]) v.box(sx * (W / 2 - 0.08), 0.5, sz * (L / 2 + 0.012), 0.1, 0.14, 0.04, '#ffae00'); }, MAT.glow);
+  blink.visible = false;
+  body.add(blink);
+  // wheels: outside the sprung body, so the body rolls and dives over them
+  const wr = van ? 0.36 : 0.32, wheels = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const w = makeWheel(wr, 0.24, sx);
+    w.position.set(sx * (W / 2 - 0.1) * SX, wr, sz * (L / 2 - 0.7) * SZ);
+    w.userData.front = sz > 0;
+    g.add(w);
+    wheels.push(w);
+  }
+  const a = vehicleActor(g, {
+    body, type, len: L * SZ, wid: W * SX, hgt: van ? 2.2 : 1.5, wheels, wheelR: wr,
+    exhaust: { x: -0.45 * SX, y: 0.3, z: (-L / 2 - 0.1) * SZ }, hazard: false, doors: 0,
+  });
+  let doorK = 0, leaves = null;
+  if (van) {
+    // two back doors on hinges at the corners
+    leaves = [-1, 1].map((sx) => {
+      const h = new THREE.Group();
+      h.position.set(sx * (W / 2 - 0.03), 0.42, -L / 2);
+      h.add(sculpt((v) => {
+        v.box(-sx * 0.385, 0, -0.02, 0.77, 1.32, 0.05, col);
+        v.box(-sx * 0.385, 0.72, -0.05, 0.5, 0.4, 0.02, '#9fd4ee');
+        v.box(-sx * 0.7, 0.55, -0.055, 0.05, 0.16, 0.03, '#d9dee2');
+      }));
+      body.add(h);
+      return [h, sx];
+    });
+  }
+  let red = null, blue = null, light = null;
   if (type === 'police') {
-    const red = sculpt((v) => v.box(-0.3, 1.43, -0.2, 0.36, 0.16, 0.26, '#ff2d2d'), MAT.glow);
-    const blue = sculpt((v) => v.box(0.3, 1.43, -0.2, 0.36, 0.16, 0.26, '#2d7bff'), MAT.glow);
+    red = sculpt((v) => v.box(-0.3, 1.43, -0.2, 0.36, 0.16, 0.26, '#ff2d2d'), MAT.glow);
+    blue = sculpt((v) => v.box(0.3, 1.43, -0.2, 0.36, 0.16, 0.26, '#2d7bff'), MAT.glow);
     body.add(red, blue);
-    const light = new THREE.PointLight('#3b82ff', 0, 14, 1.6);
+    light = new THREE.PointLight('#3b82ff', 0, 14, 1.6);
     light.position.set(0, 2.4, 0);
     g.add(light);
     a.siren = false;
-    a.tick = function () {
+  }
+  a.tick = function (dt) {
+    blink.visible = this.hazard && Math.floor(this.t * 2.6) % 2 === 0;
+    if (leaves) {
+      doorK += (cl(this.doors, 0, 1) - doorK) * Math.min(1, dt * 9);
+      for (const [h, sx] of leaves) h.rotation.y = -sx * doorK * 1.9;
+    }
+    if (red) {
       const on = this.siren, f = Math.floor(this.t * 7) % 2;
       red.visible = !on || f === 0;
       blue.visible = !on || f === 1;
       light.intensity = on ? 40 : 0;
       light.color.set(f ? '#3b82ff' : '#ff3b3b');
-    };
-  }
+    }
+  };
   return a;
 }
 
@@ -395,7 +501,7 @@ export function makeTram(night = false) {
   const s = makeSign('HTM', 0.4, { bg: '#111', fg: '#ffb703', pad: 4 });
   s.position.set(0, 2.8, front + 0.03);
   body.add(s);
-  return vehicleActor(g, { body, type: 'tram', len: n * (seg + 0.3), wid: W, hgt: 3.3 });
+  return vehicleActor(g, { body, type: 'tram', len: n * (seg + 0.3), wid: W, hgt: 3.3, rigid: true });
 }
 
 /** Bicycle group (forward +z); rider optional. */
@@ -414,7 +520,7 @@ export function makeBike(rnd, rider = null, col = null) {
     v.box(0, 0.62, 0.62, 0.3, 0.2, 0.26, '#8d6e4c'); // crate
   }));
   body.scale.setScalar(BK); // 1.86 m long, 0.67 m wheels, handlebar at 1.14 m; saddle top 1.05 m at z = -0.30
-  const a = vehicleActor(g, { body, type: 'bike', len: 1.86 });
+  const a = vehicleActor(g, { body, type: 'bike', len: 1.86, two: true });
   if (rider) {
     // rider hip (model y 0.7 * 0.9 = 0.63 m, minus 0.045 m ride bob) rests 0.05 m above the saddle top
     rider.g.position.set(0, 0.52, -0.28);
@@ -442,7 +548,7 @@ export function makeScooter(rnd, riders = []) {
   }));
   body.add(sculpt((v) => v.box(0, 0.8, 0.53, 0.2, 0.14, 0.04, '#fff6c9'), MAT.glow));
   body.scale.setScalar(1.15); // 1.9 m long, seat top 0.94 m at z = -0.40
-  const a = vehicleActor(g, { body, type: 'scooter', len: 1.9 });
+  const a = vehicleActor(g, { body, type: 'scooter', len: 1.9, two: true });
   riders.forEach((r, i) => {
     // seated hip = 0.25 m above the origin (sit pose); put it 0.05 m below the seat top (the seat box is thick)
     r.g.position.set(0, 0.64, -0.35 - i * 0.5);
@@ -490,7 +596,7 @@ export function makeHeli() {
   g.add(beam, spot);
   const blink = sculpt((v) => v.box(0, 0.2, -0.6, 0.2, 0.14, 0.2, '#ff2d2d'), MAT.glow);
   body.add(blink);
-  const a = vehicleActor(g, { body, type: 'heli', aim: new THREE.Vector3() });
+  const a = vehicleActor(g, { body, type: 'heli', aim: new THREE.Vector3(), rigid: true });
   a.tick = function (dt) {
     rotor.rotation.y += dt * 30;
     tailRotor.rotation.x += dt * 40;
@@ -527,7 +633,7 @@ export function makeBoat(rnd) {
   skipper.pose = 'sit';
   skipper.g.position.set(0, 0.5, -0.6);
   body.add(skipper.g);
-  const a = vehicleActor(g, { body, type: 'boat' });
+  const a = vehicleActor(g, { body, type: 'boat', rigid: true });
   a.tick = function (dt) {
     skipper.update(dt);
     body.position.y = Math.sin(this.t * 2.4) * 0.05;

@@ -3,7 +3,7 @@
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
 import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT, wait } from './kit.js';
-import { buildWorld, preload, U, cutWeight, CUT, setMaxTexture, trimTiles, tileOf } from './world.js';
+import { buildWorld, preload, U, cutWeight, cutLimit, CUT, setMaxTexture, trimTiles, tileOf } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
@@ -68,6 +68,14 @@ function disposeTree(o) {
   });
 }
 const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+/**
+ * How much more of the street a cutscene shot takes in on a screen narrower than the wide picture it was framed for
+ * (1 = as framed). Deliberately less than the full difference: on a phone held upright people stay a decent size, and
+ * the beat guarantee (_fitBeat) backs the camera off further only when somebody would actually be cut off.
+ */
+const aspNeed = (asp) => clamp(Math.pow(1.55 / asp, 0.6), 1, 2.4);
+/** Street furniture as the camera sees it: [height, radius] in metres (see _clear). */
+const FURN = { bench: [1.0, 0.9], bin: [0.95, 0.4], box: [1.5, 0.7], mailbox: [1.35, 0.4], parasol: [2.5, 1.2], rack: [1.25, 1.7], sign: [0, 0], stall: [2.6, 1.6], stop: [2.6, 1.8], terrace: [1.2, 1.5] };
 
 /** Make an object live in a context's street space: its position is (x along, y up, z across) from that spot. */
 function warp(obj, ctx, path, hAt) {
@@ -357,16 +365,58 @@ export class Stage {
       }
     }
     if (sp.fit) dist = Math.max(dist === 14 ? 0 : dist, spread * 2.6 + 7);
-    if (sp.lead && first && typeof first.heading === 'number' && first.moving) { const sh = Math.sin(first.heading), ch = Math.cos(first.heading); X += (tx * sh - tz * ch) * sp.lead; Z += (tz * sh + tx * ch) * sp.lead; }
+    if (sp.lead && first && typeof first.heading === 'number' && (first.vel || first.moving)) { const sh = Math.sin(first.heading), ch = Math.cos(first.heading); X += (tx * sh - tz * ch) * sp.lead; Z += (tz * sh + tx * ch) * sp.lead; }
     az = clamp(az + (d.az || 0) * age + (c.azFix || 0), -1.75, 1.75);
-    return {
+    // a hand-held feel: the aim wanders a little (sp.shake, about 0.3 to 1)
+    if (sp.shake) { const q = this.time, k = sp.shake * 0.11; X += Math.sin(q * 7.1) * k; Z += Math.sin(q * 5.3 + 1) * k; Y += Math.sin(q * 8.7 + 2) * k * 0.7; }
+    return this._fitBeat(c, {
       // shots were framed for taller figures: aim lower and stand closer now that people are life-size
-      tx: X, tz: Z, ty: Y + (sp.y ?? 1.3) * 0.76, az: base + az, el: clamp((sp.el ?? 0.3) + (d.el || 0) * age, -0.2, 1.45),
-      dist: Math.max(4, (dist + (d.dist || 0) * age) * near), fov: sp.fov || FOV, roll: clamp(sp.roll || 0, -0.2, 0.2),
+      tx: X, tz: Z, ty: Y + (sp.y ?? 1.3) * 0.76, az: base + az, el: clamp((sp.el ?? 0.3) + (d.el || 0) * age + (c.elFix || 0), -0.2, 1.45),
+      dist: Math.max(2.6, (dist + (d.dist || 0) * age) * near), fov: clamp((sp.fov || FOV) + (d.fov || 0) * age, 12, 70), roll: clamp((sp.roll || 0) + (d.roll || 0) * age, -0.42, 0.42),
+    });
+  }
+  /**
+   * The guarantee behind every storyboard beat: whoever the beat says must be seen stays in the picture. If the shot
+   * as asked would leave one of them outside the frame, the camera backs off (and turns towards them) just far
+   * enough to hold them all. A shot that already holds them is left exactly as it was asked for.
+   */
+  _fitBeat(c, G) {
+    const b = c.ctx._beatNow;
+    if (!b || b.gag !== c.name || c.spec.free || !b.subs.length) return G;
+    const P = (this._fitP ||= []);
+    P.length = 0;
+    let mx = 0, my = 0, mz = 0, n = 0;
+    for (const sub of b.subs) {
+      const p = this._wpos(c.ctx, sub, _v);
+      if (!p) continue;
+      const h = sub.vehicle ? sub.hgt || 1.5 : sub.head ? 1.9 * ((sub.g.scale.y || 1) / (1.25 * PERSON_K)) : sub.g || sub.isObject3D ? 0.7 : 0.5;
+      P.push(p.x, p.y + h * 0.5, p.z, sub.vehicle ? 2.3 : 0.5, h * 0.5 + 0.3);
+      mx += p.x; my += p.y + h * 0.5; mz += p.z; n++;
+    }
+    if (!n) return G;
+    const asp = this.camera.aspect, aK = Math.sqrt(aspNeed(asp));
+    const tv = Math.tan((G.fov * Math.PI) / 360) * aK * 0.82, th = tv * asp;
+    const ce = Math.cos(G.el), se = Math.sin(G.el), sa = Math.sin(G.az), ca = Math.cos(G.az);
+    // how far back the lens must stand from the aim point (tx, ty, tz) to hold every subject
+    const need = (tx, ty, tz) => {
+      let D = 0;
+      for (let i = 0; i < P.length; i += 5) {
+        const qx = P[i] - tx, qy = P[i + 1] - ty, qz = P[i + 2] - tz;
+        const x = qx * ca - qz * sa, y = -qx * sa * se + qy * ce - qz * ca * se, back = qx * sa * ce + qy * se + qz * ca * ce;
+        D = Math.max(D, ((Math.abs(x) + P[i + 3]) / th + back) / aK, ((Math.abs(y) + P[i + 4]) / tv + back) / aK);
+      }
+      return D;
     };
+    const d0 = need(G.tx, G.ty, G.tz);
+    if (d0 <= G.dist) return G;
+    // turn towards them as well as backing off: the further out they are, the more the aim moves to their middle
+    const k = clamp(d0 / G.dist - 1) * 0.8;
+    G.tx += (mx / n - G.tx) * k; G.ty += (my / n - G.ty) * k; G.tz += (mz / n - G.tz) * k;
+    G.dist = Math.min(Math.max(G.dist, need(G.tx, G.ty, G.tz)), Math.max(G.dist * 4, 36));
+    return G;
   }
   /** Is the line from a shot's subject to its camera free of buildings (as drawn, with their heights)? */
-  _clear(g) {
+  _clear(g, strict = false) {
     const S = this.W.solid, ce = Math.cos(g.el), se = Math.sin(g.el), sx = Math.sin(g.az) * ce, sz = Math.cos(g.az) * ce;
     for (let t = 2; t <= g.dist; t += 0.6) {
       const h = S.get(g.tx + sx * t, g.tz + sz * t);
@@ -383,6 +433,32 @@ export class Stage {
         if (t < 2.5) continue; // a car the subject is standing at belongs in the shot
         if (Math.hypot(dx - sx * t, dz - sz * t) < 2.1 && g.ty + se * t < gy + 2.0) return false;
       }
+    }
+    // Choosing where to stand for a new shot is stricter: a bin, a bike rack or a tree trunk between a low lens and
+    // its subject (or right in front of the lens) fills the picture as surely as a wall does.
+    if (strict && se < 0.5) {
+      const W = this.W, gy = W.landY(g.tx, g.tz), camY = g.ty + se * g.dist;
+      for (const p of W.props || []) {
+        const dx = p.x - g.tx, dz = p.z - g.tz, t = dx * sx + dz * sz;
+        if (t > g.dist + 1.5) continue;
+        const f = FURN[p.kind] || FURN.bin, off = Math.hypot(dx - sx * t, dz - sz * t);
+        // what the subject stands at belongs in the shot, unless it is tall and squarely in front of them (a mailbox before a face)
+        if (t < 1.7) { if (t > 0.45 && f[0] > 1.3 && off < f[1] + 0.3 && g.ty + se * t < gy + f[0] - 0.15) return false; continue; }
+        if (off < f[1] + 0.4 && g.ty + se * Math.min(t, g.dist) < gy + f[0] + 0.5) return false;
+        if (t > g.dist - 3.5 && off < f[1] + 1.3 && camY < gy + f[0] + 0.9) return false;
+      }
+      // somebody else standing in the line of sight (a bystander's back) hides the subject just as well
+      const skip = this._shotSubs;
+      for (const a of this.actors) {
+        if (!a.alive || !a.head || (skip && skip.includes(a)) || !a.g.parent) continue;
+        a.g.updateWorldMatrix(true, false);
+        const e = a.g.matrixWorld.elements, dx = e[12] - g.tx, dz = e[14] - g.tz, t = dx * sx + dz * sz;
+        if (t < 0.3 || t > g.dist + 0.5) continue;
+        if (Math.hypot(dx - sx * t, dz - sz * t) < 0.7 + (t > g.dist - 3 ? 0.4 : 0) && g.ty + se * t < e[13] + 2.1) return false;
+      }
+      // a parked car beside the lens looms into the picture too
+      if (this._park) { const cx = g.tx + sx * g.dist, cz = g.tz + sz * g.dist, P = this._park; for (let i = 0; i < P.length; i += 2) if (camY < gy + 2.4 && Math.hypot(P[i] - cx, P[i + 1] - cz) < 3.3 && Math.hypot(P[i] - g.tx, P[i + 1] - g.tz) > 3) return false; }
+      if (W.treeNear) for (let t = 2.2; t <= g.dist + 0.6; t += 0.7) if (W.treeNear(g.tx + sx * t, g.tz + sz * t, t > g.dist - 2.5 ? 1.1 : 0.55)) return false;
     }
     return true;
   }
@@ -406,10 +482,88 @@ export class Stage {
       track: (on, o) => P(on, { dist: 13, el: 0.16, az: 0.3, y: 1.2, lead: 2, fov: 32 }, o),
       top: (on, o) => P(on, { dist: 32, el: 1.32, az: 0, y: 0 }, o),
       two: (a, b, o) => P([a, b], { el: 0.2, az: 0.25, y: 1.35, fit: true }, o),
+      // ---- more of the film grammar
+      /** looking up at someone from knee height, wide lens, tilted: the villain shot */
+      hero: (on, o) => P(on, { dist: 5.2, el: -0.14, y: 1.45, face: true, fov: 48, roll: 0.1, drift: { dist: -0.15 } }, o),
+      /** face filling the frame */
+      face: (on, o) => P(on, { dist: 4.6, el: 0.04, y: 1.72, face: true, fov: 22 }, o),
+      /** crash zoom: starts wide and punches in on the lens */
+      crash: (on, o) => P(on, { dist: 11, el: 0.12, y: 1.5, face: true, fov: 56, drift: { fov: -70 } }, o),
+      /** slow push-in */
+      dolly: (on, o) => P(on, { dist: 12, el: 0.14, y: 1.35, fov: 30, drift: { dist: -1.1 } }, o),
+      /** circles the subject (speed in radians per second, sign = direction) */
+      orbit: (on, o) => P(on, { dist: 9, el: 0.22, y: 1.3, az: -0.7, fov: 34, drift: { az: 0.35 } }, o),
+      /** a vehicle coming at the lens: long lens, down at bumper height. `dir` = the way it travels (+1 = towards +x) */
+      nose: (on, dir = 1, o) => P(on, { dist: 17, el: 0.05, az: dir * 1.5, y: 0.9, fov: 24, back: true }, o),
+      /** rolling alongside a vehicle, low and wide, hand-held */
+      chase: (on, dir = 1, o) => P(on, { dist: 9.5, el: 0.09, az: -dir * 0.95, y: 0.9, fov: 50, lead: 2.5, shake: 0.7, back: true }, o),
+      /** at wheel height, close: tyres, kerbs, things on the ground */
+      ground: (on, o) => P(on, { dist: 5.5, el: 0.03, y: 0.35, fov: 44 }, o),
+      /** looking down from a first-floor window */
+      high: (on, o) => P(on, { dist: 19, el: 0.85, az: 0.2, y: 0.6, fov: 30 }, o),
+      /** a tilted frame for when things go wrong */
+      dutch: (on, o) => P(on, { dist: 8.5, el: 0.1, y: 1.4, face: true, fov: 38, roll: 0.26 }, o),
       card: (title, sub = '', dur = 1.6) => { if (mine()) stage.hooks.onCard?.(String(title), String(sub), dur); },
       freeze: (dur = 1, scale = 0.05) => { if (mine()) stage.slow = { scale, t: dur }; },
       release: () => { if (mine()) stage._cineEnd(); },
     };
+  }
+
+  // ------------------------------------------------------------ storyboard beats (the visibility audit)
+  // Every set piece announces its beats (ctx.beat) with the people and things the viewer has to see. With
+  // `stage.audit` on (the dev audit turns it on) the stage measures, frame by frame, whether each of them is inside
+  // the picture, not behind a standing building, and how tall it is on screen. Costs nothing when audit is off.
+  _beat(ctx, gag, label, subs) {
+    // the camera keeps a beat's subjects in the picture (see _fitBeat), audit or not
+    ctx._beatNow = { gag, subs: (Array.isArray(subs) ? subs : [subs]).filter(Boolean) };
+    if (!this.audit || (this.auditOnly && (gag !== this.auditOnly || ctx !== this.camCtx))) return; // other spots play their own scenes meanwhile
+    this._beatClose();
+    const list = (Array.isArray(subs) ? subs : [subs]).filter(Boolean);
+    this.curBeat = { ctx, gag, label, subs: list, t0: this.time, n: 0, seen: 0, off: 0, hid: 0, px: [], cine: 0, el: 0, dist: 0 };
+    (this.beatLog ||= []);
+  }
+  _beatClose() {
+    const b = this.curBeat;
+    if (!b) return;
+    this.curBeat = null;
+    const px = b.px.sort((x, y) => x - y), n = Math.max(1, b.n);
+    this.beatLog.push({
+      gag: b.gag, beat: b.label, secs: +(this.time - b.t0).toFixed(1), seen: Math.round((100 * b.seen) / n), offFrame: Math.round((100 * b.off) / n),
+      hidden: Math.round((100 * b.hid) / n), size: px.length ? +px[px.length >> 1].toFixed(1) : 0, cam: Math.round((100 * b.cine) / n),
+      el: +(b.el / n).toFixed(2), dist: +(b.dist / n).toFixed(1),
+    });
+  }
+  /** One frame of the audit: is every subject of the current beat in the picture and in the clear? */
+  _beatTick() {
+    const b = this.curBeat, W = this.W;
+    if (!b || !W) return;
+    const cam = this.camera, S = W.solid, cp = cam.position;
+    let all = true, off = false, hid = false, size = null;
+    for (const sub of b.subs) {
+      const p = this._wpos(b.ctx, sub, _v);
+      if (!p) continue;
+      const h = sub.vehicle ? sub.hgt || 1.5 : sub.g || sub.isObject3D ? (sub.head ? 1.9 * ((sub.g.scale.y || 1) / (1.25 * PERSON_K)) : 0.8) : 0.6;
+      const bx = p.x, by = p.y, bz = p.z;
+      _v2.set(bx, by + h * 0.6, bz).project(cam);
+      const inside = _v2.z < 1 && Math.abs(_v2.x) < 0.97 && Math.abs(_v2.y) < 0.97;
+      if (!inside) { all = false; off = true; continue; }
+      const y0 = _v.set(bx, by, bz).project(cam).y, y1 = _v2.set(bx, by + h, bz).project(cam).y;
+      if (size === null) size = Math.abs(y1 - y0) * 50; // percent of the picture's height
+      // march from the lens to the subject's middle: a building that still stands in between hides it
+      const mx = bx, my = by + h * 0.6, mz = bz, dx = mx - cp.x, dy = my - cp.y, dz = mz - cp.z, len = Math.hypot(dx, dy, dz);
+      for (let t = 1; t < len - 1; t += 0.5) {
+        const k = t / len, x = cp.x + dx * k, z = cp.z + dz * k, hh = S.get(x, z);
+        if (hh === 0 || hh === 255) continue;
+        if (cp.y + dy * k < S.y0 + Math.min(hh * 0.5, cutLimit(x, z)) - 0.3) { all = false; hid = true; break; } // as tall as the cutaway leaves it
+      }
+    }
+    b.n++;
+    if (all) b.seen++;
+    if (off) b.off++;
+    if (hid) b.hid++;
+    if (size !== null) b.px.push(size);
+    if (this.cine && this.cine.ctx === b.ctx && this.cine.name === b.gag) b.cine++;
+    b.el += this.rig.el; b.dist += this.rig.dist;
   }
 
   // ------------------------------------------------------------ show
@@ -556,7 +710,10 @@ export class Stage {
         },
         shake: (a) => { if (near() && !CALM) stage.fx.shake(a); },
       };
-      for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y + W.hAt(p[0], p[1]), p[1], ...rest); };
+      // a mark's direction is given in street space too: turn it by the way the street runs here
+      fxw.mark = (x, y, z, ang = 0, o) => { const p = map(x, z), t = path.at(sc + x, _f); stage.fx.mark(p[0], y + W.hAt(p[0], p[1]), p[1], ang + Math.atan2(-t.tz, t.tx), o); };
+      fxw.dust = (x, y, z, vx = 0, vz = 0, ...rest) => { const p = map(x, z), t = path.at(sc + x, _f); stage.fx.dust(p[0], y + W.hAt(p[0], p[1]), p[1], t.tx * vx - t.tz * vz, t.tz * vx + t.tx * vz, ...rest); };
+      for (const k of ['burst', 'smoke', 'puff', 'cash', 'confetti', 'sparks', 'fireball', 'firework', 'shards', 'pips']) fxw[k] = (x, y, z, ...rest) => { const p = map(x, z); stage.fx[k](p[0], y + W.hAt(p[0], p[1]), p[1], ...rest); };
       const ctx = {
         id, sc, L, st, level, W, night: !!sky.night, rnd: crnd, fx: fxw, runner: this.runner, mix: this.mix,
         world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
@@ -601,6 +758,8 @@ export class Stage {
           if (g) { this.gags.delete(g); ctx._gags.delete(name); }
           if (this.cine && this.cine.ctx === ctx && this.cine.name === name) this._cineEnd();
           if (this.cineSkip === name) this.cineSkip = null;
+          if (this.curBeat && this.curBeat.ctx === ctx && this.curBeat.gag === name) this._beatClose();
+          if (ctx._beatNow && ctx._beatNow.gag === name) ctx._beatNow = null;
         },
         /** Everyone and everything on stage, and where the trams are: traffic looks ahead with these. */
         /** Walkers of the city's crowd near x (this spot's street space), nearest first. */
@@ -633,6 +792,10 @@ export class Stage {
         trafficNear: () => { const c = path.xz(sc, 0); return stage.crowd ? stage.crowd.traffic(c[0], c[1], 24) : 0; },
         /** The director's camera for one gag (see _cam). */
         cam: (name) => this._cam(ctx, name),
+        /** Dev: force a scene's coin flips, e.g. stage.force = { busted: true } (see `flip` in gags.js). */
+        get force() { return stage.force || null; },
+        /** A storyboard beat begins: `subs` is who or what the viewer must be able to see during it (see _beat). */
+        beat: (gag, label, subs) => this._beat(ctx, gag, label, subs),
         cineBusy: () => !!this.cine && this.cine.ctx === ctx,
       };
       return ctx;
@@ -897,14 +1060,26 @@ export class Stage {
           let view = sg, clear = this._clear(sg);
           if (c.fresh) {
             c.fresh = false; c.age = 0; c.glide = typeof c.spec.cut === 'number' ? Math.max(0.1, c.spec.cut) : 0; snap = !c.glide;
-            // a building in the way? swing the camera round until it sees the subject
-            c.azFix = 0;
-            if (!clear && sg.el < 0.6) {
-              for (const off of [0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4]) {
-                c.azFix = off;
-                const alt = this._shotGoal(c);
-                if (alt && this._clear(alt)) { view = alt; clear = true; break; }
-                c.azFix = 0;
+            // Something in the way? Look for somewhere better to stand: first with nothing at all in the picture's way
+            // (walls, parked cars, bins, racks, trunks), swinging round and then rising a little; failing that, clear of walls.
+            c.azFix = 0; c.elFix = 0;
+            const bn = c.ctx._beatNow;
+            this._shotSubs = [].concat(c.spec.on, c.spec.from || [], bn && bn.gag === c.name ? bn.subs : []);
+            if (sg.el < 0.6) {
+              let found = this._clear(sg, true);
+              for (const strict of [true, false]) {
+                if (found) break;
+                if (!strict && clear) { found = true; break; } // the shot as asked is at least clear of walls: keep it
+                for (const up of [0, 0.16, 0.3, 0.46]) {
+                  for (const off of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4]) {
+                    if (!up && !off) continue;
+                    c.azFix = off; c.elFix = up;
+                    const alt = this._shotGoal(c);
+                    if (alt && this._clear(alt, strict)) { view = alt; clear = true; found = true; break; }
+                  }
+                  if (found) break;
+                }
+                if (!found) { c.azFix = 0; c.elFix = 0; }
               }
             }
           }
@@ -949,17 +1124,20 @@ export class Stage {
     }
     const sh = this.fx.shakeAmt * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
     const tx = r.tx + (Math.random() - 0.5) * sh, ty = r.ty + (Math.random() - 0.5) * sh, tz = r.tz + (Math.random() - 0.5) * sh;
-    const cx = tx + r.dist * Math.sin(r.az) * ce, cz = tz + r.dist * Math.cos(r.az) * ce;
-    let cy = ty + r.dist * Math.sin(r.el);
+    // Shots are framed for a wide picture. On a tall, narrow screen (a phone held upright) the same shot would cut
+    // its subjects off left and right: stand further back and widen the lens until the same width of street fits.
+    const needA = this.cine && this.mode === 'follow' ? aspNeed(this.camera.aspect) : 1;
+    this.aspK = snapCut || this.aspK === undefined ? needA : this.aspK + (needA - this.aspK) * Math.min(1, real * 6);
+    const aK = Math.sqrt(this.aspK), camD = r.dist * aK;
+    const cx = tx + camD * Math.sin(r.az) * ce, cz = tz + camD * Math.cos(r.az) * ce;
+    let cy = ty + camD * Math.sin(r.el);
     if (r.dist < 80) cy = Math.max(cy, W.landY(cx, cz) + 0.35); // never under the ground
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(tx, ty, tz);
     if (r.roll) this.camera.rotateZ(r.roll);
-    // during a cutscene the letterbox bars hide the top and bottom ninth of the picture: widen the view so that
-    // the shot as it was framed fits between them
-    this.cineK = (this.cineK || 0) + ((this.cine ? 1 : 0) - (this.cineK || 0)) * Math.min(1, real * 7);
-    this.camera.fov = (2 * Math.atan(Math.tan((r.fov * Math.PI) / 360) / (1 - 0.22 * this.cineK)) * 180) / Math.PI;
-    this.camera.near = clamp(r.dist * 0.04, 0.6, 80);
+    // cutscenes fill the whole frame (no letterbox): the lens is the shot's own, widened only on a narrow screen
+    this.camera.fov = aK > 1.001 ? (2 * Math.atan(Math.tan((r.fov * Math.PI) / 360) * aK) * 180) / Math.PI : r.fov;
+    this.camera.near = clamp(r.dist * 0.04, 0.2, 80);
     this.camera.far = r.dist * 7 + 9000;
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
@@ -1007,6 +1185,7 @@ export class Stage {
       }
     }
     this._pins();
+    if (this.audit) this._beatTick();
     this.renderer.render(this.scene, this.camera);
   }
 }

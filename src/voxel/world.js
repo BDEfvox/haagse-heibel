@@ -369,6 +369,14 @@ const CUTT = {
   depth: cutPatch(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking }), false, true),
 };
 /** How much a thing at (x, z) of height h is ducked right now (mirrors the shader; used for signs). */
+/** How tall something at (x, z) may still stand while the cutaway is on: Infinity where nothing is cut down. */
+export function cutLimit(x, z, r = 5) {
+  const f = U.uFocus.value, d = U.uCamDir.value, dx = x - f.x, dz = z - f.z;
+  const t = dx * d.x + dz * d.y, l = Math.hypot(dx - d.x * t, dz - d.y * t);
+  const ss = (a, b, v) => { const k = clamp((v - a) / (b - a)); return k * k * (3 - 2 * k); };
+  const w = U.uCut.value * ss(-1, 3, t - r * U.uHalf.value) * (1 - ss(U.uR.value, U.uR.value * 1.5, l));
+  return w < 0.5 ? Infinity : Math.max(0.3, (t - r - 7) * U.uTan.value);
+}
 export function cutWeight(x, z, r = 5) {
   const f = U.uFocus.value, d = U.uCamDir.value, dx = x - f.x, dz = z - f.z;
   const t = dx * d.x + dz * d.y, l = Math.hypot(dx - d.x * t, dz - d.y * t);
