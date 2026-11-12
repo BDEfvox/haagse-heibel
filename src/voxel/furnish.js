@@ -3,7 +3,8 @@
 // has (see DETAIL.md for the list and the level of detail of each kind of place), drawn into a tile's own builders.
 // Every street has them, placed by the same rules from the tile's own data, so the city looks the same whichever street
 // is in focus. The open street only looks up what stands along it (the `props` list returned here) to hand anchors to
-// the cutscene scripts.
+// the cutscene scripts and to draw its obstacle picture (setting.js `obstacles`); the end of the list holds what only
+// stands in the way (statues, fountains, shelters, planters), added after all placing is done.
 //
 // Frame of every prop: local +z points from the prop towards the centre line of its road (so a bench's back is to the
 // houses, a shelter's glass is at the back), local x runs along the street. Tile coordinates: x east, z south, metres.
@@ -658,7 +659,7 @@ function stallCheap(v, r, kind, w) {
  * Furniture for one map tile, drawn into the tile's builders. Called once per tile at the finest level of detail.
  * Reads: key, grid, C, trees [x, z, size, ...], pois [[kind, x, y] ...] (decimetres), yAt, v, gl, group, night, lite, roads.
  * Optional (tolerated when missing): ps (flat [cat, nameIdx, flags] per poi, see poicats.js), rails, tile (the tile's raw data).
- * Returns { props }: what the cutscenes may want to use, in tile coordinates.
+ * Returns { props }: what the cutscenes may want to use, in tile coordinates; after it, what only stands in the way (`inTheWay`).
  */
 export function furnishTile(o) {
   const { key, grid, C, trees, pois, yAt, v, gl, group, night, lite } = o;
@@ -667,6 +668,10 @@ export function furnishTile(o) {
   const [ktx, kty] = key.split('_').map(Number), ox = ktx * TILE, oy = kty * TILE; // map metres of the tile's south-west corner
   const rnd = makeRng(hashStr('furn|' + key));
   const props = [];
+  // What stands in the street without being an anchor for a scene (statues, fountains and shelters of the map, the stops and
+  // planters put down here): only the obstacle picture and the camera want them. They join `props` in finish(), after
+  // everything is placed, so nothing that counts props while placing (the cap below) ever sees them.
+  const inTheWay = [];
   const cap = lite ? 120 : 320;
   let bonus = 0; // what a terrace field may hold on top of the tile's allowance (see the fields below)
   // By night the furniture stands where it stands by day, so every budget gate must see the day's count. What only the day
@@ -744,6 +749,12 @@ export function furnishTile(o) {
       else if (t === 10) stand('shelterf', x, z, 2.4);
       else if (t === 1) stand('fuel', x, z, 9);
       else stand('feature', x, z, 1.6);
+      // drawn by world.js / landmarks.js `drawFeature`; a shelter there turns by the feature's own direction (the same `rot`)
+      if (t === 8 || t === 9) inTheWay.push({ kind: t === 8 ? 'statue' : 'fountain', x, z, ax: 1, az: 0, nx: 0, nz: 1 });
+      else if (t === 10) {
+        const rot = Number.isFinite(e[3]) ? Math.PI / 2 - (e[3] * Math.PI) / 180 : 0;
+        inTheWay.push({ kind: 'stop', x, z, ax: Math.cos(rot), az: -Math.sin(rot), nx: Math.sin(rot), nz: Math.cos(rot) });
+      }
     }
     for (const e of raw.x || []) {
       const a = [];
@@ -1678,6 +1689,7 @@ export function furnishTile(o) {
               q.draw();
               stand(kind, p.x, p.z, q.r);
               if (q.rec) add(q.rec, p.x, p.z, sc.f, p.nx, p.nz, q.extra);
+              else if (q.obst) q.obst(p, sc.f, fr);
               return true;
             }
             return false;
@@ -1688,8 +1700,11 @@ export function furnishTile(o) {
           if (busy && chance(0.24)) item('mupi', { off: (sc) => sc.e + 0.45, minW: 1.8, pts: [[-0.6, 0], [0.6, 0], [0, 0.3]], r: 0.9, same: 28, draw: () => mupi(v, gl, night, rnd, vr3()), rec: 'mupi' });
           if (busy && chance(0.14)) item('meter', { off: (sc) => sc.e + 0.35, pts: [[0, 0]], r: 0.7, same: 22, draw: () => meter(v, gl, night, rnd, vr3()), rec: 'meter' });
           if (chance(busy ? 0.05 : 0.1)) item('charger', { off: (sc) => sc.e + 0.4, pts: [[-0.5, 0], [0.5, 0]], r: 0.9, same: 40, draw: () => charger(v, gl, night, rnd, vr4()), rec: 'charger' });
-          if (pl.cls === 8 && chance(0.55)) item('planter', { off: (sc) => sc.back - 0.9, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.5, same: 9, draw: () => { const n = 1 + Math.floor(rnd() * 3); for (let i = 0; i < n; i++) planterBox(v, (i - (n - 1) / 2) * 1.3, 0, rnd, 1.1); }, rec: null });
-          else if (busy && chance(0.1)) item('planter', { off: (sc) => sc.back - 0.8, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.4, same: 20, draw: () => { planterBox(v, 0, 0, rnd, 1.2); }, rec: null });
+          // planters are no anchor, but stand in the way: one entry per box, where draw() put it along the street (its count read back, no draw of its own)
+          let pn = 1;
+          const planters = (p, f, fr) => { for (let i = 0; i < pn; i++) { const lx = (i - (pn - 1) / 2) * 1.3; inTheWay.push({ kind: 'planter', x: p.x + lx * fr[1], z: p.z - lx * fr[0], ax: f.tx, az: f.tz, nx: p.nx, nz: p.nz }); } };
+          if (pl.cls === 8 && chance(0.55)) item('planter', { off: (sc) => sc.back - 0.9, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.5, same: 9, draw: () => { const n = (pn = 1 + Math.floor(rnd() * 3)); for (let i = 0; i < n; i++) planterBox(v, (i - (n - 1) / 2) * 1.3, 0, rnd, 1.1); }, rec: null, obst: planters });
+          else if (busy && chance(0.1)) item('planter', { off: (sc) => sc.back - 0.8, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.4, same: 20, draw: () => { planterBox(v, 0, 0, rnd, 1.2); }, rec: null, obst: planters });
           if (busy && chance(0.07)) item('bigrack', { off: (sc) => sc.back - 1.2, minW: 3.0, pts: [[-1.6, -1], [1.6, -1], [-1.6, 2.4], [1.6, 2.4]], r: 2.4, same: 24, draw: () => { P.bikeRack(v, 0, -0.8, rnd, 5, 0); P.bikeRack(v, 0, 0.9, rnd, 5, 0); }, rec: 'rackpark' });
         });
       }
@@ -1725,6 +1740,7 @@ export function furnishTile(o) {
     aim(fr[2], x, z);
     P.tramStop(v, gl, 0, 0, night, 0);
     stand('stop', x, z, 2.2);
+    inTheWay.push({ kind: 'stop', x, z, ax: f.tx, az: f.tz, nx, nz }); // (the one not drawn above is the map's shelter, listed with the features)
   }
 
   // ================================================================ whole-area passes (see DETAIL.md)
@@ -2104,6 +2120,7 @@ export function furnishTile(o) {
 
   function finish() {
     v.setT(); gl.setT();
+    for (const s of inTheWay) props.push(s);
     return { props };
   }
 }

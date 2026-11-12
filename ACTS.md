@@ -54,10 +54,16 @@ Pavement lines: `padZ(ctx, 'walkB0' | 'walkB1' | 'walkF0' | 'walkF1', x)` (B = h
 ### 2a. The obstacle picture, and `ignore`
 
 Every spot has one picture of what STANDS there, in street space (`S.obstacles(ctx)`, built lazily, cached): parked cars (three
-circles each), lamp posts, every furniture prop (bins, benches, racks, bus shelters, terraces with tables, parasols, market stalls,
-kiosks, advertising columns, underground-bin posts, charging posts, trolley shelters, big bike parks, tram masts, traffic lights,
-statues, fountains...) with a footprint radius and height from ONE table, `S.FURN` (kind -> [height, radius]; unknown kinds count
-as 1.1 x 0.6; add new kinds there), and, when the crowd offers `ctx.crowd.obstacles`, the standing groups and waiting vehicles.
+circles each), lamp posts, every prop in the tiles' `props` lists (furnish.js): bins, benches, bike racks and big bike parks,
+mailboxes, transformer boxes, terraces with tables, beach parasols, picnic tables, market and herring stalls, kiosks, advertising
+columns, MUPIs, parking meters, underground-bin posts, charging posts, trolley shelters, tram masts, traffic lights, and, listed
+after the anchors, the tram and bus shelters (kind `stop`, furnish's own and the map's), planters (one per box) and the map's
+statues and fountains; each with a footprint radius and height from ONE table, `S.FURN` (kind -> [height, radius]; unknown
+kinds count as 1.1 x 0.6; add new kinds there; a statue or fountain is one circle of the table's size, not its own, so a wide
+basin is bigger than its circle), and, when the crowd offers `ctx.crowd.obstacles`, the standing groups and waiting vehicles.
+NOT in it (drawn, but not in `props`), e.g.: bollards, quay posts and chains, street-name signs, poles, flagpoles, sport-pitch
+goals, playgrounds and their fences, fuel-station canopies and the map's other point features. Many of the map's shelters stand
+on the tram bed or the road (a platform in the middle of the street), so they are in the way of road scenes too.
 Buildings, water and tree trunks are checked as before. `clearSpot`, `findSpot`, `spotOr`, `nudge`, `runway`, `lineClear`,
 `roadHere` and the new `S.route`, `S.laneClear`, `S.laneFor` all respect it. A thin post (lamp, pole) only needs a person's
 width beside it; `runway` lets a post on the line pass when there is 0.7 m to go round it (the walking helpers do).

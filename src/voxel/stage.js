@@ -127,7 +127,7 @@ const aspNeed = (asp) => clamp(Math.pow(1.55 / asp, 0.6), 1, 2.4);
 /** Street furniture as the camera sees it: [height, radius] in metres (see _clear). The numbers are the ones of setting.js's
  * FURN table; the camera knows these kinds only (any other kind of prop counts as a bin, see _clear). */
 const FURN = Object.fromEntries(['bench', 'bin', 'box', 'mailbox', 'parasol', 'rack', 'sign', 'stall', 'stop', 'terrace', 'mstall',
-  'kiosk', 'picnic', 'orac', 'column', 'mupi', 'meter', 'charger', 'trolleys', 'rackpark', 'mast', 'tlight', 'lamp'].map((k) => [k, STREET_FURN[k]]));
+  'kiosk', 'picnic', 'orac', 'column', 'mupi', 'meter', 'charger', 'trolleys', 'rackpark', 'mast', 'tlight', 'lamp', 'statue', 'fountain', 'planter'].map((k) => [k, STREET_FURN[k]]));
 /** Furniture the camera must never stand under or inside (parasols, market stalls, kiosks): see _clear. */
 const TALL = new Set(['terrace', 'mstall', 'kiosk', 'parasol']);
 
