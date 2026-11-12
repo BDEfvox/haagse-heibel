@@ -634,6 +634,11 @@ export class Crowd {
     if (a.kind !== 3) this.count[a.fixed ? 'parked' : a.kind]--;
     if (unlink && a.lane) a.lane.owner.agents.delete(a);
   }
+  /** A full people pool gives up the figure of one walker or rider that nobody can see (they leave the crowd). False if all are in view. */
+  _evict(pool) {
+    for (const a of this.agents) if (!a.dead && a.pp === pool && (a.kind === PED || a.kind === BIKE_) && !this._seen(a.x, a.z)) { this._free(a); return true; }
+    return false;
+  }
   /**
    * Would anyone watching see something appear or vanish here? Only what is inside the view (with a margin) and close
    * enough to be more than a speck counts. Everything that comes into or leaves the world does so where this is false.
@@ -740,7 +745,7 @@ export class Crowd {
       let model = look?.model || 'person', pool = this.people;
       if (A) { if (!look) model = A.models[pick(A.models)]; pool = this._pool(model, A); }
       a.slot = pool.take();
-      if (a.slot < 0 && A) { A = null; look = null; model = 'person'; pool = this.people; a.slot = pool.take(); } // that look is used up: a plain walker instead
+      if (a.slot < 0 && A && !look) { A = null; model = 'person'; pool = this.people; a.slot = pool.take(); } // that look is used up: a plain walker instead (never for somebody handed back: see adopt)
       if (a.slot < 0) return null;
       a.pp = pool;
       a.look = look || (A ? this._archLook(A, model) : { shirt: pick(P_SHIRT), pants: pick(P_PANTS), skin: pick(P_SKIN), hair: pick(P_HAIR), kid: r() < 0.1 });
@@ -1011,6 +1016,9 @@ export class Crowd {
       }
     }
     if (!best) return false;
+    // they keep their own figure: if that look's pool is full, one of that look whom nobody can see makes room; else not yet (false)
+    const A = rides ? null : archOf(look.kind);
+    if (A) { const pool = this._pool(look.model || 'person', A); if (!pool.free.length && !this._evict(pool)) return false; }
     const a = this._spawn(best, clamp(bi * best.step, 0.1, best.len - 0.1), look);
     if (!a) return false;
     const j = Math.min(best.n - 2, bi), ex = best.pts[j * 2 + 2] - best.pts[j * 2], ez = best.pts[j * 2 + 3] - best.pts[j * 2 + 1];
