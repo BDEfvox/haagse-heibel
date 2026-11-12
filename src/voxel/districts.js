@@ -221,7 +221,7 @@ function resolve(wijk, buurt, level) {
   Object.freeze(pop); Object.freeze(spot.mult); Object.freeze(spot);
   return spot;
 }
-fallback = (() => { const s = resolve('', '', 1); return { wijk: null, buurt: null, level: 0, pop: s.pop, mult: s.mult }; })();
+fallback = (() => { const s = resolve('', '', 1); return { wijk: null, buurt: null, level: 1, pop: s.pop, mult: s.mult }; })();
 
 /** Called once at boot with buurten.geojson. */
 export function setDistrictData(geojson) {
