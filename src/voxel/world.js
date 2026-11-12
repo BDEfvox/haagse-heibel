@@ -2203,13 +2203,15 @@ function ensureTile(city, key, t, lod, night, lite) {
   const old = _built.get(key);
   if (old && old.lod <= lod) return old;
   const c = buildTile(city, key, t, night, lite, lod);
+  let on = false;
   if (old) {
-    const on = _stream && !_stream.dead && _stream.live.get(key) === old;
+    on = !!_stream && !_stream.dead && _stream.live.get(key) === old;
     _built.delete(key);
     if (on) { placeTile(c, _stream.W.frame); _stream.group.add(c.g); _stream.group.remove(old.g); _stream.live.set(key, c); }
     old.dispose();
   }
   _built.set(key, c); _byNum.set(c.num, c);
+  if (on && _stream.onTile) _stream.onTile(c, true); // (the crowd learns the furniture the finer tile brought; told once the new tile is the registered one)
   return c;
 }
 const WEIGHT = [4, 2, 0.5]; // what a tile of each level costs in memory, roughly
@@ -2225,7 +2227,7 @@ class Streamer {
     this.budget = W.lite ? 44 : 230; this.rmax = W.lite ? 380 : 820; this.far = W.lite ? 900 : 2100;
     this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
     this.staged = new Map(); this.target = null; this.busy = false; this.fm = [0, 0]; this.lazyT = 0; // busy: a rebake is waiting for its swap
-    /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves. */
+    /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves; also with (tile, true) when a finer build replaces the one on screen. */
     this.onTile = null;
     _stream = this;
   }

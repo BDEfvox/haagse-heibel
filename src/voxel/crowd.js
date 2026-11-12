@@ -443,18 +443,23 @@ export class Crowd {
   _cls(x, z) { return this.W.clsAt(x, z); }
 
   // ------------------------------------------------------------ building lanes
-  /** A streamed tile's roads and tracks (given in the tile's own coordinates). A tile that is already known is left alone. */
+  /**
+   * A streamed tile's roads and tracks (given in the tile's own coordinates). A tile that is already known is left alone,
+   * except that a finer build of it that brought street furniture adds its benches to the gathering spots (nothing else moves).
+   */
   addTile(t) {
-    if (this.owners.has(t.key)) { this.owners.get(t.key).seen = this.t; return; }
-    const W = this.W, f = W.frame, TILE = 256, ctr = f.S(t.ox + TILE / 2, t.oy + TILE / 2), toScene = (x, z) => f.S(t.ox + x, t.oy + TILE - z);
-    const o = { id: t.key, lanes: [], parked: [], lamps: [], agents: new Set(), groups: [], hot: [], pend: [], cx: ctr[0], cz: ctr[1], r: 190, on: false, seen: this.t };
+    const W = this.W, f = W.frame, TILE = 256, toScene = (x, z) => f.S(t.ox + x, t.oy + TILE - z);
+    const benches = (o) => { o.furn = true; for (const q of t.props) if (q.kind === 'bench') { const p = toScene(q.x, q.z); o.hot.push(p[0], p[1], 1); } };
+    if (this.owners.has(t.key)) { const o = this.owners.get(t.key); o.seen = this.t; if (t.props && !o.furn) benches(o); return; }
+    const ctr = f.S(t.ox + TILE / 2, t.oy + TILE / 2);
+    const o = { id: t.key, lanes: [], parked: [], lamps: [], agents: new Set(), groups: [], hot: [], pend: [], cx: ctr[0], cz: ctr[1], r: 190, on: false, seen: this.t, furn: false };
     // places where people gather, from the tile's points of interest (kinds 1 bar, 2 cafe/snack bar, 6 coffee shop, 8 bench)
     // and benches that were furnished: flat [x, z, tag] with tag 1 bench, 2 bar, 3 snack
     for (const e of t.pois || []) {
       const tag = e[0] === 8 ? 1 : e[0] === 1 ? 2 : e[0] === 2 || e[0] === 6 ? 3 : 0;
       if (tag) { const p = f.S(t.ox + e[1] / 10, t.oy + e[2] / 10); o.hot.push(p[0], p[1], tag); }
     }
-    for (const q of t.props || []) if (q.kind === 'bench') { const p = toScene(q.x, q.z); o.hot.push(p[0], p[1], 1); }
+    if (t.props) benches(o); // (only the finest level of detail has furniture: see the start of addTile for a tile that gains it later)
     const C = W.C, walk = new Uint8Array(256), road = new Uint8Array(256);
     for (const k of [C.WALK, C.LAND, C.PLAZA, C.FOOT, C.PED, C.CURB, C.DIRT]) walk[k] = 2;
     for (const k of [C.ASPHALT, C.KLINKER, C.SERVICE, C.CYCLE, C.BIKELANE, C.MARK, C.PARKING, C.RAILBED, C.RAIL]) { walk[k] = 1; road[k] = 1; }
