@@ -1848,7 +1848,7 @@ export class Crowd {
     for (const q of this.pools.values()) q.dispose();
     for (const q of this.vpools.values()) q.dispose();
     this.cars.dispose(); for (const p of this.lampPools) p.dispose(); this.trams.dispose();
-    this.beams.geometry.dispose();
+    this.beams.geometry.dispose(); this.beams.material.dispose(); // (its instance matrix is the cars': disposed with them)
     this.owners.clear(); this.agents = []; this.ends.clear();
   }
 }
