@@ -32,7 +32,6 @@ const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33']
 const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788', '#fb8500'];
 const PANTS = ['#2b3a55', '#3d405b', '#6b705c', '#1d3557', '#5c4033', '#22223b', '#4a4e69'];
 const HAIRS = ['#2b1d14', '#5a3825', '#c58b3c', '#e6c36a', '#111111', '#a33b20', '#cfcfcf'];
-const BIKECOL = ['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#111', '#ff70a6', '#8ecae6'];
 const WARM = ['#ffd98a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
 // ---------------------------------------------------------------- polylines
@@ -357,8 +356,8 @@ function peperbus(v, gl, night, r, vr) {
   v.box(0, H + 0.18, 0, 0.8, 0.12, 0.8, P.shade(body, 0.8));
   const poster = pick(r, ['#ff4d6d', '#ffd166', '#06d6a0', '#4cc9f0', '#f8f9fa', '#9d4edd']);
   for (const [dx, dz, w, d] of [[0, 0.5, 0.82, 0.04], [0, -0.5, 0.82, 0.04], [0.5, 0, 0.04, 0.82], [-0.5, 0, 0.04, 0.82]]) {
-    v.box(dx, 0.3, dz, w + (d > 0.1 ? 0 : 0), H - 0.4, d + 0.0, body);
-    (night ? gl : v).box(dx * 1.02, 0.45, dz * 1.02, w * 0.9, H - 0.7, d, night ? P.shade(poster, 1.0) : poster);
+    v.box(dx, 0.3, dz, w, H - 0.4, d, body);
+    (night ? gl : v).box(dx * 1.02, 0.45, dz * 1.02, w * 0.9, H - 0.7, d, poster);
   }
 }
 function mupi(v, gl, night, r, vr) {
@@ -367,7 +366,7 @@ function mupi(v, gl, night, r, vr) {
   v.box(0, 0.4, 0, 1.2, 1.9, 0.16, body);
   const c1 = pick(r, ['#ff6b6b', '#ffd166', '#06d6a0', '#4cc9f0', '#ffffff', '#ff9f1c']), c2 = pick(r, ['#2b2d42', '#ef476f', '#118ab2', '#f4f1de']);
   for (const s of [-1, 1]) {
-    (night ? gl : v).box(0, 0.55, s * 0.09, 1.0, 1.6, 0.02, night ? c1 : c1);
+    (night ? gl : v).box(0, 0.55, s * 0.09, 1.0, 1.6, 0.02, c1);
     v.box(0, 1.5, s * 0.1, 0.8, 0.3, 0.01, c2);
   }
 }
@@ -511,7 +510,7 @@ function trafficLight(v, gl, night, r, st, vr) {
   const L = [['#ff3b30', 0.85], ['#ffb703', 0.85], ['#2ee06a', 0.85]];
   for (let i = 0; i < 3; i++) {
     const on = i === st;
-    (on && night ? gl : v).box(0, 2.45 + (2 - i) * 0.28, 0.23, 0.17, 0.17, 0.03, on ? (night ? L[i][0] : L[i][0]) : P.shade(L[i][0], 0.3));
+    (on && night ? gl : v).box(0, 2.45 + (2 - i) * 0.28, 0.23, 0.17, 0.17, 0.03, on ? L[i][0] : P.shade(L[i][0], 0.3));
   }
   if (vr === 1) { v.box(0, 3.0, 0.9, 0.08, 0.08, 1.8, '#3a3e44'); v.box(0, 2.6, 1.7, 0.3, 0.9, 0.2, '#1f2226'); (night ? gl : v).box(0, 2.9, 1.82, 0.17, 0.17, 0.03, night ? L[st][0] : P.shade(L[st][0], 0.8)); }
   if (vr === 2) { v.box(0, 1.5, -0.1, 0.5, 0.5, 0.04, '#1d6fa5'); v.box(0, 1.55, -0.07, 0.38, 0.38, 0.02, '#f4f4f4'); }
@@ -915,7 +914,6 @@ export function furnishTile(o) {
     if (flagged || forced) eligible.push(e);
   }
   // beach clubs of a `beach` place also get their deck whether flagged or not
-  const beachPlaces = places.filter((p) => p.recipes.beach);
   let nTerr = 0;
   const maxTerr = lite ? 16 : 44;
 
@@ -940,11 +938,10 @@ export function furnishTile(o) {
       }
       runs.push({ lx, use: run - (ROADY[ended] ? (run < 2.3 ? 0.9 : run < 2.7 ? 1.0 : 1.3) : 0.25) }); // a walking strip is left at the kerb
     }
-    const why = () => 0;
-    if (runs.length < 3) return why();
+    if (runs.length < 3) return 0;
     const usable = (lx) => { let b = runs[0], bd = 1e9; for (const q of runs) if (Math.abs(q.lx - lx) < bd) { bd = Math.abs(q.lx - lx); b = q; } return b.use; };
     const sorted = runs.map((q) => q.use).sort((a, b) => a - b), med = sorted[Math.floor(sorted.length * 0.6)];
-    if (med < 0.8) return why();
+    if (med < 0.8) return 0;
     const narrow = med < 2.2; // a narrow pavement: one row of two-seat tables tight against the wall, the walking strip at the kerb
     // style
     const want = T.tables && T.tables !== 'mix' ? T.tables : null;
@@ -993,7 +990,7 @@ export function furnishTile(o) {
         cells.push({ lx, lz, ri, ci });
       }
     }
-    if (!cells.length) return why('no cell fits');
+    if (!cells.length) return 0;
     const y0 = yAt(bx, bz) + (beach ? 0.1 : 0);
     v.setT(th, bx, bz, y0); gl.setT(th, bx, bz, y0);
     let minX = 1e9, maxX = -1e9, maxZ = 0;
@@ -1072,7 +1069,7 @@ export function furnishTile(o) {
       const n = 2 + Math.floor(r() * 2), gx = pick(r, [-1, 1]) * r.range(1.4, 2.4);
       for (let i = 0; i < n; i++) {
         const lx = gx + i * 0.6, lz = 0.28 + r.range(0, 0.15);
-        if (okAt(lx, lz, 0.2)) standing(v, person(v, lx, lz, i % 2 ? 0 : 3 - (i % 2)), lookOf(r), pick(r, STANDS), cat === 'pub' ? '#e8a317' : '#fff');
+        if (okAt(lx, lz, 0.2)) standing(v, person(v, lx, lz, i % 2 ? 0 : 3), lookOf(r), pick(r, STANDS), cat === 'pub' ? '#e8a317' : '#fff');
       }
     }
     v.setT(); gl.setT();
@@ -1396,7 +1393,7 @@ export function furnishTile(o) {
           v.box(0, 3.0, 0.78, 2.6, 0.18, 0.02, c1);
           for (let i = 0; i < 6; i++) v.box(-1.2 + i * 0.48, 1.03, 1.1, 0.3, 0.2, 0.3, pick(r, ['#ffd166', '#ff70a6', '#8ecae6', '#e9e2d0']));
           // bunting
-          for (let i = 0; i < 12; i++) (night && i % 3 === 0 ? gl : v).box(-3 + i * 0.5, 3.3 - 0.3 * Math.sin((i / 11) * Math.PI) * 0 - 0.18 * Math.sin((i / 11) * Math.PI), 0.1, 0.22, 0.3, 0.02, pick(r, ['#e63946', '#ffd166', '#2a9d8f', '#3a86ff', '#ff70a6']));
+          for (let i = 0; i < 12; i++) (night && i % 3 === 0 ? gl : v).box(-3 + i * 0.5, 3.3 - 0.18 * Math.sin((i / 11) * Math.PI), 0.1, 0.22, 0.3, 0.02, pick(r, ['#e63946', '#ffd166', '#2a9d8f', '#3a86ff', '#ff70a6']));
           // queue and two high tables
           for (let i = 0, n = 2 + Math.floor(r() * 3); i < n; i++) standing(v, person(v, -1.0 + r.range(-0.6, 1.4), 2.4 + i * 0.75, 2, r() < 0.2 ? 0.62 : 1), lookOf(r), pick(r, ['idle', 'cone', 'phone']), pick(r, ['#ffffff', '#ff70a6', '#ffd166']));
           for (const sx of [-3.2, 3.2]) { tableRound(v, sx, 2.6, 0.62, 1.05, '#c9c2b2', '#3b3b3f'); drink(v, gl, night, sx, 2.6, 1.1, r); }
@@ -1413,7 +1410,8 @@ export function furnishTile(o) {
       for (let t = 0; t < 120 && made < N && used() < LIMIT - 3000; t++) {
         const a = r() * TAU, d = r.range(14, 70), x = sx0 + Math.cos(a) * d, z = sz0 + Math.sin(a) * d;
         if (!inTile(x, z, 4)) continue;
-        const fq = Math.floor(r() * 2) * 2, th = fq * (Math.PI / 2) + (r() < 0.5 ? 0 : Math.PI / 2) * 0;
+        const fq = Math.floor(r() * 2) * 2, th = fq * (Math.PI / 2);
+        r(); // (a spare draw, kept so that every later draw of this place stays the same)
         const fr = frameOf(Math.sin(th), Math.cos(th));
         if (!fits('rack', x, z, fr, [[-2.2, -1.3], [2.2, -1.3], [-2.2, 1.9], [2.2, 1.9], [0, 0]], 1.5, 3.2, 6)) continue;
         let good = true;
@@ -1736,7 +1734,7 @@ export function furnishTile(o) {
         const off = sc.e + 0.45, x = f.x - f.tz * side * off, z = f.z + f.tx * side * off, nx = f.tz * side, nz = -f.tx * side, fr = frameOf(nx, nz);
         // the light faces the traffic coming from the junction: turn it along the street
         if (!fits('tlight', x, z, fr, [[0, 0]], 1.3, 1.0, 5)) continue;
-        aim(Math.atan2(-f.tx * en.dir, -f.tz * en.dir) + (side > 0 ? 0 : 0), x, z);
+        aim(Math.atan2(-f.tx * en.dir, -f.tz * en.dir) + 0, x, z); // (+ 0: never a negative zero)
         if (r() < 0.75) trafficLight(v, gl, night, r, st, vr); else signPost(v, r, vr);
         stand('tlight', x, z, 1.0);
         add('tlight', x, z, f, nx, nz);
@@ -1834,7 +1832,6 @@ export function furnishTile(o) {
         if (!cell) continue;
         const space = cell === 1 ? 3.1 : 8.5;
         if (posts.some((p) => Math.hypot(p.x - x, p.z - z) < space)) continue;
-        if (grid.get(x - nx * 1.2, z - nz * 1.2) === C.BUILDING && cell === 1) { /* against a wall: still a quay */ }
         if (treeNear(x, z, 0.8) || crowded('quay', x, z, 0.4)) continue;
         posts.push({ x, z, nx, nz, cell, vr: Math.floor(hashCell(x * 3, z * 3) * 3) });
         if (posts.length > (lite ? 40 : 90)) break;
