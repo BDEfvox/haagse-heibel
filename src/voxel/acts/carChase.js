@@ -125,9 +125,10 @@ export default function (T) {
     stage: { road: { len: 2 * SPAN }, cross: true },
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'carChase'), B = beatsFor(ctx, 'carChase'), R = rig(ctx);
-      const ox = ctx.stage ? ctx.stage.x : 0; // read before the first yield
+      const ox = ctx.stage ? ctx.stage.x : 0, laneS = ctx.stage ? ctx.stage.lane : null; // read before the first yield (closing the road waits)
       let done = false;
       try {
+        yield* R.close(); // the road is shut to the city's traffic for the whole chase (R.free reopens it on every exit); measured only once it is clear
         // ---- the street: how much road there is, measured, and from that which way this goes
         const dir = rnd.sign(), fwd = dir > 0 ? E : W, X = (s) => ox + dir * s, hw = L.hw; // s = metres along the way the speeder first goes
         const ranges = [ox - SPAN, ox + SPAN];
@@ -138,7 +139,7 @@ export default function (T) {
         if (!band.length) band = [zs[(zs.length - 1) >> 1]]; // a narrow road with an even number of free lines: the margins meet between two of them, so take the middle one
         const okZ = (z) => band.some((q) => Math.abs(q - z) < 0.06);
         const zmin = band[0], zmax = band[band.length - 1], zc = (zmin + zmax) / 2, span = zmax - zmin;
-        const laneZ = ctx.stage && ctx.stage.lane != null ? ctx.stage.lane : L.chaseZ ?? 0;
+        const laneZ = laneS != null ? laneS : L.chaseZ ?? 0;
         const zL = band.reduce((b, z) => (Math.abs(z - laneZ) < Math.abs(b - laneZ) ? z : b), band[0]); // the free line nearest the stage's own
         const spd = makeCar(rnd, 'car', L.night), po1 = makeCar(rnd, 'police', L.night), po2 = makeCar(rnd, 'police', L.night);
         const CW = spd.wid || 1.85, CL = spd.len || 4.4;
