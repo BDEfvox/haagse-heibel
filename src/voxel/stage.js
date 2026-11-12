@@ -496,7 +496,7 @@ export class Stage {
         az = Math.atan2(pa, pc); dist = Math.max(6.5, sep * 1.4 + 4.5) + (sp.dist || 0); X += dx * 0.5; Z += dz * 0.5; near = 1;
       }
     }
-    if (sp.fit) dist = Math.max(dist === 14 ? 0 : dist, spread * 2.6 + 7);
+    if (sp.fit) dist = Math.max(dist === 14 && sp.dist !== 14 ? 0 : dist, spread * 2.6 + 7); // (14 with no distance given is the default: the fit alone decides; an explicit dist: 14 is kept as a floor)
     if (sp.lead && first && typeof first.heading === 'number' && (first.vel || first.moving)) { const sh = Math.sin(first.heading), ch = Math.cos(first.heading); X += (tx * sh - tz * ch) * sp.lead; Z += (tz * sh + tx * ch) * sp.lead; }
     c.base = base;
     az = clamp(az + (d.az || 0) * age + (c.azFix || 0) + (c.azMir || 0), -1.75, 1.75);
