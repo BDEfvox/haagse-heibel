@@ -576,6 +576,12 @@ export class Stage {
     G.dist *= Math.pow(D / G.dist, s);
     return G;
   }
+  /** The parked cars near (x, z) for the sight-line checks: fetched again once (x, z) is 12 m from where they were fetched. Every reader goes through here. */
+  _parked(x, z) {
+    if (!this.crowd) return null;
+    if (!this._parkAt || Math.hypot(this._parkAt[0] - x, this._parkAt[1] - z) > 12) { this._parkAt = [x, z]; this._park = this.crowd.parkedNear(x, z, 45); }
+    return this._park;
+  }
   /** Is the line from a shot's subject to its camera free of buildings (as drawn, with their heights)? */
   _clear(g, strict = false) {
     const S = this.W.solid, ce = Math.cos(g.el), se = Math.sin(g.el), sx = Math.sin(g.az) * ce, sz = Math.cos(g.az) * ce;
@@ -587,8 +593,7 @@ export class Stage {
     }
     // a parked car right in front of a low camera fills the picture: treat it like a wall
     if (se < 0.45 && this.crowd) {
-      if (!this._parkAt || Math.hypot(this._parkAt[0] - g.tx, this._parkAt[1] - g.tz) > 12) { this._parkAt = [g.tx, g.tz]; this._park = this.crowd.parkedNear(g.tx, g.tz, 45); }
-      const P = this._park, gy = this.W.landY(g.tx, g.tz);
+      const P = this._parked(g.tx, g.tz), gy = this.W.landY(g.tx, g.tz);
       for (let i = 0; i < P.length; i += 2) {
         const dx = P[i] - g.tx, dz = P[i + 1] - g.tz, t = clamp(dx * sx + dz * sz, 0, g.dist);
         if (t < 2.5) continue; // a car the subject is standing at belongs in the shot
@@ -620,7 +625,8 @@ export class Stage {
         if (Math.hypot(dx - sx * t, dz - sz * t) < 0.7 + (t > g.dist - 3 ? 0.4 : 0) && g.ty + se * t < e[13] + 2.1) return false;
       }
       // a parked car beside the lens looms into the picture too
-      if (this._park) { const cx = g.tx + sx * g.dist, cz = g.tz + sz * g.dist, P = this._park; for (let i = 0; i < P.length; i += 2) if (camY < gy + 2.4 && Math.hypot(P[i] - cx, P[i + 1] - cz) < 3.3 && Math.hypot(P[i] - g.tx, P[i + 1] - g.tz) > 3) return false; }
+      const P = this._parked(g.tx, g.tz);
+      if (P) { const cx = g.tx + sx * g.dist, cz = g.tz + sz * g.dist; for (let i = 0; i < P.length; i += 2) if (camY < gy + 2.4 && Math.hypot(P[i] - cx, P[i + 1] - cz) < 3.3 && Math.hypot(P[i] - g.tx, P[i + 1] - g.tz) > 3) return false; }
       if (W.treeNear) for (let t = 2.2; t <= g.dist + 0.6; t += 0.7) if (W.treeNear(g.tx + sx * t, g.tz + sz * t, t > g.dist - 2.5 ? 1.1 : 0.55)) return false;
     }
     if (strict && !this._lens(g)) return false;
@@ -1164,7 +1170,7 @@ export class Stage {
       V = { m, gm: m, d: [0, -1], gd: [0, -1], el: TOP, gel: EL0, dist: opts.enter.dist, gdist: opts.enter.dist, ty: W.landY(p[0], p[1]) };
     }
     const dur = V ? 0 : CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
-    this.cutK = undefined; this.roamT = 0; this._parkAt = null;
+    this.cutK = undefined; this.roamT = 0; this._parkAt = null; this._park = null;
     if (V) {
       // the focus moved here from another street: the camera carries on from exactly where it was
       const F = W.frame, az = (d) => Math.atan2(d[0] * F.dx + d[1] * F.dy, d[0] * F.dy - d[1] * F.dx);
