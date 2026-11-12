@@ -18,7 +18,9 @@ npm run build    # static site in dist/
 
 `?q=Grote Marktstraat` opens a street directly. On the dev server only, `&lvl=5` forces a crime
 level, `&only=plofkraak` loops a single gag, and `__heibel.stage` is available in the console
-(`debugPlay('<gag>')`, `gagNames`). These switches do not exist in the built site, so nobody can
+(`debugPlay('<gag>')`, `gagNames`). `&t=HH:MM` pretends it is that time in The Hague (winter time),
+to look at dusk and night during the day, and `&seed=<text>` makes a street replay the same way
+every time (its random choices, scene casting included, follow the text). These switches do not exist in the built site, so nobody can
 share a link that shows a street at a level it does not have.
 
 Getting in and out: click a street, or just keep zooming in on the map: past the closest zoom level
@@ -62,8 +64,8 @@ most. Categories that are no laughing matter count towards the level but have no
 
 `npm run data` rebuilds `public/data/` from the live sources (raw downloads are cached in `.cache/`).
 `npm run world` rebuilds `public/data/world/`: map tiles of buildings, ground, roads, rails, trees and
-points of interest, plus three low-resolution rasters of the whole city: ground cover, building
-heights and terrain (slow the first time; cached).
+points of interest, plus four low-resolution rasters of the whole city: ground cover, building
+heights, terrain and a coarser copy of the terrain (slow the first time; cached).
 
 ## Caveats
 
@@ -75,7 +77,10 @@ a verdict on the people who live there.
 
 - The built page needs nothing from other origins: fonts, map glyphs, the map worker and all data
   are served from the site itself. There are no cookies, no analytics and no third-party requests.
-  The only thing stored in the browser is the sound on/off choice.
+  Three things are stored in the browser's `localStorage` (the sound on/off choice, `heibel-muted`
+  in `src/audio.js`; the light setting, `heibel-sky`, and which panels are folded, `heibel-ui`, both
+  in `src/main.js`), and one in `sessionStorage`: the last few scenes shown, `heibel-seen` in
+  `src/voxel/gags.js`, so a scene is not repeated straight away. Nothing is sent anywhere.
 - `vite build` adds a strict Content-Security-Policy as a meta tag (`vite.config.js`). Static hosts
   such as GitHub Pages cannot send response headers, so `frame-ancestors`, HSTS and
   `X-Content-Type-Options` need a CDN or proxy in front if you want them.
@@ -94,8 +99,9 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   voxel blocks with windows painted by the shader, trees. Tiles come in three levels of detail (close,
   normal, far) chosen by distance, are built once and kept in memory, and reach the edge of the view
   up to the height at which the flat map takes over. Detailed house fronts (doors, shop fronts,
-  gables) are drawn for whatever is near the camera, and street furniture stands on every street: nothing
-  depends on which street is open
+  gables) are drawn for whatever is near the camera, and street furniture stands on every street. One
+  thing does depend on the open street: the tiles it runs through (`W.corridor` in `buildWorld`) are
+  built at the closest level of detail, because its furniture and walking lines are fitted to the painted ground
 - `src/voxel/landmarks.js` — buildings that are something in particular (churches, fuel stations,
   windmills, the lighthouse), landmark shapes from OpenStreetMap's 3D building parts, free-standing
   features and perimeter walls and fences
@@ -142,10 +148,10 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   (`storyboards/`, index in [STORYBOARDS.md](STORYBOARDS.md)) beat for beat; [ACTS.md](ACTS.md) explains
   how to write one. On the dev server `__heibel.audit('<scene>')` plays a scene on fast-forward and
   measures, beat by beat, whether what the storyboard says must be seen is in the picture
-- `src/voxel/stage.js` — renderer, lighting per level (sunny → night), the drop from map height, the
+- `src/voxel/stage.js` — renderer, lighting that follows the real clock (`skyAt`), or a forced day or night, the drop from map height, the
   follow-the-action camera, the cinematic shots a gag can direct (`ctx.cam(name)`), free roam, the
   hand-over back to the map, and the cutaway that flattens buildings in the camera's way
-- `src/voxel/kit.js`, `props.js`, `cast.js` — voxel builder, Dutch row houses, trams, cars on springs
+- `src/voxel/kit.js`, `props.js`, `cast.js` — voxel builder, Dutch row houses, street furniture (the tram stop included), cars on springs
   (they roll in bends, dive under braking; wheels turn and steer), and people with faces (moods, eyes
   that look, mouths that talk and laugh), elbows and knees
 - `src/map.js` — MapLibre map with the hover glow; `src/audio.js` — synthesized sound effects and the

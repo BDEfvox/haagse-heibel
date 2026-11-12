@@ -1,5 +1,5 @@
 // The cash-machine blast: a van, two men in striped shirts, a bomb, a rain of banknotes, laughing, bags thrown into the van, and a
-// police car that arrives in time to take its cap off and scratch its head.
+// police car that slides up to the hole: the cop looks at the hole, scratches his head, pockets the last banknote and drives off.
 // Storyboard: storyboards/plofkraak.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
 import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';

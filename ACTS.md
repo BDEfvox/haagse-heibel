@@ -72,7 +72,7 @@ helpers pass `ignore` in the last argument, `go(ctx, a, x, z, speed, 0.06, { ign
 
 ### 2b. The stage declaration: `stage:` and `ctx.stage`
 
-A scene file exports `{ w, crime, avail, lock, stage, *run }`. `stage` says what free ground the scene uses, as data:
+A scene file exports `{ w, crime, avail, lock, need, stage, *run }`. `need` is an optional list of street-furniture lists of `ctx.L` (`['racks']`, `['bins']`, `['parked']`, `['benches']`): the scene is only offered on a spot where every one of them has at least one entry, checked before `avail` (`ready()` in gags.js). `stage` says what free ground the scene uses, as data:
 
 ```js
 stage: { pave: { side: 'near' | 'far' | 'any', len, depth },  // len metres of walkable ground at least `depth` metres wide (default 4 x 2)
@@ -124,6 +124,7 @@ out of view) · `yield* R.out(a, opts?)` take off stage (3b) ·
 `R.add(object3d)` / `R.rm(o)` a prop in street space (`o.position.set(x, y, z)`) · `R.stay(o)` survives a normal finish ·
 `R.run(gen)` / `R.stop(task)` · `yield* R.settle(maxSeconds)` wait for running tasks (stop endless ones first!) ·
 `yield* R.close()` closes the road to traffic and waits for it to clear, `R.open()` ·
+`R.gone(a)` removes an actor at once, wherever it is (only for something out of view or meant to vanish; `R.out` is the normal way off) ·
 `R.borrow(p)` / `R.give(p)` a passer-by from the crowd (`takePed(ctx, xr, null, cx)` or `yield* needPed(ctx, xr)`; `gather(ctx, R, x, n)` gives up to n onlookers; `filmIt(p, x, z)` makes one film with a phone) ·
 `extraKind(ctx)` the kind ('niffo' | 'harry' | 'civ') for an extra YOU invent, weighted by `ctx.district.pop` (use it in `makePerson(rnd, { kind: extraKind(ctx) })`; the toolkit's own `spawnPed`/`needPed`/passer-by `resident` already do) ·
 `fatbike(ctx, R, x, z, { passenger })` a spawned electric fat-bike with a rider (and a passenger if `passenger: true`) on it, returns `{ bike, rider, passenger }`; move it with `go`/`drive`/`rideTo`-style code, the rig cleans it up ·
@@ -185,7 +186,7 @@ script ends), `windowAt(ctx, R, house)` the first-floor window.
   size swung out on its hinge; closed, nothing extra shows. `d.force()` for a kicked or jemmied door.
 - `yield* d.passOut(actor, speed, z1)` / `yield* d.passIn(actor, speed)`: the person starts behind the wall, is seen in
   the dark doorway, and steps over the threshold (or goes back in). `d.out`, `d.inside`, `d.at(lx, lz)`, `d.heading`.
-- `d.bell`, `d.bellStand`, `yield* d.press(actor)`: the real bell plate beside the door and where to stand to ring it.
+- `d.bell`, `d.bellStand`, `yield* d.press()` (no argument; the button lights for a moment): the real bell plate beside the door and where to stand to ring it.
 - Windows: `d.pose(actor, u)` stands the person inside (u = 0) or leaning out over the sill (u = 1), `yield* d.retreat(actor)`.
 - `R.enter(a, x, z, 0, { from: 'door' })` and `R.out(a)` of someone who came from a door use the same doorway.
   Careful: a point within 1.2 m of ANY door counts as that door. For someone who must not come out of a neighbour's
@@ -217,7 +218,7 @@ kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a
 - `a.arms`: `swing` (default) `up` (panic) `carry` `fist` `hold` `wave` `sneak` `spray` `bag` (hand at the shoulder holding a slung sack) `laugh` `point` `shrug` `cheer` `hips` `cover` (hands over head/ears) `push` `drive` `facepalm` `phone` `count` (counting notes) `rub` (rubbing hands) `reach` `drag` `cross` `beg` `stop` (halt hand) `write`
 - `a.mood`: `neutral happy laugh smug sly angry shock scared sad dizzy sleepy focus whistle`; `a.emote('shock', 1.2)` for a passing one.
 - `a.lookAt = actor | { x, z } | null` (head and eyes turn), `a.nodT = 1` / `a.shakeT = 1` (seconds of yes / no).
-- `a.gait`: `walk sneak strut stagger` · `a.pose`: `null sit ride crouch` · `a.talk` is set by `say()`.
+- `a.gait`: `walk sneak strut stagger` · `a.pose`: `null sit ride crouch` (an animal from `makeDog`/`makeCat` also has `'sleep'`: it lies curled up and breathes) · `a.talk` is set by `say()`.
 - `a.squash(0.25)` one bounce of squash and stretch. `a.heading`, `a.face(h)` (instant).
 - `say(ctx, a, 'TEKST', { size, color, dur })`, `yell(ctx, a, 'TEKST', color, size)`; text at a point: `ctx.fx.text('BONK!', at(x, y, z), { size, color })`. Size 20+ is a punchline (the camera nudges to it).
 - Holding: `a.hold(obj)` right hand, `a.hold(obj, 'handL' | 'front' | 'back' | 'head' | 'shoulder')`, `a.drop()` returns it (to put it somewhere else); `R.discard(a)` lets go and frees it for good, for a thing nothing uses again (a new `hold` frees the old thing the same way). `shoulder(a, item.moneybag())` slings a bag and raises the arm.
@@ -255,11 +256,12 @@ A shot follows its subject until the next shot.
   glide (`cut: seconds`) is never deferred. Do not rely on two shots 0.2 s apart: the first never shows.
 - *The stand is decided once* when the shot starts (walls, parked cars, furniture, lamp posts, trunks, bystanders, statues and
   shelters; never under a terrace parasol or inside a market stall or kiosk), then kept. If the sight line then stays blocked
-  for 0.7 s the stand is reconsidered once, with a 0.5 s glide, and not again for 2 s; failing a clear stand the camera goes
-  high and wide the same way (once), and comes back down after 1 s of clear view. The cutaway of the buildings follows that
+  for 0.7 s (`BLOCKED_FOR`) the stand is decided again, with a 0.5 s glide. This can repeat for as long as the shot lasts, but
+  never sooner than 2 s after the last decision (`noRe`, `RECONSIDER`); failing a clear stand the camera goes
+  high and wide the same way, and comes back down after 1 s of clear view. The cutaway of the buildings follows that
   decision, not the passing sight line.
-- *Motivated cuts.* A shot on the same subject from nearly the same place (angle within 30 degrees, distance within 30%)
-  glides instead of cutting. A cut that would cross the line between two characters the last shot showed (the 180 degree
+- *Motivated cuts.* A shot whose view is nearly the last shot's (angle within 30 degrees, distance within 30%, target within 3 m;
+  the subjects are not compared) glides instead of cutting. A cut that would cross the line between two characters the last shot showed (the 180 degree
   rule) is mirrored to the same side, unless the shot has `from` (you asked for the over-the-shoulder side) or `free`.
 - *Fitting the beat's subjects* eases in and out: the camera starts backing off when somebody is outside 97% of the frame and
   comes back when everybody is inside 85%.
@@ -307,7 +309,7 @@ For several subjects pass them all with `fit: true`. Keep `dist` ≥ 5 for a per
 
 `ctx.sfx('name')`: `pop thud slam yoink boing hey bell ding dingdong whistle coin honk squawk bark spray snip fuse alarm
 siren skid boom rocket pang splash chop zzz typing reel glass bonk sting gasp clatter laugh snigger rev screech crash
-kaching door womp tada tick swish gulp cuff meow`.
+kaching door womp tada tick swish gulp cuff meow whoosh`.
 
 ## 9. Checking your work
 
