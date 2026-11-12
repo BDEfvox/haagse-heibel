@@ -823,10 +823,6 @@ function roofShapeCode(v) {
   if (s === 'skillion' || s === 'lean_to') return 7;
   return 8;
 }
-function ringCentroid(ring) {
-  const e = mkBuildingLike(ring);
-  return [e.cx, e.cy];
-}
 function mkBuildingLike(ring) { // same centroid as mkBuilding but without registering
   const bb = ringBBox(ring);
   let a = 0, cx = 0, cy = 0;
