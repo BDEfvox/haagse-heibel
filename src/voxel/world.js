@@ -174,13 +174,11 @@ function frameTerrain(city, f) {
 function loadTile(ix, key) {
   if (!ix.set.has(key)) return Promise.resolve(null);
   if (_tiles.has(key)) { const hit = _tiles.get(key); _tiles.delete(key); _tiles.set(key, hit); return hit; } // recently used tiles are kept longest
-  if (!_tiles.has(key)) {
-    if (_tiles.size > 420) _tiles.delete(_tiles.keys().next().value);
-    const req = getJson(`${ROOT}tiles/${key}.json`);
-    _tiles.set(key, req);
-    // a failed download is not remembered: the next street that needs this tile asks again
-    req.then((v) => { if (!v && _tiles.get(key) === req) _tiles.delete(key); });
-  }
+  if (_tiles.size > 420) _tiles.delete(_tiles.keys().next().value);
+  const req = getJson(`${ROOT}tiles/${key}.json`);
+  _tiles.set(key, req);
+  // a failed download is not remembered: the next street that needs this tile asks again
+  req.then((v) => { if (!v && _tiles.get(key) === req) _tiles.delete(key); });
   return _tiles.get(key);
 }
 /** Warm the caches (called at boot and on hover). */
@@ -360,17 +358,6 @@ function cutPatch(mat, tint = true, tile = false) {
         #include <opaque_fragment>`);
   };
   mat.customProgramCacheKey = () => 'cut12' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
-  return mat;
-}
-/** Ground pieces outside the detailed area leave a hole where that area is. */
-function clipPatch(mat) {
-  mat.onBeforeCompile = (sh) => {
-    sh.uniforms.uClip = U.uClip;
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vXZ;').replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vXZ;\nuniform vec4 uClip;')
-      .replace('#include <map_fragment>', 'if (vXZ.x > uClip.x && vXZ.y > uClip.y && vXZ.x < uClip.z && vXZ.y < uClip.w) discard;\n\t#include <map_fragment>');
-  };
-  mat.customProgramCacheKey = () => 'clip2';
   return mat;
 }
 /** Far-away building blocks pick their own level of detail: see U.uNear. */
@@ -1216,8 +1203,7 @@ function poolPatch(mat, pool, k) {
  * its texture (kerbs, verges and rough ground are real steps), the water surface lying lower, and walls along
  * every shore. `mt` turns grid coords into map metres. Leaves `grid.off` (height of every cell above the terrain).
  */
-function buildGround(city, grid, { mt, gs = 4, clip = false, lamps = null }) {
-  // (clip is no longer used: streets do not bring their own ground any more)
+function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
   const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell, tex = groundTexture(grid), meshes = [], pool = poolTexture(lamps);
   const n = Math.max(1, Math.round(gs / cell)), nbx = Math.ceil(w / n), nbz = Math.ceil(h / n), lw = nbx + 1;
   // terrain heights on the block lattice; inside a block the ground is interpolated, so pieces meet without cracks
@@ -1326,7 +1312,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false, lamps = null }) {
     geo.setIndex(new THREE.BufferAttribute(nv > 65535 ? IX.cut() : Uint16Array.from(IX.a.subarray(0, IX.n)), 1));
     const mat = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5 });
     if (pool) poolPatch(mat, pool, 1);
-    const land = new THREE.Mesh(geo, clip ? clipPatch(mat) : mat);
+    const land = new THREE.Mesh(geo, mat);
     land.receiveShadow = true;
     land.renderOrder = -2;
     meshes.push(land);
@@ -1362,7 +1348,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false, lamps = null }) {
     geo.setIndex(idx);
     const mat = new THREE.MeshLambertMaterial({ map: tex });
     if (pool) poolPatch(mat, pool, 0.4); // the water throws a little of it back
-    const water = new THREE.Mesh(geo, clip ? clipPatch(mat) : mat);
+    const water = new THREE.Mesh(geo, mat);
     water.receiveShadow = true;
     water.renderOrder = -2;
     meshes.push(water);
@@ -1410,7 +1396,7 @@ function buildGround(city, grid, { mt, gs = 4, clip = false, lamps = null }) {
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
       geo.setIndex(idx);
-      const walls = new THREE.Mesh(geo, clip ? WALLT : WALL);
+      const walls = new THREE.Mesh(geo, WALL);
       walls.receiveShadow = true;
       meshes.push(walls);
     }
@@ -1418,7 +1404,6 @@ function buildGround(city, grid, { mt, gs = 4, clip = false, lamps = null }) {
   return { meshes, tex, pool };
 }
 const WALL = new THREE.MeshLambertMaterial({ vertexColors: true });
-const WALLT = clipPatch(new THREE.MeshLambertMaterial({ vertexColors: true }));
 
 // Three kinds of tree, so a row of them is not a row of clones: a broad crown, a tall narrow one, a low round one.
 const TREES = [
