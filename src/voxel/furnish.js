@@ -1065,7 +1065,15 @@ export function furnishTile(o) {
         v.setT(th, bx, bz, y0);
       }
       const zw = maxZ + 4.2;
-      if (r() < 0.8) for (let i = 0; i < 2; i++) { const lx = minX + 1.6 + i * (maxX - minX - 3.2); if (okAt(lx, zw, 0.5)) windbreak(v, 3.0, pick(r, ['#e63946', '#1d6fa5', '#2a9d8f']), '#ffffff'); }
+      if (r() < 0.8) for (let i = 0; i < 2; i++) {
+        const lx = minX + 1.6 + i * (maxX - minX - 3.2);
+        if (!okAt(lx, zw, 0.5)) continue;
+        // drawn where it was tested (the builder stands at the terrace's front)
+        const x = wx(lx, zw), z = wz(lx, zw);
+        v.setT(th, x, z, yAt(x, z));
+        windbreak(v, 3.0, pick(r, ['#e63946', '#1d6fa5', '#2a9d8f']), '#ffffff');
+        v.setT(th, bx, bz, y0);
+      }
       for (const lx of [minX - 0.4, maxX + 0.4]) if (okAt(lx, 0.8, 0.3) && r() < 0.8) { v.setT(th, wx(lx, 0.8), wz(lx, 0.8), yAt(wx(lx, 0.8), wz(lx, 0.8))); flagpole(v, r, 1); v.setT(th, bx, bz, y0); }
     }
     // a menu board at the door, a waiter, people standing with a drink
