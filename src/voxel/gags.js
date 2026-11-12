@@ -543,6 +543,7 @@ function rig(ctx) {
   const { L, rnd } = ctx;
   const actors = new Set(), objs = new Set(), peds = new Set(), tasks = new Set(), keep = new Set(), guards = new Set();
   let closed = false, policeClosed = false, cops = 0;
+  const shut = function* () { if (!closed) { closed = true; ctx.road.closed++; } yield* waitUntil(() => ctx.road.vehicles.size === 0, 6); S.refreshCrowd(ctx); /* (the traffic that waited is gone: look again) */ };
   const R = {
     spawn(a, x, z, y) { ctx.spawn(a, x, z, y); actors.add(a); return a; },
     /**
@@ -568,14 +569,14 @@ function rig(ctx) {
     run(g) { const t = ctx.run(g); if (!t.done) tasks.add(t); return t; },
     stop(t) { ctx.runner.stop(t); tasks.delete(t); },
     *settle(max = 10) { yield* waitUntil(() => { for (const t of tasks) if (!t.done) return false; return true; }, max); },
-    *close() { if (!closed) { closed = true; ctx.road.closed++; } yield* waitUntil(() => ctx.road.vehicles.size === 0, 6); S.refreshCrowd(ctx); /* (the traffic that waited is gone: look again) */ },
+    *close() { policeClosed = false; /* the scene holds the road from here on, even where a police car closed it first: that car must not reopen it */ yield* shut(); },
     open() { if (closed) { closed = false; policeClosed = false; ctx.road.closed = Math.max(0, ctx.road.closed - 1); } },
     /** A police car crosses. It closes the road to ambient traffic first, unless someone else holds it (then it skips). */
     *police(fromDir, z, speed = 11, delay = 0) {
       yield* wait(delay);
       if (L.kind === 'ped' || !S.roadHere(ctx, z)) return;
       if (!closed && ctx.road.closed > 0) return;
-      if (!closed) { policeClosed = true; yield* R.close(); }
+      if (!closed) { policeClosed = true; yield* shut(); }
       cops++;
       try {
         // the line it drives: the one asked for, or a free one (no free line, no police car)
