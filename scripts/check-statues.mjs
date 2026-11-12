@@ -130,5 +130,5 @@ console.log(`  boxes far level       median ${med(far)}, max ${far.length ? Math
 if (process.argv.includes('--list')) for (const r of rows.sort((a, b) => b[2] - a[2])) console.log(`  ${String(r[2]).padStart(4)} boxes  ${r[3].toFixed(1).padStart(5)} m  r ${r[4].toFixed(1).padStart(4)}  ${r[0]}  ${r[1]}`);
 console.log(`  problems              ${problems.length}`);
 for (const p of problems.slice(0, quiet ? 20 : 400)) console.log('  - ' + p);
-if (problems.length > (quiet ? 20 : 400)) console.log(`  ... and ${problems.length - 20} more`);
+if (problems.length > (quiet ? 20 : 400)) console.log(`  ... and ${problems.length - (quiet ? 20 : 400)} more`);
 process.exit(problems.length ? 1 : 0);
