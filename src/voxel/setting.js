@@ -75,7 +75,7 @@ export function roadAt(ctx, x, z) {
 // ---------------------------------------------------------------- what stands there: the obstacle picture
 /**
  * Everything that stands on the street and takes room, as [height, footprint radius] in metres, by prop kind. ONE table
- * (the stage's own `FURN` in stage.js has the same numbers for the camera). Unknown kinds count as FURN_DEFAULT.
+ * (the camera's `FURN` in stage.js is built from it). Unknown kinds count as FURN_DEFAULT.
  * A radius of 0 (signs) or a height under 0.2 m is not an obstacle.
  */
 export const FURN = {

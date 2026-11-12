@@ -11,6 +11,7 @@ import { makeBird, makePerson, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './c
 import { litShare } from './props.js';
 import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
+import { FURN as STREET_FURN } from './setting.js';
 import { sfx } from '../audio.js';
 
 // Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open. The owner can
@@ -129,10 +130,10 @@ const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
  * the beat guarantee (_fitBeat) backs the camera off further only when somebody would actually be cut off.
  */
 const aspNeed = (asp) => clamp(Math.pow(1.55 / asp, 0.6), 1, 2.4);
-/** Street furniture as the camera sees it: [height, radius] in metres (see _clear). */
-const FURN = { bench: [1.0, 0.9], bin: [0.95, 0.4], box: [1.5, 0.7], mailbox: [1.35, 0.4], parasol: [2.5, 1.2], rack: [1.25, 1.7], sign: [0, 0], stall: [2.6, 1.6], stop: [2.6, 1.8], terrace: [2.6, 1.6],
-  mstall: [2.6, 1.8], kiosk: [3.2, 2.6], picnic: [0.8, 1.5], orac: [1.1, 0.5], column: [3.1, 0.65], mupi: [2.2, 0.7], meter: [1.6, 0.35],
-  charger: [1.3, 0.55], trolleys: [1.9, 1.6], rackpark: [1.3, 2.4], mast: [6.0, 0.2], tlight: [3.2, 0.2], lamp: [5.0, 0.25] };
+/** Street furniture as the camera sees it: [height, radius] in metres (see _clear). The numbers are the ones of setting.js's
+ * FURN table; the camera knows these kinds only (any other kind of prop counts as a bin, see _clear). */
+const FURN = Object.fromEntries(['bench', 'bin', 'box', 'mailbox', 'parasol', 'rack', 'sign', 'stall', 'stop', 'terrace', 'mstall',
+  'kiosk', 'picnic', 'orac', 'column', 'mupi', 'meter', 'charger', 'trolleys', 'rackpark', 'mast', 'tlight', 'lamp'].map((k) => [k, STREET_FURN[k]]));
 /** Furniture the camera must never stand under or inside (parasols, market stalls, kiosks): see _clear. */
 const TALL = new Set(['terrace', 'mstall', 'kiosk', 'parasol']);
 
