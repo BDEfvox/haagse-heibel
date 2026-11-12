@@ -6,6 +6,7 @@ Two kids ring a doorbell and run; they cannot resist doing it twice, and the sec
 
 - **Cast and props:** two kids, the resident (granny or a man in a dressing gown), a bucket of water or a dog. Nothing is invented on the facade: the door, its colour and size, and the bell plate are the building's own; opening the door shows a dark doorway on the real door and a leaf of the real door's colour swung out on its hinge (`T.doorway`, gags.js). Whoever lives there walks out of that doorway and back into it; nobody rises from the ground.
 - **Needs at the spot:** A real front door of a home with a bell plate, a clear doorstep, and a thing 3.5 to 9.5 m along the pavement that a crouching kid can hide behind (a bin, a bench, a rack, a parked car...: the obstacle picture), standing exactly between the doorstep and the kid. `stage: { pave: far 8 x 2, anchor: 'door' }`.
+- **Pacing:** Tight opening on the door; the creep back to the bell is split into the creep and a close shot of the finger on the bell; the scene ends as the kids leave and the rig walks them off.
 - **Endings** (`flip 'dog'`, 0.4): the bucket, or the dog. Middles differ by which door, which hiding place, which resident.
 
 | Beat | What happens | Must be seen | Shot |

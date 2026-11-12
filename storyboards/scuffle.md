@@ -4,12 +4,12 @@
 
 - **Cast and props:** two civ pedestrians, a granny bookie with a betting slip, one or two onlookers (one films with a phone), a cop (a second cop and a police car at high levels, not in the `mates` ending). Props per cause: coffee cup and puddle (`fx.mark`) and a stain on his shirt; white sneakers on his feet and a dirty footprint; a glowing banknote that rips in two. Always: flying shoes, the dust cloud.
 - **Needs at the spot:** `stage: pave { side: any, len: 12, depth: 3 }`: 10 m of clear pavement line, clear ground beside it for the ring of onlookers. Centred on `ctx.stage.x`.
+- **Pacing:** Both men walk in at once, from either end of one tight shot (no separate walk-in beats); the cop starts running in while the two sit dazed, so he is there on cue; the rig walks everybody off.
 - **Entrances:** both men and the granny walk in from outside the frame (`R.enter`, after the shot is up); nobody pops.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|
-| 1 first man | He walks in from the left edge: coffee in hand (coffee), thumbing a phone (shoes), hands in pockets (note). | the point he walks to | medium, from the street |
-| 1b second man | The other walks in from the right: head down in his phone (coffee), strutting on bright white trainers, sparkle (shoes), or just walking (note). | the point he walks to | medium, from the other side |
+| 1 two men | They walk in at the same time, one from the left edge of the shot and one from the right: coffee in hand and head down in a phone (coffee), thumbing a phone and strutting on bright white trainers, sparkle (shoes), or hands in pockets (note). | both men | one tight shot from the street |
 | 2 cause (coffee) | Both step aside, both to the same side, twice. Shoulders bump: OEF, the cup flies. | both | two-shot, fitted |
 | 2b the spill | The cup lands, coffee splashes, a brown puddle spreads. | the puddle | at kerb height |
 | 2c the stain / the slow look | He looks down at the brown stain on his shirt, then up at the man who did it. | his face | close |

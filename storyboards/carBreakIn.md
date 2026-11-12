@@ -4,6 +4,7 @@
 
 - **Cast and props:** thief (robber or raccoon), the owner in a nightcap (already in the car, low, hidden by the bodywork until the reveal), a nosy bystander (when one is available), a cop (level 4+). Props: crowbar, radio, shoe, wallet, car alarm lights, handcuffs.
 - **Needs at the spot:** `stage: { pave: { side: 'near', len: 16, depth: 1.6 }, anchor: 'parked', reach: 14 }` and a parked car with at least 8 m of clear pavement ahead of it and 6 m behind it; the target is one of the cars nearest the stage centre.
+- **Pacing:** Tight opening on the row of cars; the thief comes in a few metres before the first car (from the nearer edge of the frame if the street's end is on his own side); the scene ends on the owner's yawn and a short wide look.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|

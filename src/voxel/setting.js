@@ -728,7 +728,9 @@ const anchorsOf = (ctx, kind) => {
   const L = ctx.L || {};
   switch (kind) {
     case 'door': return (L.houses || []).filter((h) => h.door).map((h) => h.door.x);
-    case 'shop': return (L.shops || []).filter((h) => h.door).map((h) => h.door.x);
+    case 'home': return (L.houses || []).filter((h) => h.door && h.leaf && !h.shop && !h.tower).map((h) => h.door.x); // an ordinary front door with a modelled leaf
+    case 'shop': return (L.houses || []).filter((h) => h.door && h.leaf && h.shop && h.shop !== 'BANK' && !h.tower).map((h) => h.door.x);
+    case 'fish': return (L.stalls || []).filter((a) => a.label === 'HARING' || a.label === 'VIS' || a.label === 'FRIET').map((a) => a.x);
     case 'rack': return (L.racks || []).map((a) => a.x);
     case 'bench': return (L.benches || []).filter((a) => !a.taken).map((a) => a.x);
     case 'bin': return (L.bins || []).map((a) => a.x);
@@ -768,12 +770,18 @@ function computeStages(ctx, need) {
     const sides = sd === 'near' ? [1] : sd === 'far' ? [-1] : [1, -1];
     const best = { ok: new Uint8Array(n), room: new Float32Array(n), side: new Array(n).fill(null) };
     for (const sgn of sides) {
-      const free = new Uint8Array(n);
+      // per column: the widest clear walking corridor (ground you may walk on, nothing standing in it) on this side of the street,
+      // anywhere across the pavement or, on a pedestrian street or square, across the whole width. A lamp post only splits it.
+      const free = new Uint8Array(n), lim = L.kind === 'ped' ? -1.5 : Math.max(0.3, (L.hw ?? 2.6) + (L.bw ?? 0) - 0.2); // (beyond the kerb: brick roads and parking bays count as walkable ground)
       for (let i = 0; i < n; i++) {
         const zc = padLine(ctx, sgn, xs[i]);
-        let ok = 1;
-        for (let z = zc - depth / 2; z <= zc + depth / 2 + 1e-6 && ok; z += 0.5) if (!walkable(ctx, xs[i], z) || hitsObst(ctx, xs[i], z, 0.2)) ok = 0;
-        free[i] = ok;
+        let run = 0, widest = 0;
+        for (let z = zc - 4; z <= zc + 4 + 1e-6; z += 0.25) {
+          if (sgn * z <= lim || !walkable(ctx, xs[i], z) || hitsObst(ctx, xs[i], z, 0.2)) { run = 0; continue; }
+          run++;
+          if (run > widest) widest = run;
+        }
+        free[i] = widest > 0 && (widest - 1) * 0.25 + 0.3 >= depth - 1e-6 ? 1 : 0;
       }
       const w = windowOf(free, len);
       for (let i = 0; i < n; i++) if (w.ok[i] && (!best.ok[i] || w.room[i] > best.room[i])) { best.ok[i] = 1; best.room[i] = w.room[i]; best.side[i] = sgn < 0 ? 'far' : 'near'; }

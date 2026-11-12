@@ -62,7 +62,7 @@ export default function (T) {
   return {
     w: [0, 3, 2, 1, 0.5], crime: 1,
     avail: (ctx) => plans(ctx).length > 0, // needs a real front door with a bell, and somewhere to hide
-    stage: { pave: { side: 'far', len: 12, depth: 2 }, anchor: 'door', reach: 8 },
+    stage: { pave: { side: 'far', len: 10, depth: 1.2 }, anchor: 'home', reach: 8 },
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'doorbell'), B = beatsFor(ctx, 'doorbell'), R = rig(ctx);
       const sx0 = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
@@ -82,9 +82,10 @@ export default function (T) {
         // ---- 1. the dare: creeping along the fronts, a push in the back, giggles
         B('1 the dare: two kids creep along, one pushes the other', [doorPt]);
         const px = clamp(out.x - dir * 5.5, EX0, EX1), pz = padZ(ctx, 'walkB0', px);
-        cam.wide(doorPt, { dist: 13, el: 0.22, az: -dir * 0.3, hold: 1.4 });
-        R.run(R.enter(b, clamp(px - dir * 1.1, EX0, EX1), pz, undefined, { from: 'edge', speed: 3.9 }));
-        yield* R.enter(a, px, pz, undefined, { from: 'edge', speed: 3.9 });
+        cam.wide(pt(out.x - dir * 1.5, dw.z), { dist: 9, el: 0.22, az: -dir * 0.3 }); // (tight on the door: the frame's edge is a few metres away, so the kids are in the picture almost at once)
+        yield* waitUntil(() => T.seen(ctx, px, pz) && !T.seen(ctx, out.x - dir * 17, pz), 2); // (the tight shot is up before anybody walks into it)
+        R.run(R.enter(b, clamp(px - dir * 1.1, EX0, EX1), pz, undefined, { from: 'edge', speed: 4.2 }));
+        yield* R.enter(a, px, pz, undefined, { from: 'edge', speed: 4.2 });
         yield* R.settle(4);
         B('1b the dare: one pushes the other', [a, b]);
         b.lookAt = a;
@@ -140,9 +141,9 @@ export default function (T) {
         const trailA = R.run(runDust(ctx, a)), trailB = R.run(runDust(ctx, b));
         cackle(ctx, a, 1.5, 'ha'); cackle(ctx, b, 1.5, 'ha');
         const hb = S.findSpot(ctx, hide.x + dir * 0.5, hide.z, 0.35, 8, { ground: 'open' }) || { x: hide.x + dir * 0.6, z: hide.z };
-        R.run(go(ctx, b, hb.x, hb.z, 6.4, 0.06, { ignore: [{ x: hide.ox, z: hide.oz }] }));
+        const goB = R.run(go(ctx, b, hb.x, hb.z, 6.4, 0.06, { ignore: [{ x: hide.ox, z: hide.oz }] }));
         yield* go(ctx, a, hide.x, hide.z, 6.6, 0.06, { ignore: [{ x: hide.ox, z: hide.oz }] });
-        yield* R.settle(4);
+        yield* waitUntil(() => goB.done, 3); // (not R.settle: the dust trails run for ever)
         R.stop(trailA); R.stop(trailB);
         a.pose = 'crouch'; b.pose = 'crouch';
         faceTo(a, out.x, dw.z); faceTo(b, out.x, dw.z);
@@ -166,8 +167,8 @@ export default function (T) {
         cam.close(owner, { dist: 6, el: 0.05, az: -dir * 0.25, y: 1.0 });
         say(ctx, owner, '?!', { size: 20, color: '#fff' });
         yield* wait(0.5);
-        owner.heading = E; yield* wait(0.5);
-        owner.heading = W; yield* wait(0.5);
+        owner.heading = E; yield* wait(0.4);
+        owner.heading = W; yield* wait(0.4);
         owner.heading = dw.heading; owner.lookAt = { x: out.x, z: dw.z + 8 };
         yield* hop(owner, 0.18, 0.2); // up at the window
         yield* wait(0.3);
@@ -187,16 +188,18 @@ export default function (T) {
         a.pose = null; a.lookAt = null; a.mood = 'happy'; a.arms = 'rub';
         b.lookAt = null; b.mood = 'scared';
         b.shakeT = 1.0; say(ctx, b, 'NEE!', { size: 15, color: '#fff' });
-        yield* wait(0.7);
+        yield* wait(0.5);
         a.nodT = 1.0; say(ctx, a, 'nog één keer!', { size: 13, color: '#b9fbc0' });
         ctx.sfx('snigger');
-        yield* wait(0.6);
+        yield* wait(0.5);
         B('6b the brave one creeps back to the bell', [a, bellPt]);
         cam.shot({ on: [a, bellPt], y: 1.0, dist: 9, el: 0.08, az: dir * 0.4, fov: 36, fit: true, cut: 0.9 });
         a.arms = 'sneak';
-        yield* tiptoe(ctx, a, bs.x, bs.z, 3.2, false);
+        yield* tiptoe(ctx, a, bs.x, bs.z, 4.2, false);
         a.heading = toWall; a.arms = 'reach'; a.mood = 'sly';
-        yield* wait(0.4);
+        B('6b2 finger on the bell again, and the door is about to fly open', [a, bellPt]);
+        cam.shot({ on: [a, bellPt], y: 1.15, dist: 3.8, el: 0.02, az: Math.sign(dw.f.tx) * -1.0, fov: 32, fit: true, cut: 0.6 });
+        yield* wait(0.9);
 
         // ---- the door flies open: the resident has been waiting right behind it
         const kp = a.g.position;
@@ -299,8 +302,7 @@ export default function (T) {
           yield* wait(0.9);
           yield* dw.passIn(owner, 1.4);
           R.gone(owner);
-          yield* R.settle(6);
-          yield* dw.close();
+          yield* wait(0.4);
           ctx.news('Doorbell pranksters, both nine, meet the neighbourhood dog; the dog "was not impressed"');
         }
 
@@ -325,11 +327,11 @@ export default function (T) {
               say(ctx, a, '*splurp*', { size: 11, color: '#9ad0ff' });
             }
           })());
-          R.run(R.away(a, dir * 6, 2.3));
+          R.run(R.away(a, dir * 6, 2.8));
           yield* wait(0.5);
-          R.run(R.away(b, dir * 7, 3.0));
-          yield* R.settle(6);
-          R.stop(drip);
+          R.run(R.away(b, dir * 7, 3.4));
+          yield* wait(1.2);
+          R.stop(drip); // (the payoff has landed: the camera lets go and the rig walks the kids off)
         }
         yield* wait(0.3);
         done = true;

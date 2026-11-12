@@ -40,7 +40,7 @@ export default function (T) {
 
   return {
     w: [0, 0, 0, 1, 2.5], crime: 1,
-    stage: { pave: { side: 'any', len: 20, depth: 2 } },
+    stage: { pave: { side: 'any', len: 20, depth: 1.2 } },
     avail: (ctx) => lines(ctx).length > 0,
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'bennyHill'), B = beatsFor(ctx, 'bennyHill'), R = rig(ctx);
@@ -49,13 +49,13 @@ export default function (T) {
       if (!opts.length) return;
       if (stg && stg.side) opts.sort((a, b) => (Math.sign(a.z) === (stg.side === 'near' ? 1 : -1) ? 0 : 1) - (Math.sign(b.z) === (stg.side === 'near' ? 1 : -1) ? 0 : 1));
       const ln = opts[0], d = rnd.sign();                      // d: the way they run in the first pass
-      const loE = Math.max(ln.lo, EX0), hiE = Math.min(ln.hi, EX1), half = Math.min(11, (hiE - loE) / 2 - 0.5);  // about 22 m of it: enough for two passes and the joins
+      const loE = Math.max(ln.lo, EX0), hiE = Math.min(ln.hi, EX1), half = Math.min(8.5, (hiE - loE) / 2 - 0.5);  // about 17 m of it: enough for two passes and the joins
       const mid0 = clamp(stg && stg.x != null ? stg.x : 0, loE + half, hiE - half);
       const zA = ln.z, xNear = mid0 - d * half, xFar = mid0 + d * half;
       const zO = padZ(ctx, PAIR[ln.nm], (xNear + xFar) / 2);   // the other lane of the pavement: the way back
       const span = xFar - xNear, at1 = (u) => xNear + span * u;
       const hx = at1(0.42), heapPt = pt(hx, zO);                // where the pile-up happens (second pass)
-      const V = 5.0, GAP = 1.7;
+      const V = 5.8, GAP = 1.7;
       const heap = { n: 0, rob: false, go: false };
       let done = false;
       try {
@@ -71,7 +71,7 @@ export default function (T) {
         const join = (m) => { const l = tail(); chain.push(m); return follow(m, l); };
 
         // the dog is already dozing by the kerb when the scene starts; the chef's door (a real one, if the street has one) is ahead on the way back
-        const dogAt = S.findSpot(ctx, at1(0.3), zA + (zA > 0 ? -0.8 : 0.8), 0.4, 8) || { x: at1(0.3), z: zA };
+        const dogAt = S.findSpot(ctx, at1(0.25), zA + (zA > 0 ? -0.8 : 0.8), 0.4, 8) || { x: at1(0.25), z: zA };
         const dogX = dogAt.x;
         // whoever is already standing at the spot only appears at once while that point is out of the picture; in view they walk in
         const arrive = (m, x, z, dirIn) => {
@@ -94,13 +94,13 @@ export default function (T) {
 
         // ---- 1. the robber bursts in with the swag bag, laughing, and a cop is right behind him
         B('1 the robber runs in with the bag, a cop on his heels', [pt(at1(0.3), zA)]);
-        cam.wide(pt(at1(0.3), zA), { dist: 14, el: 0.25, az: -d * 0.3 });
+        cam.wide(pt(xNear + d * 6, zA), { dist: 11, el: 0.25, az: -d * 0.3 }); // (tight on the way in: the frame's edge is a few metres away, so the robber is in the picture almost at once)
         shoulder(rob, item.moneybag(1.2));
         rob.mood = 'happy'; rob.lookAt = cop1;
         cop1.mood = 'angry'; cop1.arms = 'swing';
         chef.hold(item.broom()); chef.arms = 'fist';
         ctx.wanted = rob;
-        yield* shotUp(ctx, at1(0.3), zA);
+        yield* waitUntil(() => seen(ctx, xNear, zA) && !seen(ctx, xNear - d * 12, zA), 2); // (the tight shot is up before anybody runs into it)
         const laugher = R.run((function* () { for (;;) { yield* laugh(ctx, rob, 1.6, 'he'); yield* wait(0.5); } })());
         const trail = R.run(noteTrail(ctx, rob, 0.16)), dust = R.run(runDust(ctx, rob));
         const robRun = R.run((function* () {
@@ -108,7 +108,7 @@ export default function (T) {
           yield* go(ctx, rob, xFar, zA, V);
         })());
         R.run((function* () {
-          yield* wait(1.2);
+          yield* wait(0.8);
           ctx.sfx('whistle');
           yield* R.enter(cop1, xNear, zA, undefined, { speed: V * 1.2, dir: d });
           chain.push(cop1);
@@ -130,7 +130,7 @@ export default function (T) {
           say(ctx, dog, 'WOEF WOEF!', { size: 14, color: '#fff', off: 1.0 });
         })());
         yield* waitUntil(() => dogIn, 9);
-        yield* wait(1.4);
+        yield* wait(0.9);
 
         // ---- 2. the reveal: close on the laughing robber, hand-held
         B('2 reveal: the robber laughs over his shoulder, bag and all', [rob]);
@@ -262,9 +262,7 @@ export default function (T) {
         yield* wait(1.2);
         B('6b they run off, the dog in the lead', [dog]);
         cam.track(dog, { dist: 9, el: 0.12, az: -d * 0.5, lead: 2, fov: 34, cut: 0.5 });
-        yield* wait(1.2);
-        yield* R.settle(9);
-        yield* wait(0.3);
+        yield* wait(1.6); // (the payoff has landed: the camera lets go and the rig runs the rest of them off)
         done = true;
       } finally {
         cam.release();

@@ -4,6 +4,7 @@
 
 - **Cast and props:** hooded phisher, an ordinary phone-zombie victim (a civ), a cop on a bicycle (separate bike and rider: `mount`, `rideTo`, `dismount`). Props: folding desk with laptop, fishing rod, glowing hook and line, wallet, wad of cash.
 - **Needs at the spot:** `stage: pave { side: any, len: 14, depth: 3 }`; a clear 1.2 m patch on each pavement; the cop's route is checked with `S.lineClear` from where he starts (just out of the frame on the longer side, up to 31 m out) to 2.4 m short of the desk, along the phisher's pavement line, a line half a metre either side, a cycle lane, or a free road lane (then the road is closed to traffic with `R.close`); without any line a foot cop jogs in (`R.cop`).
+- **Pacing:** Tight opening on the place; the hooded figure and the phone zombie are both in the picture within a second or two.
 - **Entrances:** the phisher walks in from the edge (the desk in his arms); the cop rides in from out of the frame, the ride is started with `R.run` while the victim is still shouting (beat 4c), at the pace that brings him about 15 m out when the pan lands, then 4.8 m/s, ringing and braking in three steps; the victim is borrowed or walks in.
 
 | Beat | What happens | Must be seen | Shot |

@@ -6,6 +6,7 @@ A speeder tears down the street, slaloms, pulls a handbrake turn in a cloud of t
 
 - **Cast and props:** speeder's hatchback (driver: hoodie), two police cars, one cop on foot (the second car's partner stays inside). Props: a hubcap, a ticket pad. Nobody is a real person or group.
 - **Needs at the spot:** `stage: { road: { len: 34 }, cross: true }`: 34 m of free carriageway, centred on `ctx.stage.x`. Road closed to traffic for the duration.
+- **Pacing:** Ends on the empty street after a short hold; the cars that are still leaving are driven off by the rig.
 - **The manoeuvre is chosen by the room there is** (`ctx.rnd`, or forced in the audit with `stage.force = { pass: true }` etc.):
   - **pass:** two free lines at least 0.6 m apart between bodies (planned 0.85 m) and a free circle for the turn: he comes back past the standing police car.
   - **squeeze:** two free lines just over a body's width apart: he creeps past at walking pace, sparks, both cars hold their breath.

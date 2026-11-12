@@ -44,7 +44,7 @@ export default function (T) {
 
   return {
     w: [0, 0, 1.4, 2.4, 2.6], crime: 2,
-    stage: { pave: { side: 'any', len: 12, depth: 3 } },
+    stage: { pave: { side: 'any', len: 10, depth: 1.6 } },
     avail: (ctx) => scuffleSpots(ctx).length > 0,
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'scuffle'), B = beatsFor(ctx, 'scuffle'), R = rig(ctx);
@@ -56,6 +56,12 @@ export default function (T) {
       try {
         const sp0 = spotsAt[spotsAt.length > 1 && rnd.chance(0.35) ? 1 : 0], x = sp0.x, z = sp0.z, side = rnd.sign();
         const cc = pt(x, z); // the camera follows this point
+        // two walks at once, but never waiting for ever on one that cannot get there (a passer-by in the way)
+        const both = function* (ga, gb, max = 3.5) {
+          const t1 = R.run(ga), t2 = R.run(gb);
+          yield* waitUntil(() => t1.done && t2.done, max);
+          R.stop(t1); R.stop(t2);
+        };
         const cause = flip(ctx, 'shoes', 0.34) ? 'shoes' : flip(ctx, 'note', 0.5) ? 'note' : 'coffee';
         const happyEnd = flip(ctx, 'mates', 0.4);
         // two ordinary people (never one of the district types)
@@ -76,7 +82,7 @@ export default function (T) {
         B('1 the first man walks in', [pt(ax, z)]);
         cam.shot({ on: pt(ax + 0.8, z), dist: 7.5, el: 0.1, az: 0.1 });
         yield* shotUp(ctx, ax + 0.8, z); // (the shot is up before anybody walks in)
-        const ta = R.run((function* () { yield* R.enter(a, ax, z, undefined, { speed: 2.9, dir: 1 }); a.heading = E; })());
+        const ta = R.run((function* () { yield* R.enter(a, ax, z, undefined, { speed: 3.6, dir: 1 }); a.heading = E; })());
         yield* waitUntil(() => ta.done, 6);
         if (cause === 'coffee') { ctx.sfx('pop', 1.5); a.squash(0.1); }
         yield* wait(0.5);
@@ -85,7 +91,7 @@ export default function (T) {
         B('1b the second man walks in', [pt(bx, z)]);
         cam.shot({ on: pt(bx - 0.8, z), dist: 7.5, el: 0.1, az: -0.1 });
         yield* shotUp(ctx, bx - 0.8, z);
-        const tb = R.run((function* () { yield* R.enter(b, bx, z, undefined, { speed: 2.9, dir: -1 }); b.heading = W; })());
+        const tb = R.run((function* () { yield* R.enter(b, bx, z, undefined, { speed: 3.6, dir: -1 }); b.heading = W; })());
         yield* waitUntil(() => tb.done, 6);
         if (cause === 'shoes') { ctx.fx.pips(b.g.position.x, 0.2, z, 3, ['#ffffff', '#cfe8ff']); ctx.sfx('ding'); }
         yield* wait(0.5);
@@ -98,7 +104,7 @@ export default function (T) {
           B('2 neither steps aside: the dance', [a, b]);
           cam.two(a, b, { dist: 9, el: 0.1, fit: true, az: 0.1 });
           yield* wait(0.3);
-          yield* all(go(ctx, a, x - 1.5, z, 1.7), go(ctx, b, x + 1.5, z, 2.4));
+          yield* both(go(ctx, a, x - 1.5, z, 1.7), go(ctx, b, x + 1.5, z, 2.4));
           a.heading = E; b.heading = W;
           // each tries to get past, and picks the same side
           yield* all(sidestep(a, 0.55), sidestep(b, 0.55));
@@ -138,7 +144,7 @@ export default function (T) {
           yield* wait(0.3);
           b.lookAt = { x: b.g.position.x - 1.2, z: z + 0.15 };
           const meet = x + 0.55;
-          yield* all(go(ctx, a, meet - 0.95, z - 0.2, 1.9), go(ctx, b, meet + 0.35, z - 0.2, 1.3));
+          yield* both(go(ctx, a, meet - 0.95, z - 0.2, 1.9), go(ctx, b, meet + 0.35, z - 0.2, 1.3));
           a.heading = E; b.heading = W;
           B('2b the stomp: a boot lands on a white trainer', [pt(meet - 0.1, z - 0.2)]);
           const feet = pt(meet - 0.1, z - 0.2);
@@ -184,7 +190,7 @@ export default function (T) {
           cam.two(a, b, { dist: 8, el: 0.12, fit: true, az: 0.1 });
           yield* wait(0.2);
           a.mood = b.mood = 'focus';
-          yield* all(go(ctx, a, x - 0.5, z + 0.1, 3.4), go(ctx, b, x + 0.5, z + 0.1, 3.4));
+          yield* both(go(ctx, a, x - 0.5, z + 0.1, 3.4), go(ctx, b, x + 0.5, z + 0.1, 3.4));
           a.heading = E; b.heading = W;
           B('2c four hands, one banknote', [spillN]);
           cam.ground(spillN, { dist: 3.8, az: 0.2, fov: 34, y: 0.4 });
@@ -348,15 +354,18 @@ export default function (T) {
         a.heading = b.heading = 0;
         a.hold(item.shoe()); a.arms = 'hold'; b.arms = 'facepalm';
         R.run(seeStars(ctx, a, 2.2)); R.run(seeStars(ctx, b, 1.8));
+        let cop = null, cop2 = null, copTask = null;
+        if (!happyEnd) { // (the law is on his way already: he runs in from out of the frame while the two sit there)
+          cop = makePerson(rnd, { kind: 'cop' });
+          copTask = R.run((function* () { yield* wait(0.3); ctx.sfx('whistle'); yield* R.enter(cop, clamp(cc.x - side * 7, EX0, EX1), cc.z, undefined, { speed: 6 }); })());
+        }
         yield* wait(0.9);
 
-        let cop = null, cop2 = null;
         if (!happyEnd) {
           B('6b the law arrives', [a, b]);
-          cop = makePerson(rnd, { kind: 'cop' });
           cam.shot({ on: [a, b], dist: 11, el: 0.22, az: side * 0.4, fit: true });
+          yield* waitUntil(() => copTask.done, 5);
           yield* wait(0.3);
-          yield* R.enter(cop, clamp(cc.x - side * 9, EX0, EX1), cc.z);
           ctx.sfx('whistle');
           cop.mood = 'angry'; cop.arms = 'stop';
           yell(ctx, cop, 'UIT ELKAAR!', '#7db8ff', 17);
@@ -399,7 +408,7 @@ export default function (T) {
         a.drop();
         yield* all(getUp(a, 'sad'), getUp(b, 'sad'));
         a.arms = b.arms = 'swing';
-        yield* all(go(ctx, a, cc.x - 0.4, cc.z, 1.4), go(ctx, b, cc.x + 0.4, cc.z, 1.4));
+        yield* both(go(ctx, a, cc.x - 0.4, cc.z, 1.4), go(ctx, b, cc.x + 0.4, cc.z, 1.4));
         a.heading = E; b.heading = W; a.arms = b.arms = 'reach'; a.lookAt = b; b.lookAt = a;
         yield* wait(0.4);
         a.mood = b.mood = 'happy';

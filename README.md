@@ -112,6 +112,8 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   round light button. Night has its own look: street lamps at realistic spacing (`lampsOf` in `world.js`, real mapped
   positions where OpenStreetMap has them) with pools of light baked into the ground, lit windows by kind of
   building and hour, shop signs, head and tail lights, terrace light strings
+- `src/voxel/stage.js` also keeps the frame rate steady: when most frames run late it draws with fewer pixels
+  and tries the sharp picture again after a calm spell
 - `src/voxel/districts.js` — who lives where: a table of street characters per district (kids on fat-bikes in
   Schilderswijk and Laak, mullets and jackets around the centre and Duindorp, civil servants, tourists, joggers,
   surfers, cargo-bike parents...) that the crowd draws from. Types are outfit, vehicle and behaviour only

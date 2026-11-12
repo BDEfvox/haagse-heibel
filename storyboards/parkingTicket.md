@@ -6,6 +6,7 @@ A traffic warden writes the ticket of a lifetime; the owner arrives one second t
 
 - **Cast and props:** warden (cop, strolling in from out of the frame, either way along the street), car owner (a civilian or an oma, never one of the district's extras), the parked car (one of the real parked cars). The owner comes out of the real door of the nearest home (`T.doorway` via `resident`: the door opens on a dark doorway and he steps out of it) or, with no door in reach, runs in from out of the frame.
 - **Needs at the spot:** A parked car at the spot.
+- **Pacing:** The scene opens on a tight shot of the parked car, so the warden is in the picture within a second or two of walking in (hurried: 4.2 m/s); the beat ends on the owner's sigh and the camera lets go there: the rig walks warden and owner off.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|

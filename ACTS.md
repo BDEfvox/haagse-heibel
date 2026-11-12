@@ -75,10 +75,11 @@ helpers pass `ignore` in the last argument, `go(ctx, a, x, z, speed, 0.06, { ign
 A scene file exports `{ w, crime, avail, lock, stage, *run }`. `stage` says what free ground the scene uses, as data:
 
 ```js
-stage: { pave: { side: 'near' | 'far' | 'any', len, depth },  // a clear pavement strip len x depth metres (default 4 x 2)
+stage: { pave: { side: 'near' | 'far' | 'any', len, depth },  // len metres of walkable ground at least `depth` metres wide (default 4 x 2)
          road: { len },                                       // a clear stretch of carriageway for a car (a 1.9 m lane, nothing in it)
          cross: true,                                         // a clear line across the road between the two pavements, near the strip
-         anchor: 'door' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'atm' | null, reach: 12 }  // near one of the spot's anchors
+         anchor: 'door' | 'home' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'fish' | 'atm' | null, reach: 12 }  // near one of the spot's anchors
+// ('home' = an ordinary front door with a modelled leaf, 'shop' = a shop unit's door, 'fish' = a HARING / VIS / FRIET stall)
 ```
 
 Without `stage` the director assumes `DEFAULT_STAGE` (a clear 4 x 2 m patch of pavement on either side); `stage: false` = needs nothing.
@@ -90,12 +91,17 @@ busy levels and the next one overwrites it); treat a missing `ctx.stage` as "the
 
 ```js
 // a thief who cuts a bike from a rack and rides off along the pavement: a rack, 8 m of clear pavement on its side
-stage: { pave: { side: 'far', len: 8, depth: 2 }, anchor: 'rack', reach: 10 },
+stage: { pave: { side: 'far', len: 8, depth: 1.2 }, anchor: 'rack', reach: 10 },
 // a car chase and a police car crossing: 16 m of free carriageway, and a way across for the people who scatter
 stage: { road: { len: 16 }, cross: true },
 ```
 `S.findStage(ctx, need, avoid)` / `S.stageClear` are in setting.js if you want to ask for something else (cached per spot and need).
-The needs are your assumptions written down: a scene that runs 10 m along a pavement says `len: 10`.
+The needs are your assumptions written down: a scene that runs 10 m along a pavement says `len: 10`. `depth` is the width of the
+walkable corridor the scene truly needs, not a wish: one person about 0.8 m, two side by side 1.6 m (a real Dutch pavement is 2 to
+2.5 m with a lamp post every 27 m, and a terrace or a shelter takes most of it). The scan looks for that corridor anywhere on the
+chosen side (across the whole width of a pedestrian street or square, `L.kind === 'ped'`, where 'near' and 'far' overlap), and a thin
+post only splits it; furniture, terraces and parked cars still block, so there is no scene on a terrace or between parked cars.
+The scene's own `avail` still has to check the positions it really uses: the stage only says whether the ground is there.
 
 ### 2c. Other spot facts
 
@@ -152,6 +158,14 @@ half of it. In `burglar.js`: beat 1 holds `cam.wide(land, { hold: 3 })` and then
 entrance: lengthen the wide hold to the entrance (or cut to `cam.track` first and enter into it); the busted ending `wait(0.9)` then
 enters the cop, who now needs `entryTime` seconds, not 0.3: start him as soon as the getaway begins. The owner's `R.enter(owner,
 h.door.x, h.door.z, 0.001)` already steps out of the door.
+
+A short lead-in (the first beat should start within about 3 seconds): open on a tight shot of the place and let the first
+entrance wait for it, so the frame edge is a few metres away, not fifteen:
+`yield* waitUntil(() => T.seen(ctx, entryX, z) && !T.seen(ctx, entryX - dir * 16, z), 2)` before `R.enter(...)` (the arrival
+point is in frame and a point 16 m up the street is not; it gives up after 2 s). When the camera cannot find a tight stand
+(a house-side pavement behind parked cars) the shot stays wide and the wait costs its 2 seconds: that is the stage's
+doing, not the script's. End a scene on its last line: no `R.settle(10)` to wait for walk-offs, the rig walks and
+drives everyone out after the camera lets go.
 
 The raw `popIn(ctx, a)` / `popOut(ctx, a)` stay in the toolkit for magic (smoke clouds, a prop pulled from a pocket); `T.exitOut`,
 `T.enter` (the rig-free version) are there for scenes that do not use `R`.

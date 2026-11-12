@@ -4,6 +4,7 @@
 
 - **Cast and props:** two robbers, a van, a few opportunist bystanders, a police car and a cop (he steps out of it and gets back in). Props: bomb with fuse, two money bags, the machine's front panel.
 - **Needs at the spot:** `stage: { anchor: 'atm', reach: 4 }` and a real road with a free driving line along the whole street (the van and the police car drive it; no pedestrian streets). Road closed for the duration.
+- **Pacing:** Pacing: nothing changed in this pass.
 - **Variations:** `flip 'stall'`: the van coughs twice (smoke, HOEST) before it catches. The police car slides in broadside only where the street has a free circle for it, else it just stops.
 
 | Beat | What happens | Must be seen | Shot |

@@ -36,7 +36,7 @@ export default function (T) {
 
   return {
     w: [0, 0.6, 2.5, 2.5, 2], crime: 2, need: ['parked'],
-    stage: { pave: { side: 'near', len: 16, depth: 1.6 }, anchor: 'parked', reach: 14 }, // the raid runs along the near pavement, past a row of parked cars
+    stage: { pave: { side: 'near', len: 14, depth: 1.2 }, anchor: 'parked', reach: 14 }, // the raid runs along the near pavement, past a row of parked cars
     avail: (ctx) => ctx.L.parked.some((c) => breakPlan(ctx, c)),
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'carBreakIn'), B = beatsFor(ctx, 'carBreakIn'), R = rig(ctx);
@@ -77,17 +77,20 @@ export default function (T) {
 
         // ---- 1. set-up: a quiet row of parked cars; one of them snores
         B('1 a quiet row of parked cars; one snores', [carPt]);
-        cam.wide(pt(car.x - dir * 3, z), { dist: 26, hold: 3.4 });
+        const firstX = (decoys[0] || car).x, inX = dir > 0 ? Math.max(plan.start, firstX - dir * 6.5) : Math.min(plan.start, firstX - dir * 6.5); // (he comes in a few metres before the first car he will try)
+        cam.wide(pt((firstX + car.x) / 2 - dir * 2, z), { dist: 15, el: 0.25 }); // (tight on the row: the frame's edge is a few metres away, so the thief is in the picture almost at once)
         const snore = R.run((function* () { for (;;) { ctx.sfx('zzz'); ctx.fx.text('Z', at(car.x, 2.3, car.z), { size: 15, color: '#cfe8ff', rise: 1.2, dur: 1.6 }); yield* wait(1.5); } })());
-        yield* wait(0.3);
-        yield* R.enter(thief, plan.start, padZ(ctx, 'walkF0', plan.start), undefined, { speed: 3.4 });
+        yield* waitUntil(() => T.seen(ctx, inX, padZ(ctx, 'walkF0', inX)) && !T.seen(ctx, inX - dir * 16, padZ(ctx, 'walkF0', inX)), 2); // (the tight shot is up before he walks into it)
+        const inZ = padZ(ctx, 'walkF0', inX);
+        // (from the side he is heading away from, when the street's end on his own side is too far to come in from: then he is just walking along the row, in either direction)
+        if (T.entryTime(ctx, thief, inX, inZ, { speed: 4.0, dir }) > 3.2) yield* R.enter(thief, firstX - dir * 3, padZ(ctx, 'walkF0', firstX - dir * 3), undefined, { speed: 4.0 });
+        else yield* R.enter(thief, inX, inZ, undefined, { speed: 4.0, dir });
 
         // ---- 2. he tiptoes in along the row
         B('2 he tiptoes along the row of cars', [thief]);
         thief.gait = 'sneak';
-        cam.track(thief, { dist: 10, el: 0.12, az: -dir * 0.5, lead: 2, cut: 0.8, hold: 5 });
-        yield* wait(0.4);
-        const firstX = (decoys[0] || car).x;
+        cam.track(thief, { dist: 10, el: 0.12, az: -dir * 0.5, lead: 2, cut: 0.8 });
+        yield* wait(0.3);
         yield* tiptoe(ctx, thief, firstX - dir * 2.5, z, 2.9);
 
         // ---- 3. reveal
@@ -322,10 +325,9 @@ export default function (T) {
         thief.arms = 'swing'; thief.mood = 'sad';
         R.run(R.away(thief, dir * 6, cop ? 3.4 : 6));
         if (cop) { cop.drop(); cop.lookAt = null; cop.arms = 'swing'; R.run(R.away(cop, dir * 6, 3.4)); }
-        yield* wait(1.0);
-        cam.wide(pt(car.x, z), { dist: 22, hold: 3 });
-        yield* R.settle(10);
-        yield* wait(0.5);
+        yield* wait(0.6);
+        cam.wide(pt(car.x, z), { dist: 20 });
+        yield* wait(1.4); // (the payoff has landed: the camera lets go and the rig walks the thief off)
         done = true;
       } finally {
         cam.release();

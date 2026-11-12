@@ -4,6 +4,7 @@
 
 - **Cast and props:** stall keeper (chef), a dog or a cat (`flip` name `cat`), a gull (`gull` ending). Props: herring (on the counter, in the crate, one on the pavement), crate, ladle. The stall itself is the REAL stall of the street (label HARING, VIS or, failing those, FRIET (the keeper brings his own crate of herring); never a flower stall; the herring lie on its counter at y 1.42, in front of the stall's own trays).
 - **Needs at the spot:** `stage: anchor stall (reach 12), pave { side any, len 6, depth 2 }`: a HARING, VIS or FRIET stall and a clear patch of pavement near it; the run the thief takes is up to 8 m along the pavement in front of the stall (the way with the longer clear run is taken).
+- **Pacing:** Tight opening on the stall; the scene ends on the thief eating the treat (the camera lets go there, the rig walks the pair off).
 - **Entrances and exits:** the keeper walks in carrying the crate and works at the end of his stall; the thief trots in from the edge and sits; the gull flies in over the frame edge (`R.enter`) and leaves the way it came (on and up until out of the frame, then `R.gone`).
 
 | Beat | What happens | Must be seen | Shot |

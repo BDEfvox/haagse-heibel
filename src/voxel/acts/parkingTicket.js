@@ -42,24 +42,21 @@ export default function (T) {
 
         // ---- 1. the patrol: pad in hand, peering at windscreens, checking his watch
         B('1 the patrol: the warden strolls along the cars', [cop, carPt]);
-        const sx = clamp(car.x - wd * 9, EX0, EX1);
-        cam.wide(carPt, { dist: 14, el: 0.25, az: -wd * 0.08, hold: 1.5 }); // (across the street: the frame's edges are close, so the warden's walk in is short)
-        yield* R.enter(cop, sx, padZ(ctx, 'walkF0', sx), undefined, { from: 'edge', speed: 3.6 });
-        cop.hold(item.pad()); cop.arms = 'write'; cop.gait = 'strut'; cop.mood = 'focus';
-        cam.track(cop, { dist: 9, el: 0.1, az: wd * 0.5, lead: 2, cut: 0.9, hold: 7 });
-        yield* go(ctx, cop, tx - wd * 3.4, z, 2.2);
+        cam.wide(carPt, { dist: 10, el: 0.22, az: -wd * 0.08 }); // (tight on the car: the frame's edge is a few metres away, so the warden is in the picture almost at once)
+        cop.hold(item.pad()); cop.arms = 'write'; cop.gait = 'strut'; cop.mood = 'focus'; // (the pad is in his hand from the first step)
+        yield* waitUntil(() => T.seen(ctx, tx - wd * 3.4, z) && !T.seen(ctx, tx - wd * 3.4 - wd * 15, z), 2); // (the tight shot is up before anybody walks into it)
+        yield* R.enter(cop, clamp(tx - wd * 3.4, EX0, EX1), z, undefined, { from: 'edge', speed: 4.2 });
+        cam.track(cop, { dist: 8, el: 0.1, az: wd * 0.5, lead: 2, cut: 0.9 });
         cop.heading = toCar; cop.lookAt = screen;
-        yield* wait(0.4);
         say(ctx, cop, 'hmm...', { size: 13, color: '#cfe8ff' });
         cop.nodT = 0.9;
-        yield* wait(0.6);
+        yield* wait(0.7);
         cop.arms = 'phone'; cop.lookAt = null; cop.heading = toCar - wd * 0.7; // checks his watch
         say(ctx, cop, '*tik tik*', { size: 12, color: '#cfe8ff' });
-        yield* wait(0.8);
+        yield* wait(0.6);
         cop.arms = 'write'; cop.heading = toCar; cop.lookAt = screen; cop.mood = 'sly';
-        yield* go(ctx, cop, tx - wd * 0.7, z, 1.6);
+        yield* go(ctx, cop, tx - wd * 0.7, z, 2.4);
         cop.heading = toCar;
-        yield* wait(0.3);
 
         // ---- 2. reveal
         B('2 reveal: smug look to camera, pen clicked', [cop]);
@@ -198,12 +195,12 @@ export default function (T) {
 
         // ---- 7. epilogue
         B('7 epilogue: warden strolls off whistling, the owner sits up with both tickets', [cop, owner]);
-        cam.wide(pt(tx + wd * 0.8, z), { dist: 13, el: 0.28, az: wd * 0.1, hold: 6 });
+        cam.wide(pt(tx + wd * 0.8, z), { dist: 11, el: 0.28, az: wd * 0.1 });
         cop.lookAt = null; cop.arms = 'swing'; cop.gait = 'strut'; cop.mood = 'whistle';
         ctx.sfx('whistle');
         say(ctx, cop, '*fluit fluit*', { size: 13, color: '#7db8ff' });
         R.run(R.away(cop, wd * 9, 2.6));
-        yield* wait(1.4);
+        yield* wait(1.0);
         // the owner sits up; the wind brings him the first ticket too
         R.rm(t2);
         owner.g.rotation.x = 0; owner.g.rotation.order = 'XYZ';
@@ -223,10 +220,7 @@ export default function (T) {
         say(ctx, owner, '*zucht*', { size: 15, color: '#cfe8ff' });
         owner.nodT = 0.8;
         yield* wait(1.6);
-        yield* getUp(owner, 'sad');
-        owner.arms = 'swing'; owner.drop();
-        yield* res.home();
-        yield* R.settle(9);
+        // the payoff has landed: the camera lets go and the rig walks both of them off
         done = true;
       } finally {
         cam.release();

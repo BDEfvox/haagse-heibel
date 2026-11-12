@@ -6,6 +6,7 @@ A burglar jemmies a real front door, comes out with a bulging € bag, gloats, a
 
 - **Cast and props:** burglar (robber), owner in a nightcap, cop, a cat; a crowbar, a vase, the money bag. Nothing is invented on the facade: the door is the building's real door (`T.doorway`), the owner's window the real first-floor window (`T.windowAt`): each opens on a dark opening with a leaf/sashes of its own colour. Everyone "inside" (the owner, the cat) stands behind the wall and walks out of the dark; the owner comes down and out of the door.
 - **Needs at the spot:** A real front door of a home with a clear doorstep and 9 m of clear pavement to run along. `stage: { pave: far 10 x 2, anchor: 'door' }`.
+- **Pacing:** Tight opening on the door: he is in the picture in about a second. The scene ends on the owner's or the cop's last line; the rig walks the rest off and shuts the door.
 - **Endings and middles** (`flip 'busted'`, `flip 'window'`): busted or clean away; the owner leans out of the window or steps out of the doorway. The cop starts walking in from out of the frame as the owner appears, so he is standing there when the chase gets to him.
 
 | Beat | What happens | Must be seen | Shot |

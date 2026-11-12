@@ -427,8 +427,7 @@ export default function (T) {
         ctx.fx.text('RING RING RING', at(A.x, 4.2, A.z), { size: 20, color: '#ff6b6b', dur: 1.6 });
         yield* wait(2.4);
         R.stop(blink); R.stop(puffs);
-        yield* R.settle(8);
-        yield* wait(0.3);
+        yield* wait(0.4); // (the camera lets go; the rig drives the police car on out of the frame)
         done = true;
       } finally {
         cam.release();

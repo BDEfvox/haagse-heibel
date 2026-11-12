@@ -1662,7 +1662,7 @@ const noteSeen = (n) => {
 };
 // a street opened with ?seed= must replay the same way (tests); otherwise the casting dice are free, so the same street
 // does not open with the same scene every visit
-const SEEDED = typeof location !== 'undefined' && /[?&]seed=/.test(location.search);
+const SEEDED = !!(import.meta.env && import.meta.env.DEV) && typeof location !== 'undefined' && /[?&]seed=/.test(location.search); // (a dev-server switch: the built site ignores it)
 /**
  * Draw one scene from `pool`. `weightOf(name)` is its weight here, `seen` the recent history (newest first), `dice` a
  * 0..1 random function. Returns null when the pool is empty. A scene seen last is only drawn when nothing else is left.

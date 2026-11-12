@@ -121,7 +121,7 @@ export default function (T) {
   return {
     w: [0, 0, 0.4, 1.2, 3], crime: 3, lock: 'road',
     // a real road with at least one clear driving line along the whole stretch
-    avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2 && S.roadHere(ctx, ctx.L.chaseZ, -22, 22, 0.8) && S.laneFor(ctx, 1, -SPAN, SPAN, HALF) != null,
+    avail: (ctx) => (ctx.L.kind !== 'ped' || ctx.L.hw >= 3.4) && ctx.L.hw >= 2.0 && S.laneFor(ctx, 1, -SPAN, SPAN, HALF) != null, // (laneFor itself wants road under the whole line)
     stage: { road: { len: 2 * SPAN }, cross: true },
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'carChase'), B = beatsFor(ctx, 'carChase'), R = rig(ctx);
@@ -134,7 +134,8 @@ export default function (T) {
         const zs = freeLines(ctx, ranges[0], ranges[1]);
         if (!zs.length) return;
         const hwMargin = Math.min(0.9, (zs[zs.length - 1] - zs[0]) / 2); // a car that yaws in a weave or a lane change needs room beyond its straight-ahead line
-        const band = zs.filter((z) => z >= zs[0] + hwMargin - 1e-6 && z <= zs[zs.length - 1] - hwMargin + 1e-6);
+        let band = zs.filter((z) => z >= zs[0] + hwMargin - 1e-6 && z <= zs[zs.length - 1] - hwMargin + 1e-6);
+        if (!band.length) band = [zs[(zs.length - 1) >> 1]]; // a narrow road with an even number of free lines: the margins meet between two of them, so take the middle one
         const okZ = (z) => band.some((q) => Math.abs(q - z) < 0.06);
         const zmin = band[0], zmax = band[band.length - 1], zc = (zmin + zmax) / 2, span = zmax - zmin;
         const laneZ = ctx.stage && ctx.stage.lane != null ? ctx.stage.lane : L.chaseZ ?? 0;
@@ -574,9 +575,7 @@ export default function (T) {
         B('12 the last shot: the empty street', [pt(ox, zc)]);
         cam.wide(pt(ox, zc), { dist: 34, el: 0.35, az: 0.4 });
         ctx.stageMode && ctx.stageMode('watch');
-        yield* wait(1.2);
-        yield* R.settle(10);
-        yield* wait(0.3);
+        yield* wait(1.8); // (the camera lets go; the rig drives the cars on out of the frame)
         done = true;
       } finally {
         cam.release();

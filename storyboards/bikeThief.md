@@ -9,6 +9,7 @@ A thief with bolt cutters snips the child's bike free first and finds it far too
   - `kid`: the child's bike he threw down in beat 3d lies across his lane (it is knocked over and turned across the lane in 3d, and shown again in 4a). Fall: the front wheel hits it (KLETS) and he is catapulted over it.
 - **Cast and props:** thief (raccoon or robber), the bike's owner (balcony, shop, bench or passer-by: whatever the spot has; `resident`), a cop at higher levels (or `flip` `cop`). Props: bolt cutters, the child's pink bike, the real bike, two thin cheap locks (cut), in the chain version the thick padlocked chain.
 - **Needs at the spot:** a bike rack with 10 m of clear pavement to ride along (`stage.pave far 10 m`, anchor rack). Both bikes stand at the rack when the scene starts; nobody rolls in alone and the bikes leave only in the owner's hands.
+- **Pacing:** The walk-in of the thief is the walk past the rack (tight opening shot). The owner is on his way from the moment the real lock falls, so nobody is waited for; the epilogue is short and the rig walks the rest off.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|

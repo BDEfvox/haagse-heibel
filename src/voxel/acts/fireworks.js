@@ -38,7 +38,7 @@ export default function (T) {
   return {
     w: [0, 0, 0.6, 2, 2.5], crime: 1, need: ['bins'],
     // a bin, with 12 m of pavement along it for the lad, his mates, and the cop to stand about on
-    stage: { pave: { side: 'any', len: 12, depth: 2 }, anchor: 'bin', reach: 10 },
+    stage: { pave: { side: 'any', len: 12, depth: 1.6 }, anchor: 'bin', reach: 10 },
     *run(ctx) {
       const stageX = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
       const { L, rnd } = ctx, cam = camFor(ctx, 'fireworks'), B = beatsFor(ctx, 'fireworks'), R = rig(ctx);
@@ -46,7 +46,7 @@ export default function (T) {
       const bin = L.bins.slice().sort((p, q) => Math.abs(p.x - stageX) - Math.abs(q.x - stageX))[0], dir = bin.x > 0 ? 1 : -1; // the lad comes from the middle of the street
       const stand = S.findSpot(ctx, bin.x, bin.z + 1.2, 0.5, 8, { ignore: [bin] }) || spotNear(ctx, bin.x, bin.z + 1.2), sx = stand.x, sz = stand.z;
       const binPt = pt(bin.x, bin.z), sky = pt(bin.x, bin.z);
-      const ex = clamp(sx - dir * 8.5, EX0, EX1), retreat = (k) => clamp(sx - dir * k, EX0, EX1);
+      const ex = clamp(sx - dir * 5, EX0, EX1), retreat = (k) => clamp(sx - dir * k, EX0, EX1);
       let done = false;
       try {
         const lad = makePerson(rnd, { kind: 'hoodie', scale: 1.05 });
@@ -57,21 +57,22 @@ export default function (T) {
 
         // ---- 1. the plan: sneaking up to the bin with a huge rocket, two mates filming behind him (all three walk in from out of the frame)
         B('1 the plan: the bin on the pavement, a lad with a huge rocket sneaks up on it', [binPt]);
-        cam.wide(binPt, { dist: 18, el: 0.3, az: -dir * 0.3, hold: 2.4 });
+        cam.wide(binPt, { dist: 11, el: 0.3, az: -dir * 0.3 }); // (tight on the bin: the frame's edge is a few metres away, so the lad is in the picture almost at once)
         lad.ignore = [bin]; m1.ignore = [bin]; m2.ignore = [bin];
         lad.hold(rocket, 'front'); rocket.position.set(0.12, 0.35, 0.5);
         lad.arms = 'carry'; lad.gait = 'sneak'; lad.mood = 'sly';
         const arrived = new Set();
         const comeIn = (a, k, delay, jit) => R.run((function* () {
+          yield* waitUntil(() => T.seen(ctx, ex, sz) && !T.seen(ctx, sx - dir * 17, sz), 2); // (the tight shot is up before anybody walks into it)
           yield* wait(delay);
-          yield* R.enter(a, clamp(ex - dir * k, EX0, EX1), sz + jit, undefined, { speed: 3.2 });
+          yield* R.enter(a, clamp(ex - dir * k, EX0, EX1), sz + jit, undefined, { speed: 3.6 });
           arrived.add(a);
         })());
-        const ladTask = comeIn(lad, 0, 0.6, 0); comeIn(m1, 1.6, 0.9, rnd.range(-0.2, 0.3)); comeIn(m2, 2.9, 1.5, rnd.range(-0.2, 0.3));
+        const ladTask = comeIn(lad, 0, 0, 0); comeIn(m1, 1.5, 0.5, rnd.range(-0.2, 0.3)); comeIn(m2, 2.6, 1.0, rnd.range(-0.2, 0.3));
         yield* waitUntil(() => ladTask.done, 40);
         for (const m of [m1, m2]) { m.hold(item.phone()); m.arms = 'hold'; m.lookAt = lad; m.mood = 'happy'; }
         B('1b the plan: two mates follow with phones up', [lad, binPt]);
-        cam.track(lad, { dist: 9, el: 0.12, az: -dir * 0.5, lead: 1.4, cut: 1.0, hold: 7 });
+        cam.track(lad, { dist: 9, el: 0.12, az: -dir * 0.5, lead: 1.4, cut: 1.0 });
         const follow = (m, k) => R.run((function* () {
           yield* waitUntil(() => arrived.has(m), 20);
           yield* go(ctx, m, retreat(k), sz + 0.2, 2.2);
@@ -79,10 +80,10 @@ export default function (T) {
         })());
         follow(m1, 3.3); follow(m2, 4.6);
         yield* wait(0.3);
-        yield* go(ctx, lad, sx, sz, 2.3);
+        yield* go(ctx, lad, sx, sz, 2.6);
         faceTo(lad, bin.x, bin.z);
         lad.lookAt = null;
-        yield* wait(0.4);
+        yield* wait(0.3);
 
         // ---- 2. the reveal: grin to camera, rocket held up like a trophy
         B('2 reveal: the grin, the rocket held up like a trophy', [lad]);
@@ -154,19 +155,19 @@ export default function (T) {
         ctx.fx.puff(bin.x + 0.09, fuseY, bin.z);
         say(ctx, at(bin.x, TOP + 1.5, bin.z), 'pfff...', { size: 16, color: '#cfd8dc' });
         cam.dolly(lad, { dist: 8, el: 0.12, y: 1.4, az: -dir * 0.3, fov: 36, drift: { dist: -1.8 }, fit: true, cut: 0.5, hold: 7 });
-        yield* wait(0.9);
+        yield* wait(0.7);
         lad.pose = null; lad.mood = 'neutral'; lad.arms = 'shrug'; lad.shakeT = 1;
         for (const m of [m1, m2]) { m.pose = null; m.arms = 'hold'; m.mood = 'happy'; m.lookAt = lad; }
-        yield* wait(0.8);
+        yield* wait(0.6);
         lad.gait = 'sneak'; lad.mood = 'sly'; lad.arms = 'sneak';
-        yield* go(ctx, lad, sx, sz, 2.0);
+        yield* go(ctx, lad, sx, sz, 2.6);
         lad.gait = 'walk'; lad.arms = 'hips'; lad.mood = 'focus';
         faceTo(lad, bin.x, bin.z);
         yield* wait(0.3);
         // leaning right over the bin, nose at the rocket
-        yield* tween(0.8, (u) => { lad.g.rotation.x = -0.75 * u; }, ease.outQuad);
+        yield* tween(0.6, (u) => { lad.g.rotation.x = -0.75 * u; }, ease.outQuad);
         lad.lookAt = binPt;
-        yield* wait(0.8);
+        yield* wait(0.6);
 
         // ---- 5. WHOOSH: it goes off after all
         // who the lid will find: the lad who leans over the bin, or (sometimes) the mate crouching further back
@@ -269,7 +270,7 @@ export default function (T) {
             yield* R.out(m);
           })());
         }
-        yield* wait(0.5);
+        yield* wait(0.9);
         // the lid has slid down over his eyes
         lid.position.set(0, 0.5, 0.1); lid.rotation.x = 0.5;
         wearer.arms = 'reach'; wearer.mood = 'scared'; wearer.lookAt = null; wearer.gait = 'stagger';
@@ -301,13 +302,11 @@ export default function (T) {
         yield* wait(0.6);
 
         B('7b the culprit is led off', [wearer, cop]);
-        cam.wide(pt(lidAt.x, wz), { dist: 16, el: 0.3, az: dir * 0.2, hold: 3 });
+        cam.wide(pt(lidAt.x, wz), { dist: 16, el: 0.3, az: dir * 0.2 });
         wearer.lookAt = null; wearer.arms = 'swing'; cop.arms = 'swing'; cop.lookAt = null;
         R.run(R.away(wearer, -dir * 10, 2.6));
         R.run((function* () { yield* wait(0.5); yield* R.away(cop, -dir * 10, 2.6); })());
-        yield* wait(2.2);
-        yield* R.settle(8);
-        yield* wait(0.3);
+        yield* wait(2.0); // (the payoff has landed: the camera lets go and the rig walks the pair off)
         done = true;
       } finally {
         cam.release();

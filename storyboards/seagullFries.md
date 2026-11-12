@@ -4,6 +4,7 @@
 
 - **Cast and props:** a customer (borrowed civ or granny; else invented, walking in already holding the chips), a scout gull, a wingman gull (decoy), a bomber and a thief gull (poop), two gulls (pincer), a flock (`flock` ending), a cop with a stroopwafel (`cop` ending), a pigeon (otherwise). Props: cone of fries (in his hand when the camera arrives), white splat on his head (poop), fallen chips, stroopwafel.
 - **Needs at the spot:** `stage: pave { side: any, len: 8, depth: 2.5 }`: a pedestrian and a few metres of pavement to run along.
+- **Pacing:** Unchanged: already opens on a tight shot (the customer walks in under it) and each ending is a short reaction.
 - **Entrances and exits:** gulls enter with `R.enter(gull, x, z, y, { dir })` (it flies in over the frame edge and on to the point) and leave with `flyOut` (on and up until `!seen`, then `R.gone`); the pigeon and the cop walk in from the edge and the pigeon flies out with its chip. Every gull is sent for only after the shot that shows its arrival is up.
 
 | Beat | What happens | Must be seen | Shot |

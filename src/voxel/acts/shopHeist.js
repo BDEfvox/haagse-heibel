@@ -47,7 +47,7 @@ export default function (T) {
   return {
     w: [0, 0, 0, 3, 2], crime: 2,
     avail: (ctx) => heistShops(ctx).length > 0,
-    stage: { pave: { side: 'far', len: 10, depth: 2 }, anchor: 'shop', reach: 10 },
+    stage: { pave: { side: 'far', len: 10, depth: 1.2 }, anchor: 'shop', reach: 10 },
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'shopHeist'), R = rig(ctx), spots = heistShops(ctx);
       if (!spots.length) return;
@@ -84,7 +84,7 @@ export default function (T) {
 
         // ---- 1. set-up: the shopkeeper sweeps the pavement, back half turned
         B('1 sweeping: the shopkeeper sweeps in front of his shop', [keeper, door]);
-        cam.wide(door, { dist: 18, el: 0.25, y: 1.7, az: -dir * 0.25, hold: 3.6 }); // (the shop's own sign in the picture: 2.7 m up)
+        cam.wide(door, { dist: 13, el: 0.25, y: 1.7, az: -dir * 0.25 }); // (the shop's own sign in the picture: 2.7 m up; tight, so the frame's edge is a few metres away)
         const sweep = R.run((function* () {
           yield* R.enter(keeper, dx, dzr);
           keeper.hold(item.broom());
@@ -96,7 +96,8 @@ export default function (T) {
         })());
         yield* wait(1.2);
         B('1b casing: the customer tiptoes up to the cart', [rob]);
-        const rx0 = clamp(dx - dir * 14, EX0, EX1);
+        const rx0 = clamp(dx - dir * 8, EX0, EX1);
+        yield* waitUntil(() => T.seen(ctx, rx0, padZ(ctx, 'walkB1', rx0)) && !T.seen(ctx, dx - dir * 19, padZ(ctx, 'walkB1', rx0)), 1.5); // (the tight shot is up before he walks into it)
         yield* R.enter(rob, rx0, padZ(ctx, 'walkB1', rx0), undefined, { from: 'edge', speed: 4.4 });
         cam.track(rob, { dist: 9.5, el: 0.14, az: dir * 0.5, lead: 1.5, cut: 1.0, hold: 6 });
         yield* tiptoe(ctx, rob, cx - dir * 1.4, cz, 3.0);
@@ -343,11 +344,9 @@ export default function (T) {
           yield* tween(0.5, (u) => { cp.x = lerp(mid.x, inn.x, u); cp.z = lerp(mid.z, inn.z, u); });
           R.rm(cart);
         })());
-        cam.wide(door, { dist: 14, el: 0.25, az: 0.05, hold: 2.4 });
+        cam.wide(door, { dist: 14, el: 0.25, az: 0.05 });
         R.stop(gblink); gate.children[1].visible = true;
-        yield* R.settle(10);
-        if (doorHeld) { doorHeld = false; yield* dw.close(); }
-        yield* wait(0.4);
+        yield* wait(1.8); // (the payoff has landed: the camera lets go; the rig walks the cast off and shuts the shop door)
         done = true;
       } finally {
         cam.release();

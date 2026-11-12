@@ -46,7 +46,7 @@ export default function (T) {
       // the victim: somebody near who still has pavement ahead (no waiting), or an invented one who walks in while the first shot holds
       let ped = takePed(ctx, 14, (p) => Math.abs(p.exitX - p.g.position.x) > 9.5, stageX);
       const invented = !ped;
-      let inDir = rnd.sign(), inX = clamp(stageX - inDir * 5, EX0 + 1, EX1 - 1), inZ = 0;
+      let inDir = rnd.sign(), inX = clamp(stageX - inDir * 3.5, EX0 + 1, EX1 - 1), inZ = 0;
       if (invented) {
         ped = makePerson(rnd, { kind: T.extraKind ? T.extraKind(ctx) : 'civ' });
         const nm = rnd.chance(0.5) ? 'walkF0' : 'walkB1', sp0 = spotNear(ctx, inX, padZ(ctx, nm, inX));
@@ -66,7 +66,7 @@ export default function (T) {
         let arrived = !invented, thiefIn = false, vTask = null, tTask = null;
         if (invented) {
           // he walks in from out of the frame (a brisk stroll) while the opening shot holds the place he is coming to
-          vTask = R.run((function* () { yield* R.enter(ped, inX, lz, undefined, { speed: 3.2 }); ped.heading = hd; arrived = true; })());
+          vTask = R.run((function* () { yield* waitUntil(() => T.seen(ctx, inX, lz) && !T.seen(ctx, inX - inDir * 16, lz), 2); yield* R.enter(ped, inX, lz, undefined, { speed: 3.4 }); ped.heading = hd; arrived = true; })());
         }
 
         // the victim is driven by hand so that we can slow him down and stop him; he never walks off the end of the street
@@ -95,9 +95,9 @@ export default function (T) {
         })());
         // he follows the victim in from out of the frame, a few seconds behind
         tTask = R.run((function* () {
-          yield* wait(invented ? 1.2 : 0.6);
-          const tx = clamp((invented ? inX : pp.x) - dir * (invented ? 4.2 : 3.2), EX0, EX1);
-          yield* R.enter(thief, tx, lz, undefined, { speed: 3.4 });
+          yield* wait(invented ? 1.4 : 0.6);
+          const tx = clamp((invented ? inX : pp.x) - dir * (invented ? 3.4 : 3.2), EX0, EX1);
+          yield* R.enter(thief, tx, lz, undefined, { speed: 3.8 });
           thief.heading = hd; thief.lookAt = ped; thief.gait = 'sneak'; thief.arms = 'sneak'; thief.mood = 'sly';
           thiefIn = true;
         })());
@@ -111,12 +111,12 @@ export default function (T) {
         // ---- 1. the mark: a fat wallet, a whistling victim, a pickpocket falling in behind on tiptoe
         // (an invented victim is still walking in: the first shot holds the place he is coming to, then follows him)
         B('1 the mark: wallet in the back pocket, a victim strolls along', invented ? [pt(inX, lz)] : [ped]);
-        if (invented) cam.wide(pt(inX, lz), { dist: 15, el: 0.22, az: -dir * 0.5, hold: 3 });
+        if (invented) cam.wide(pt(inX, lz), { dist: 10, el: 0.22, az: -dir * 0.5 }); // (tight on the place he is coming to: the frame's edge is a few metres away)
         else cam.track(ped, { dist: 8, el: 0.1, az: -dir * 0.8, y: 0.9, lead: 1.2, fov: 34, hold: 2.2 });
         yield* waitUntil(() => arrived || (vTask && vTask.done), 40);
         if (invented) {
           cam.track(ped, { dist: 8, el: 0.1, az: -dir * 0.8, y: 0.9, lead: 1.2, fov: 34, cut: 0.8, hold: 2.2 });
-          yield* wait(0.4);
+          yield* wait(0.9);
         }
         yield* waitUntil(() => thiefIn || tTask.done, 40);
         B('1b the tail: the pickpocket creeps up behind him', [ped, thief]);
@@ -168,11 +168,11 @@ export default function (T) {
         B('4 the gloat: the wallet holds a moth and a receipt', [thief, vw]);
         thief.heading = 0.3; thief.mood = 'smug'; thief.arms = 'hold';
         cam.close(thief, { y: 1.35, dist: 6, fov: 28, hold: 6.5 });
-        yield* wait(0.4);
-        yield* laugh(ctx, thief, 0.9, 'he');
+        yield* wait(0.3);
+        yield* laugh(ctx, thief, 0.7, 'he');
         ctx.sfx('tick');
         thief.mood = 'happy';
-        yield* wait(0.4);
+        yield* wait(0.3);
         const tp = thief.g.position, hx = tp.x, hz = tp.z + 0.35;
         thief.mood = 'shock';
         ctx.sfx('gasp');
@@ -189,7 +189,7 @@ export default function (T) {
             });
             R.rm(moth);
           })());
-          yield* wait(1.3);
+          yield* wait(1.0);
         } else if (prize === 'coin') {
           // one lonely coin falls out and rolls away down the pavement; he watches it go
           const coin = R.add(mkCoin());
@@ -202,8 +202,8 @@ export default function (T) {
             yield* tween(1.6, (u) => { coin.position.x = lerp(hx + dir * 0.5, x1, ease.outQuad(u)); coin.position.y = 0.03 + Math.abs(Math.sin(u * 14)) * 0.08 * (1 - u); coin.rotation.y = u * 20; });
             R.rm(coin);
           })());
-          yield* wait(1.3);
-        } else yield* wait(0.5);
+          yield* wait(1.0);
+        } else yield* wait(0.4);
         thief.lookAt = null;
         // ...and then a receipt, drifting out (a long one, if that is all there is)
         const paper = R.add(item.paper());
@@ -214,7 +214,7 @@ export default function (T) {
         thief.mood = 'sad'; thief.arms = 'shrug'; thief.shakeT = 1.2;
         ctx.sfx('womp');
         say(ctx, thief, prize === 'coin' ? 'EEN CENT?! EN EEN BON?!' : 'ALLEEN EEN BON?!', { size: 15, color: '#cfe8ff' });
-        yield* wait(1.4);
+        yield* wait(1.0);
 
         // the cop is not far: he starts walking in now (out of the picture) and will stand where the thief runs
         const tx0 = tp.x, ra = S.runway(ctx, tx0, lz, fd, 12, 0.5);
@@ -320,7 +320,7 @@ export default function (T) {
         })());
         yield* wait(0.6);
         B('7b the victim counts his loyalty cards, satisfied, and the culprit is led off', [cop, thief, ped]);
-        cam.wide([cop, thief, ped], { dist: 15, el: 0.3, az: fd * 0.2, fit: true, hold: 5 });
+        cam.wide([cop, thief, ped], { dist: 15, el: 0.3, az: fd * 0.2, fit: true });
         yield* getUp(thief, 'sad');
         thief.arms = 'swing'; cop.lookAt = null; cop.arms = 'point';
         ctx.sfx('womp');
@@ -328,13 +328,12 @@ export default function (T) {
         cop.arms = 'swing';
         R.run(R.away(thief, fd * 6, 2.4));
         R.run((function* () { yield* wait(0.4); yield* R.away(cop, fd * 6, 2.4); })());
-        yield* wait(1.4);
-        yield* waitUntil(() => counting.done, 5);
-        // satisfied, he strolls on his way
+        yield* wait(1.2);
+        yield* waitUntil(() => counting.done, 3);
+        // satisfied, he strolls on his way; the camera lets go and the rig walks the rest off
         ped.arms = 'swing'; ped.mood = 'whistle';
-        if (invented) R.run(R.away(ped, dir * 14, 2.2)); else R.give(ped); // (he strolls on his way, out of the picture)
-        yield* R.settle(8);
-        yield* wait(0.3);
+        if (invented) R.run(R.away(ped, dir * 14, 2.8)); else R.give(ped); // (he strolls on his way, out of the picture)
+        yield* wait(0.5);
         done = true;
       } finally {
         cam.release();

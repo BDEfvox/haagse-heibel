@@ -32,7 +32,7 @@ export default function (T) {
 
   return {
     w: [0, 0, 0, 3, 2], crime: 2,
-    stage: { pave: { side: 'any', len: 14, depth: 1.6 } },
+    stage: { pave: { side: 'any', len: 14, depth: 1.0 } },
     avail: (ctx) => { const q = scooterSides(ctx); return q.okF || q.okB; },
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'scooterSnatch'), B = beatsFor(ctx, 'scooterSnatch'), R = rig(ctx);
@@ -64,7 +64,8 @@ export default function (T) {
 
         // ---- 1. granny: she toddles along with a big handbag on her arm, humming
         B('1 granny: toddling along with her big handbag', [pt(gx + dir * 2, wz)]);
-        cam.wide(pt(gx + dir * 2, wz), { dist: 16, el: 0.3, az: dir * 0.3, hold: 1.4 });
+        cam.wide(pt(gx + dir * 2, wz), { dist: 13, el: 0.3, az: dir * 0.3, hold: 1.4 });
+        yield* waitUntil(() => seen(ctx, gx + dir * 4, wz) && !seen(ctx, gx + dir * 18, wz), 2); // (the tight shot is up before she walks into it)
         yield* R.enter(vic, clamp(gx + dir * 4, EX0, EX1), wz, undefined, { dir: -dir, speed: 2.8 });
         grip(vic, mkPurse());
         vic.mood = 'happy'; vic.heading = -hd;
@@ -263,7 +264,7 @@ export default function (T) {
         say(ctx, cop, 'POLITIE! WAT IS HIER GEBEURD?', { size: 14, color: '#7db8ff' });
         vic.arms = 'swing'; vic.mood = 'angry';
         const copGo = R.run(go(ctx, cop, n1.g.position.x - dir * 2.4, z + 0.4, 5));
-        yield* go(ctx, vic, n1.g.position.x - dir * 0.9, n1.g.position.z - 0.2, 2.8);
+        yield* go(ctx, vic, n1.g.position.x - dir * 0.9, n1.g.position.z - 0.2, 3.6);
         yield* waitUntil(() => copGo.done, 4);
         const whack = function* (n, line) {
           vic.heading = Math.atan2(n.g.position.x - vic.g.position.x, n.g.position.z - vic.g.position.z);
@@ -284,7 +285,7 @@ export default function (T) {
         cam.close(cop, { y: 1.5, dist: 6.5, fov: 30, hold: 1.7 });
         cop.lookAt = vic;
         yield* wait(0.4);
-        yield* go(ctx, vic, n2.g.position.x - dir * 0.9, n2.g.position.z - 0.2, 2.8);
+        yield* go(ctx, vic, n2.g.position.x - dir * 0.9, n2.g.position.z - 0.2, 3.6);
         yield* whack(n2, 'SCHOFTEN!');
         cop.mood = 'sad'; cop.arms = 'cover'; cop.squash(0.2);
         ctx.sfx('womp');
@@ -292,39 +293,20 @@ export default function (T) {
         cop.arms = 'hips'; cop.lookAt = null; cop.mood = 'smug';
         ctx.news('Granny recovers own handbag, assists with arrest. Officer: "Strictly speaking, that was assault"');
 
-        // ---- 8. epilogue: granny toddles on, humming; the cop leads the pair away with the scooter
-        B('8 epilogue: granny toddles on, the cop leads the robbers off', [vic]);
-        cam.wide(pt(crashX - dir * 4, wz), { dist: 18, el: 0.3, az: -dir * 0.2, hold: 5 });
-        R.run((function* () {
-          yield* getUp(n1, 'sad'); n1.arms = 'swing';
-          yield* wait(0.2);
-          yield* getUp(n2, 'sad'); n2.arms = 'swing';
-          cop.arms = 'point'; cop.mood = 'neutral';
-          // one of them rights the scooter and pushes it off, the other walks beside him, the cop behind them
-          yield* tween(0.7, (u) => { sc.lean = lerp(side * 1.3, 0, ease.inOut(u)); });
-          sc.lean = 0;
-          const far = clamp(n1.g.position.x + dir * 30, EX0 + 1, EX1 - 1);
-          R.run((function* () {
-            yield* goEach(ctx, n1, far, n1.g.position.z, 3.0, () => {
-              const p = n1.g.position;
-              if (sc.alive) { sc.g.position.set(p.x + dir * 0.2, 0, p.z + (z > p.z ? 0.75 : -0.75)); sc.heading = hd; sc.moving = 2.4; }
-              if (!watching(ctx) || !seen(ctx, p.x, p.z, 1, 0.3)) return true;
-            });
-            if (sc.alive) R.gone(sc);
-            R.gone(n1);
-          })());
-          yield* wait(0.3);
-          R.run(R.away(n2, dir * 6, 3.4));
-          yield* wait(0.5);
-          yield* R.away(cop, dir * 6, 3.4);
-        })());
+        // ---- 8. epilogue: the pair stagger up, the cop points them off, granny hums; then the camera lets go and the rig walks everybody (scooter included) off
+        B('8 epilogue: the robbers get up, granny hums, the cop points the way', [vic, n1, n2]);
+        cam.wide(pt(crashX - dir * 3, wz), { dist: 15, el: 0.3, az: -dir * 0.2 });
         vic.mood = 'happy';
         say(ctx, vic, '♪ hm hm hmmm ♪', { size: 13, color: '#ffd6f2' });
-        yield* wait(0.7);
+        R.run((function* () {
+          yield* getUp(n1, 'sad'); n1.arms = 'swing';
+          yield* getUp(n2, 'sad'); n2.arms = 'swing';
+        })());
+        cop.arms = 'point'; cop.mood = 'neutral';
+        yield* tween(0.7, (u) => { sc.lean = lerp(side * 1.3, 0, ease.inOut(u)); }); // (the scooter is stood back up)
+        sc.lean = 0; sc.moving = 0;
+        yield* wait(1.6);
         ctx.sfx('tick');
-        R.run((function* () { yield* go(ctx, vic, clamp(gw.x - dir * 8, EX0, EX1), wz, 1.9); yield* R.out(vic); })());
-        yield* R.settle(10);
-        yield* wait(0.3);
         done = true;
       } finally {
         cam.release();

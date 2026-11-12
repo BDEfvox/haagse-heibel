@@ -6,6 +6,7 @@ A pigeon flies into the lane, car A stops for it, car B (radio loud) does not, a
 
 - **Cast and props:** pigeon, cars A, B and a third car C, drivers 1, 2 and 3, a cop (level 3+), bystanders filming, police cars (level 4+). Props: two bumpers, a damage form (paper), steam.
 - **Needs at the spot:** `stage: { road: { len: 34 } }`: a free driving line for the three stopped cars, centred on `ctx.stage.x`; the people stand on the side of the row that has clear ground. Police cars (level 4+) only come when a second free line, 2.4 m from the first, exists. The road is closed to traffic for the duration.
+- **Pacing:** Faster entrances (cars A and B come in at 10 to 12 m/s from a tighter shot), three argument lines instead of four, the drivers get in the cars as the last beat and the camera lets go as the first cars pull away: the rig drives the convoy off. The bird leaves over the roofs (no sheet in its beak).
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|
@@ -25,6 +26,6 @@ A pigeon flies into the lane, car A stops for it, car B (radio loud) does not, a
 | 14 gust | FWOEF: a gust sends six sheets of paper flying across the road. | drivers + papers | high |
 | 15 scramble | Three people dive for the same sheet; two crack heads and tumble; driver 3 grabs another and laughs. | all three drivers + the sheets | two-shot |
 | 16 bird walk | The bird strolls through the middle of the circle; the cop says it is the witness. | bird + drivers | close on the bird |
-| 17 convoy | Everybody leaves, hazard lights blinking, cars squatting as they pull away one after the other; the bird flies off (with a sheet, in one ending). | all three cars | wide |
+| 17 convoy | Everybody gets back in, hazard lights blinking, the first two cars squat and pull away; the camera lets go and the rig drives the rest off; the bird flies off over the roofs. | all three cars | wide |
 
 Bumpers land on the people's side of the row, on the ground beside the cars (never under them); a bump shoves the whole line forward together so the gaps stay as they were.

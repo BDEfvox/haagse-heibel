@@ -22,7 +22,7 @@ export default function (T) {
   /** Homes with a real front door, a clear doorstep and at least nine clear metres of pavement to run along (and which way). */
   const plans = (ctx) => once(ctx, 'burglar', () => {
     const out = [];
-    for (const h of S.housesNear(ctx, 0, 15, { door: true, shop: false, tower: false })) {
+    for (const h of S.housesNear(ctx, 0, 20, { door: true, shop: false, tower: false })) {
       if (!h.leaf) continue;
       const dw = doorway(ctx, null, h);
       if (!dw) continue;
@@ -41,7 +41,7 @@ export default function (T) {
   return {
     w: [0, 0, 0, 3, 2], crime: 2,
     avail: (ctx) => plans(ctx).length > 0,
-    stage: { pave: { side: 'far', len: 10, depth: 2 }, anchor: 'door', reach: 8 },
+    stage: { pave: { side: 'far', len: 9, depth: 1.2 }, anchor: 'home', reach: 8 },
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'burglar'), B = beatsFor(ctx, 'burglar'), R = rig(ctx), list = plans(ctx);
       const sx0 = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
@@ -59,9 +59,10 @@ export default function (T) {
 
         // ---- 1. casing: he creeps along the fronts with a crowbar, stops at the door, checks both ways
         B('1 casing: creeping up to the front door', [doorPt]);
-        cam.wide(doorPt, { dist: 18, el: 0.3, az: -dir * 0.3, hold: 2 });
-        const x0 = clamp(dx - dir * 10, EX0, EX1);
-        yield* R.enter(rob, x0, lz, undefined, { from: 'edge', speed: 4.4 });
+        cam.wide(doorPt, { dist: 11, el: 0.3, az: -dir * 0.3 }); // (tight on the door: the frame's edge is a few metres away, so the burglar is in the picture almost at once)
+        const x0 = clamp(dx - dir * 6, EX0, EX1);
+        yield* waitUntil(() => T.seen(ctx, x0, lz) && !T.seen(ctx, dx - dir * 17, lz), 2); // (the tight shot is up before he walks into it)
+        yield* R.enter(rob, x0, lz, undefined, { from: 'edge', speed: 4.6 });
         rob.hold(item.crowbar());
         B('1b casing: tiptoeing up to the door', [rob]);
         cam.track(rob, { dist: 10, el: 0.14, az: -dir * 0.5, lead: 1.5, cut: 1.2 });
@@ -138,11 +139,11 @@ export default function (T) {
         cam.shot({ on: [rob, doorPt], y: 1.0, dist: 6.5, el: 0.05, az: -dir * 0.3, fov: 34, fit: true, cut: 0.8 });
         ctx.sfx('kaching');
         say(ctx, rob, 'HEBBES!', { size: 18, color: '#b9fbc0' });
-        R.run(dw.passOut(rob, 1.3));
+        const outT = R.run(dw.passOut(rob, 1.3));
         yield* wait(0.9);
         ctx.fx.cash(rob.g.position.x, 1.2, rob.g.position.z, 6, 2.5, 4); // the bag leaks banknotes over the threshold
         ctx.sfx('thud');
-        yield* R.settle(3);
+        yield* waitUntil(() => outT.done, 3); // (not R.settle: the cat is still walking off)
 
         // ---- 5. the gloat: bag over the shoulder, and he laughs
         B('5 the gloat: bag over his shoulder, laughing', [rob]);
@@ -226,7 +227,7 @@ export default function (T) {
           rob.drop();
           sack.position.set(rp.x, 1.5, rp.z);
           // the bag keeps going: up, open, raining money, and down into the owner's arms
-          R.run((function* () {
+          const sackT = R.run((function* () {
             const ox = stopX - dir * 4.2, oz = lz + 0.2;
             let burst = false;
             const a0 = sack.position.clone();
@@ -240,7 +241,7 @@ export default function (T) {
           })());
           yield* tumble(ctx, rob, stopX - dir * 1.7, lz + 0.1, 1.0, 0.6);
           cop.arms = 'hips'; cop.mood = 'smug';
-          yield* R.settle(4);
+          yield* waitUntil(() => sackT.done, 3); // (not R.settle: the owner is still running up)
           cam.two(cop, rob, { az: dir * 0.2 });
           yield* go(ctx, cop, rob.g.position.x + dir * 0.9, lz + 0.15, 2.6);
           cop.heading = -hd; cop.lookAt = rob;
@@ -288,9 +289,7 @@ export default function (T) {
           R.run((function* () { yield* go(ctx, owner, dw.out.x, dw.out.z, 2.8); yield* R.out(owner); })());
         }
         R.stop(pursuit);
-        yield* R.settle(9);
-        yield* dw.close(); // (the scene's own hold on the door: the owner's walk back in has shut it behind her already if nobody else needs it)
-        yield* wait(0.3);
+        yield* wait(0.8); // (the payoff has landed: the camera lets go, the rig walks the cast off and shuts the door behind the owner)
         done = true;
       } finally {
         cam.release();

@@ -26,7 +26,7 @@ export default function (T) {
 
   return {
     w: [0, 3, 2, 1, 1], crime: 1,
-    stage: { pave: { side: 'any', len: 8, depth: 2.5 } },
+    stage: { pave: { side: 'any', len: 8, depth: 1.6 } },
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'seagullFries'), B = beatsFor(ctx, 'seagullFries'), R = rig(ctx);
       const stg = ctx.stage; // read before the first yield

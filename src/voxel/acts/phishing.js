@@ -34,7 +34,7 @@ export default function (T) {
 
   return {
     w: [0, 1.4, 2, 2, 1.6], crime: 1,
-    stage: { pave: { side: 'any', len: 14, depth: 3 } },
+    stage: { pave: { side: 'any', len: 14, depth: 1.6 } },
     // the hacker sets up on the pavement opposite his victim, so both pavements need a clear stretch
     avail: (ctx) => !!padSpot(ctx, 'walkF1', 0, 1.2, 14) && !!padSpot(ctx, 'walkB0', 0, 1.2, 14),
     *run(ctx) {
@@ -71,9 +71,9 @@ export default function (T) {
 
         // ---- 1. set-up: a phone zombie ambles in while a hooded figure carries in a folding desk
         B('1 set-up: a phone zombie ambles in, a hooded figure carries in a desk', [hub]);
-        cam.wide(hub, { dist: 13 });
+        cam.wide(hub, { dist: 10 }); // (tight on the place: the frame's edges are a few metres away, so both of them are in the picture almost at once)
         ped.hold(item.phone()); ped.arms = 'hold'; ped.heading = dir > 0 ? E : W; ped.mood = 'neutral';
-        yield* shotUp(ctx, hx, hz);
+        yield* waitUntil(() => seen(ctx, hx, hz) && !seen(ctx, hx - dir * 16, ped.lineZ), 2); // (the tight shot is up before anybody walks into it)
         const walk = R.run((function* () {
           if (invented) yield* R.enter(ped, hx - dir * 5, ped.lineZ, undefined, { speed: 3.2, dir });
           yield* go(ctx, ped, hx - dir * 1.8, ped.lineZ, invented ? 2.2 : 1.4);

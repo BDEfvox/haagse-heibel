@@ -41,7 +41,7 @@ export default function (T) {
   return {
     w: [0, 0, 3, 2, 1.5], crime: 1,
     // 10 m of pavement with room to stand in front of the wall, run off along it and slip
-    stage: { pave: { side: 'any', len: 10, depth: 2.2 } },
+    stage: { pave: { side: 'any', len: 10, depth: 1.6 } },
     avail: (ctx) => !!canvasFor(ctx),
     *run(ctx) {
       const stageX = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
@@ -66,20 +66,20 @@ export default function (T) {
 
         // ---- 1. set-up: a lookout takes position; the tagger creeps in from the other side
         B('1 set-up: the wall that is going to be tagged, the lookout and the tagger walk in', [tagPt]);
-        cam.wide(spot, { dist: 20, el: 0.3, az: 0.3 * dir, hold: 4.2 });
+        cam.wide(spot, { dist: 14, el: 0.3, az: 0.3 * dir }); // (tight on the wall: the frame's edges are a few metres away, so both of them are in the picture within a second or two)
+        const look = spotNear(ctx, lookX, padZ(ctx, walk, lookX)), kpos = spotNear(ctx, bx.x - 1.3, sz);
+        const kx0 = clamp(bx.x - dir * 5, EX0, EX1);
+        yield* waitUntil(() => T.seen(ctx, kx0, padZ(ctx, walk, kx0)) && !T.seen(ctx, bx.x - dir * 19, padZ(ctx, walk, kx0)), 2); // (the tight shot is up before anybody walks into it)
         R.run((function* () {
-          const lx0 = clamp(bx.x + dir * 10, EX0, EX1), look = spotNear(ctx, lookX, padZ(ctx, walk, lookX));
-          yield* R.enter(lookout, lx0, padZ(ctx, walk, lx0));
-          yield* go(ctx, lookout, look.x, look.z, 3);
+          yield* R.enter(lookout, look.x, look.z, undefined, { speed: 3.4 });
           lookout.heading = dir > 0 ? E : W; lookout.arms = 'sneak'; lookout.mood = 'whistle';
           say(ctx, lookout, '♪ doe-niks ♪', { size: 12, color: '#cfe8ff' });
           for (let i = 0; i < 3; i++) yield* lookAround(lookout, 0.7, 0.3);
         })());
-        const kx0 = clamp(bx.x - dir * 9, EX0, EX1), kpos = spotNear(ctx, bx.x - 1.3, sz);
-        yield* R.enter(kid, kx0, padZ(ctx, walk, kx0));
+        yield* R.enter(kid, kx0, padZ(ctx, walk, kx0), undefined, { speed: 3.8 });
         B('1b the tagger creeps up to the wall', [kid]);
-        cam.track(kid, { dist: 9.5, el: 0.14, az: -dir * 0.5, lead: 1.5, cut: 1.0, hold: 5 });
-        yield* tiptoe(ctx, kid, kpos.x, kpos.z, 3.2);
+        cam.track(kid, { dist: 9.5, el: 0.14, az: -dir * 0.5, lead: 1.5, cut: 1.0 });
+        yield* tiptoe(ctx, kid, kpos.x, kpos.z, 3.6);
 
         // ---- 2. reveal and warm-up: face to the lens, shake the can
         B('2 reveal: the tagger shakes his can at us', [kid]);
@@ -287,7 +287,7 @@ export default function (T) {
           R.give(critic ? cr : null);
           yield* wait(0.3);
           B('8 exit: the cop squelches off, the tag shines', [cop, tagPt]);
-          cam.wide(spot, { dist: 22, hold: 3 });
+          cam.wide(spot, { dist: 18 });
           R.run(R.away(cop, -dir * 6, 3.6));
           if (!critic) R.run(R.away(cr, dir * 6, 3.4));
         } else {
@@ -313,15 +313,14 @@ export default function (T) {
           R.run((function* () { yield* wait(0.3); yield* R.away(cr, -dir * 8, 2.8); })());
           yield* wait(0.8);
           B('8 exit: the cop marches him off, the tag shines', [tagPt]);
-          cam.wide(spot, { dist: 22, hold: 3 });
+          cam.wide(spot, { dist: 18 });
         }
-        yield* R.settle(10);
-        // the wet footprints and the puddle dry up and fade
-        yield* tween(0.5, (t) => { for (const f of prints) f.scale.setScalar(Math.max(0.001, 1 - t)); pud.scale.setScalar(Math.max(0.001, 1 - t)); });
+        // the wet footprints and the puddle dry up and fade while the camera takes its last look; then it lets go and the rig walks the rest off
+        yield* tween(0.8, (t) => { for (const f of prints) f.scale.setScalar(Math.max(0.001, 1 - t)); pud.scale.setScalar(Math.max(0.001, 1 - t)); });
         for (const f of prints) R.rm(f);
         R.rm(pud);
         R.stay(tg);
-        yield* wait(0.4);
+        yield* wait(1.4);
         done = true;
       } finally {
         cam.release();

@@ -4,6 +4,7 @@
 
 - **Cast and props:** robber with money bag, two cops, a dog, a chef (with a broom). Props: the swag bag, banknotes, a heap of people.
 - **Needs at the spot:** `stage: pave { side: any, len: 20, depth: 2 }`: one pavement line with at least 20 m of open ground along it (and the other lane of that pavement for the way back). The chasers chase the one in front (`chase`): they keep a gap and go round whatever is in the way.
+- **Pacing:** Tight opening where the robber runs in; the line runs faster (5.8 m/s); the scene ends as the dog leads the pack out and the rig runs the rest off.
 - **Entrances and exits:** the robber and the first cop run in from the edge of the frame; the dog, the second cop and (without a door) the chef stand at their spot from the start when it is out of the picture, else they walk in from the edge first; the chef steps out of a real door when the street has one; everybody runs out of the frame at the end (`R.leave`).
 
 | Beat | What happens | Must be seen | Shot |

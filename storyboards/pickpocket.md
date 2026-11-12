@@ -5,6 +5,7 @@ A pickpocket lifts a wallet from a passer-by's back pocket, gloats over the taki
 - **Setup / trigger / payoff (three sentences):** Setup: a victim strolls along whistling with a fat bright wallet sticking out of his pocket, a pickpocket creeps up behind him, and (planted ahead in the chase shot) a cop stands further down the pavement. Trigger: the victim pats his pockets, the thief bolts laughing over his shoulder with the victim after him. Payoff: he runs into the cop's raised hand, the wallet arcs back into the victim's hand, the cop cuffs him and the victim counts his loyalty cards.
 - **Cast and props:** pickpocket (robber or hoodie), the victim (a passer-by borrowed from the crowd with `takePed`, no waiting; on a quiet street an invented one, `extraKind`, who walks in from out of the frame while the first shot holds the place he is coming to), a cop who walks in from out of the frame during beat 5 (nobody pops in). Props: the fat wallet, and what is in it: chosen by `ctx.rnd` out of a moth, one coin that rolls away, a very long receipt (always followed by a receipt).
 - **Needs at the spot:** a strip of pavement 10 m long, 1.2 m deep (`stage.pave any 10 m`).
+- **Pacing:** An invented victim walks in under a tight shot (the thief is already following 1.4 s behind); the wallet gloat is shorter; the scene ends on the culprit being led off and the victim strolling away, the rig walks them off.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|

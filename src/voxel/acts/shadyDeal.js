@@ -48,7 +48,7 @@ export default function (T) {
   return {
     w: [0, 0, 1.4, 2, 2], crime: 1,
     // a clear patch of the camera-side pavement for the deal, and room either side for the customer and the cop to walk up
-    stage: { pave: { side: 'any', len: 8, depth: 2 } },
+    stage: { pave: { side: 'any', len: 8, depth: 1.6 } },
     avail: (ctx) => !!padSpot(ctx, 'walkF1', 0, 1.0, 14),
     *run(ctx) {
       const stageX = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
@@ -72,10 +72,11 @@ export default function (T) {
 
         // ---- 1. loitering: he saunters up, leans, and looks up and down the street, far too casual
         B('1 loitering: the dealer looks up and down the street', [dealer]);
-        cam.wide(pt(x - side0 * 3, z), { dist: 11, el: 0.25, az: 0.25, hold: 1.4 });
+        cam.wide(pt(x - side0 * 1.5, z), { dist: 10, el: 0.25, az: 0.25 });
         dealer.gait = 'sneak'; dealer.mood = 'whistle';
-        yield* R.enter(dealer, x - side0 * 2.5, z, undefined, { dir: side0 < 0 ? 1 : -1, speed: 3.4 });
-        cam.dolly(dealer, { dist: 9, az: 0.15, y: 1.3, hold: 4.6 });
+        yield* waitUntil(() => T.seen(ctx, x - side0 * 3, z) && !T.seen(ctx, x - side0 * 17, z), 2); // (the tight shot is up before he walks into it)
+        yield* R.enter(dealer, x - side0 * 1.5, z, undefined, { dir: side0 < 0 ? 1 : -1, speed: 3.6 });
+        cam.dolly(dealer, { dist: 9, az: 0.15, y: 1.3 });
         yield* go(ctx, dealer, x, z, 2.2);
         dealer.gait = 'walk'; dealer.heading = 0.2; dealer.arms = 'cross'; dealer.mood = 'whistle';
         yield* wait(0.3);
@@ -146,10 +147,13 @@ export default function (T) {
         ped.mood = 'happy';
         yield* wait(0.5);
         // the handover, close (meanwhile a cop strolls in from the other side, out of this shot)
-        const cd = -cs, copX = x + cd * 1.35;
+        let cd = -cs, copX = x + cd * 1.35;
+        // (he comes in from the side where the frame's edge is near: when only the far side is a long walk away he comes up behind the customer instead)
+        const copEt = (c, off) => T.entryTime(ctx, cop, x + c * off, z, { dir: c > 0 ? -1 : 1, speed: 3.0 });
+        if (copEt(cd, 1.35) > 5 && copEt(-cd, 2.6) < copEt(cd, 1.35)) { cd = -cd; copX = x + cd * 2.6; }
         cop.heading = cd > 0 ? W : E; cop.mood = 'smug'; cop.gait = 'strut';
         let copIn = false;
-        const copTask = R.run((function* () { yield* R.enter(cop, copX, z, undefined, { dir: cd > 0 ? -1 : 1, speed: 2.3 }); copIn = true; })());
+        const copTask = R.run((function* () { yield* R.enter(cop, copX, z, undefined, { dir: cd > 0 ? -1 : 1, speed: 3.0 }); copIn = true; })());
         cam.shot({ on: [ped, dealer], dist: 5.4, el: 0.05, y: 1.15, fov: 30, hold: 2.6 });
         yield* wait(0.35);
         const wad1 = R.add(item.wad());
@@ -263,8 +267,8 @@ export default function (T) {
           ctx.news('Officer sneezes on own evidence; suspect strolls off. "Het was echt oregano," says the suspect');
           yield* wait(1.6);
           B('7 epilogue: the dealer is gone, the cop sits in the cloud', [cop]);
-          cam.wide(pt(x, z), { dist: 14, el: 0.25, hold: 3 });
-          yield* wait(0.6);
+          cam.wide(pt(x, z), { dist: 14, el: 0.25 });
+          yield* wait(1.0);
         } else {
         // ---- 6. the run: he bolts, skids on his own jar and goes down in a green cloud; the cop sneezes too
         B('6 the run: the dealer bolts, the cop after him', [dealer, cop]);
@@ -276,11 +280,11 @@ export default function (T) {
         cam.shot({ on: [dealer, cop], dist: 10, el: 0.1, az: fl * 0.5, y: 1.0, fov: 34, lead: 2.5, shake: 0.5, fit: true, cut: 0.3, hold: 4.2 });
         const dust = R.run(runDust(ctx, dealer));
         const pchase = R.run((function* () { yield* wait(0.4); cop.mood = 'angry'; yield* chase(ctx, cop, dealer, 5.6, 1.0, 8); })());
-        yield* wait(0.3);
+        yield* wait(0.7);
         let dutch = false;
         yield* goEach(ctx, dealer, fx1, jz, 6.0, () => {
           const d = Math.abs(dealer.g.position.x - jx);
-          if (!dutch && d < 2.6) {
+          if (!dutch && d < 2.0) {
             dutch = true;
             B('6b the slip', [dealer, jars[slipIdx].o]);
             cam.dutch([dealer, jars[slipIdx].o], { dist: 7, az: fl * 0.3, face: false, fit: true, cut: 0.2, hold: 2.6 });
@@ -343,7 +347,7 @@ export default function (T) {
         ped.mood = 'happy'; ped.arms = 'swing'; ped.lookAt = null;
         B('7b the customer pockets one last jar', [ped, pt(jr.x, jr.z)]);
         cam.shot({ on: [ped, pt(jr.x, jr.z)], y: 0.9, dist: 6.5, fov: 30, fit: true, cut: 0.5, hold: 3.4 });
-        yield* go(ctx, ped, jr.x, jr.z - 0.45, 2.0);
+        yield* go(ctx, ped, jr.x, jr.z - 0.45, 3.0);
         ped.heading = 0;
         ped.arms = 'reach'; ped.squash(0.25); ped.mood = 'focus';
         yield* wait(0.5);
@@ -356,10 +360,9 @@ export default function (T) {
         ped.hold(mkJar(jr.c), 'back');
         ped.arms = 'swing'; ped.mood = 'whistle';
         ctx.sfx('gulp');
-        cam.wide(pt(x, z), { dist: 18, el: 0.3, az: 0.2, hold: 4 });
+        cam.wide(pt(x, z), { dist: 16, el: 0.3, az: 0.2 });
         if (inventedCust) R.run(R.away(ped, (left ? 1 : -1) * 12, 2.2)); else R.give(ped);
-        yield* R.settle(8);
-        yield* wait(0.5);
+        yield* wait(1.6); // (the payoff has landed: the camera lets go and the rig walks the rest off)
         done = true;
       } finally {
         cam.release();

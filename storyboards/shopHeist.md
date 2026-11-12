@@ -7,6 +7,7 @@ A "customer" fills a shopping cart with the shop's goods, walks a television thr
 - **Cast and props:** thief (robber), shopkeeper (chef) with a broom, two onlookers (one films), a cop. Props: security gate with red lights, shopping cart, loot boxes, television with its tag, a box on the head.
 - **Doors:** the shop door is the real door of a real shop unit (`L.shops`, a parody name on its sign); the thief goes in and comes out of it, the keeper steps out of it and goes back in (`T.doorway`: it opens on a dark doorway with a leaf of the door's own colour and the glass in it). The cart is wheeled back in through it at the end.
 - **Needs at the spot:** A real shop door (not a bank) and 9 m or more of clear pavement along it to run. `stage: { pave: far 10 x 2, anchor: 'shop' }`.
+- **Pacing:** Tight opening on the shop door; the scene ends on the cart being wheeled back in, a last 1.8 s look, then the rig walks everybody off and shuts the door.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|

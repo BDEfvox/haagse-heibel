@@ -174,7 +174,11 @@ export class Stage {
     this.flashEl = root.querySelector('.stage-flash');
     this.lite = matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) < 560;
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.lite ? 1.5 : 2));
+    const pr0 = Math.min(window.devicePixelRatio || 1, this.lite ? 1.5 : 2);
+    this.renderer.setPixelRatio(pr0);
+    // a steady frame rate matters more than the last bit of sharpness: when most frames run late the picture is drawn
+    // with fewer pixels (never fewer than the screen's own), and the sharper picture is tried again after a calm spell
+    this._gov = { steps: [1, 0.8, 0.65, 0.5].map((k) => Math.max(Math.min(pr0, 1), pr0 * k)).filter((v, i, l) => !i || v < l[i - 1] - 0.01), level: 0, n: 0, slow: 0, t: 0, calm: 0, wait: 20000, fresh: 0, last: 0, tried: 0, until: 0 };
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.setClearColor(0x000000, 0);
@@ -209,6 +213,7 @@ export class Stage {
     this._tick = (now) => {
       if (!this.running) return;
       this._raf = requestAnimationFrame(this._tick);
+      this._govern(now);
       try {
         this._frame(now);
         this._errs = 0;
@@ -300,6 +305,39 @@ export class Stage {
     if (K.has('e')) g.az -= dt * 1.3;
     if (K.has('+') || K.has('=')) g.dist = clamp(g.dist * Math.exp(-dt * 1.4), DMIN, DMAX);
     if (K.has('-')) g.dist = clamp(g.dist * Math.exp(dt * 1.4), DMIN, DMAX);
+  }
+
+  /** Count late frames in windows of 2.5 s and step the pixel ratio down (quickly) or back up (slowly, backing off when it did not hold). */
+  _govern(now) {
+    const g = this._gov, dt = now - g.last;
+    g.last = now;
+    if (g.steps.length < 2) return;
+    if (!(dt > 0) || dt > 250 || document.hidden || this.audit) { g.n = g.slow = g.t = 0; return; } // a hidden tab or a hitch says nothing about the picture
+    g.n++; g.t += dt;
+    if (dt > 21) g.slow++;
+    if (g.t < 2500) return;
+    const share = g.slow / g.n, avg = g.t / g.n;
+    g.n = g.slow = g.t = 0;
+    if (g.fresh > 0) g.fresh--;
+    if (g.tried) {
+      // did fewer pixels buy anything? If not (a browser that caps the frame rate, a slow processor), pixels are not
+      // the problem: take the sharp picture back and leave it alone for two minutes
+      const gain = avg < g.tried * 0.92;
+      g.tried = 0;
+      if (!gain) { g.level--; g.until = now + 120000; g.calm = 0; this.renderer.setPixelRatio(g.steps[g.level]); return; }
+    }
+    if (now < g.until) return;
+    if (share > 0.5) {
+      g.calm = 0;
+      if (g.level < g.steps.length - 1) {
+        if (g.fresh > 0) g.wait = Math.min(g.wait * 2, 240000); // the sharper picture did not hold: wait longer before the next try
+        g.level++; g.fresh = 0; g.tried = avg;
+        this.renderer.setPixelRatio(g.steps[g.level]);
+      }
+    } else if (share < 0.05) {
+      g.calm += 2500;
+      if (g.level > 0 && g.calm >= g.wait) { g.level--; g.calm = 0; g.fresh = 3; this.renderer.setPixelRatio(g.steps[g.level]); }
+    } else g.calm = 0;
   }
 
   _resize() {

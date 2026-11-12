@@ -5,6 +5,7 @@ A man in a long coat sells 'oregano' from inside it, until the law sniffs the ai
 - **Setup / trigger / payoff (three sentences):** Setup: a dealer leans on the pavement, opens his coat on rows of glowing spice jars, and a customer walks up, sniffs one (HATSJOE) and pays. Trigger: the customer sees a cop strolling up behind the dealer, the dealer snaps his coat shut and whistles, the cop sniffs and taps the coat and the jars clatter out. Payoff: he bolts, skids on his own jar and goes down in a green cloud, the cop sneezes too, and the customer pockets one jar "for safety".
 - **Cast and props:** dealer (hoodie, long coat), a customer (borrowed passer-by, or an invented one who walks in from out of the frame as the reveal starts), a cop who strolls in from the opposite side during the handover (nobody pops in). Props: the jars (glowing, four colours), the wad of money.
 - **Needs at the spot:** a deal spot picked by `dealSpot`: a kerb-side pavement spot with the most clear room and a clear way to the road, so the camera can stand and look (`stage.pave any 8 m`).
+- **Pacing:** Tight opening: the dealer is in the picture within a second or two. The cop comes in from whichever side has the nearer frame edge (up behind the customer if need be), and the scene ends on the customer pocketing the jar with a 1.6 s last look.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|

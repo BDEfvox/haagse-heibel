@@ -63,7 +63,7 @@ export default function (T) {
   return {
     w: [0, 0, 3, 2, 2], crime: 1, need: ['racks'],
     // a rack with 10 m of clear pavement along it to ride off on, and the room that takes
-    stage: { pave: { side: 'far', len: 10, depth: 2 }, anchor: 'rack', reach: 10 },
+    stage: { pave: { side: 'far', len: 10, depth: 1.2 }, anchor: 'rack', reach: 10 },
     // a rack with room to ride off along it (no tree, wall or water within a few metres), else this gag is not played here
     avail: (ctx) => ctx.L.racks.some((r) => escapeFrom(ctx, r, r.x > 0 ? -1 : 1)),
     *run(ctx) {
@@ -121,13 +121,12 @@ export default function (T) {
 
         // ---- 1. casing the rack: walks past, looks around, doubles back (the lamp, if it is the cause, is in the wide shot)
         B('1 casing: the thief sneaks past the rack and doubles back', [rackPt]);
-        cam.wide(cause === 'lamp' ? pt((r.x + lampPt.x) / 2, (r.z + lampPt.z) / 2) : rackPt, { dist: 14, el: 0.3, az: -dir * 0.3, hold: 4 }); // (the lamp post that will matter is in the picture)
-        const sx = clamp(r.x - dir * 5, EX0, EX1), px2 = clamp(r.x + dir * 2.5, EX0, EX1);
-        yield* R.enter(th, sx, padZ(ctx, 'walkB0', sx), undefined, { speed: 3.8 });
-        yield* wait(0.3);
-        cam.track(th, { dist: 9, el: 0.14, az: dir * 0.5, lead: 1.5, cut: 1.0, hold: 7 });
+        cam.wide(cause === 'lamp' ? pt((r.x + lampPt.x) / 2, (r.z + lampPt.z) / 2) : rackPt, { dist: 14, el: 0.3, az: -dir * 0.3 }); // (the lamp post that will matter is in the picture)
+        const sx = clamp(r.x - dir * 4.5, EX0, EX1), px2 = clamp(r.x + dir * 2.5, EX0, EX1);
+        yield* waitUntil(() => seen(ctx, sx, padZ(ctx, 'walkB0', sx)) && !seen(ctx, r.x - dir * 18, padZ(ctx, 'walkB0', sx)), 2); // (the tight shot is up before he walks into it)
         const pass = spotNear(ctx, px2, padZ(ctx, 'walkB0', px2));
-        yield* tiptoe(ctx, th, pass.x, pass.z, 3.0);
+        yield* R.enter(th, pass.x, pass.z, undefined, { speed: 3.8, dir }); // (the walk-in is the walk past the rack)
+        cam.track(th, { dist: 9, el: 0.14, az: dir * 0.5, lead: 1.5, cut: 1.0 });
         th.heading = Math.PI; th.mood = 'sly';
         yield* lookAround(th, 1.0, 0.3);
         yield* tiptoe(ctx, th, r.x, rz, 3.0, false);
@@ -221,6 +220,7 @@ export default function (T) {
         say(ctx, th, 'YOINK!', { size: 22, color: '#ffd60a' });
         yield* wait(0.3);
 
+        R.run(res.rush('MIJN ECHTE FIETS!!', () => { const t = spotNear(ctx, lx - dir * 2.4, lz + 0.3); return { x: t.x, z: t.z }; }, { size: 17, speed: 6.8 })); // (the owner is on his way from here on, so that he is there when the thief lands)
         // ---- 4a. the plant: the thing that will bring him down is shown, and he does not see it
         const own2 = res.second;
         let causePt;
@@ -248,7 +248,6 @@ export default function (T) {
           yield* wait(1.4);
         }
         // ---- 4b. he gloats; the owner is coming (rushes in from where the owner really is) and he looks back at him
-        R.run(res.rush('MIJN ECHTE FIETS!!', () => { const t = spotNear(ctx, lx - dir * 2.4, lz + 0.3); return { x: t.x, z: t.z }; }, { size: 17, speed: 6.2 }));
         B('4b gloat: the thief sniggers on his stolen bike', [th, bike]);
         cam.hero(th, { dist: 6, hold: 2 });
         yield* wait(0.3);
@@ -392,13 +391,13 @@ export default function (T) {
           yield* wait(1.2);
           own2.arms = 'swing'; own2.lookAt = null; th.lookAt = null;
           B('9 epilogue: led away, the owner takes his bikes home', [cop, th]);
-          cam.wide(pt(lx, lz), { dist: 15, el: 0.28, az: dir * 0.2, hold: 3.4 });
+          cam.wide(pt(lx, lz), { dist: 15, el: 0.28, az: dir * 0.2 });
           yield* wait(0.3);
           const home = R.run(wheelHome(null));
-          R.run(R.away(cop, dir * 6, 3.2));
+          R.run(R.away(cop, dir * 6, 3.8));
           yield* wait(0.3);
-          R.run(R.away(th, dir * 6, 3.2));
-          yield* waitUntil(() => home.done, 14);
+          R.run(R.away(th, dir * 6, 3.8));
+          yield* waitUntil(() => home.done, 4); // (after that the camera lets go and the rig walks the rest off)
         } else {
           // the walk of shame: no cop, the owner marches the thief home behind the bikes
           yield* wait(0.3);
@@ -411,16 +410,15 @@ export default function (T) {
           yield* wait(0.5);
           B('8 the walk of shame: the owner wheels the bikes home, the thief trudges behind', [own2, bike]);
           const home = R.run(wheelHome(th));
-          cam.track(own2, { dist: 10, el: 0.15, az: -dir * 0.4, lead: 1, hold: 5 });
-          yield* wait(3.6);
+          cam.track(own2, { dist: 10, el: 0.15, az: -dir * 0.4, lead: 1 });
+          yield* wait(3.0);
           // the camera stays on the street while they walk out of it (so they are really out of the picture when they go)
           B('9 epilogue: the street, with the thief and the bikes walking out of it', [pt(r.x, r.z)]);
-          cam.wide(pt(r.x, r.z), { dist: 24, el: 0.3, hold: 6 });
-          yield* waitUntil(() => home.done, 14);
+          cam.wide(pt(r.x, r.z), { dist: 24, el: 0.3 });
+          yield* wait(1.0);
+          yield* waitUntil(() => home.done, 4);
         }
-        cam.wide(pt(r.x, r.z), { dist: 24, hold: 2 });
-        yield* R.settle(10);
-        yield* wait(0.6);
+        yield* wait(0.5);
         done = true;
       } finally {
         cam.release();

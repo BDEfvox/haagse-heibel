@@ -42,7 +42,7 @@ export default function (T) {
     w: [0, 2, 2, 1, 1], crime: 1,
     // a REAL herring (or fish) stall, with room on the pavement in front of it to run along
     avail: (ctx) => fishStalls(ctx).length > 0,
-    stage: { anchor: 'stall', reach: 12, pave: { side: 'any', len: 6, depth: 2 } },
+    stage: { anchor: 'fish', reach: 8, pave: { side: 'any', len: 4, depth: 1.2 } },
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'herringHeist'), B = beatsFor(ctx, 'herringHeist'), R = rig(ctx);
       const list = fishStalls(ctx);
@@ -71,11 +71,11 @@ export default function (T) {
 
         // ---- 1. the keeper carries in a crate of herring and sets it out on the counter: that is where the fish come from
         B('1 the keeper carries in a crate of herring', [stallPt]);
-        cam.wide(stallPt, { dist: 14, el: 0.2, az: dir * 1.1 });
+        cam.wide(stallPt, { dist: 11, el: 0.2, az: dir * 1.1 }); // (tight on the stall: the frame's edge is a few metres away, so the keeper is in the picture almost at once)
         const cr = crate();
         keeper.hold(cr, 'front'); keeper.arms = 'carry'; keeper.mood = 'happy';
-        yield* shotUp(ctx, kx, kz);
-        yield* R.enter(keeper, kx, kz, undefined, { speed: 3.0, ignore: [s] });
+        yield* waitUntil(() => seen(ctx, kx, kz) && !seen(ctx, kx - dir * 15, kz), 2); // (the tight shot is up before he walks into it)
+        yield* R.enter(keeper, kx, kz, undefined, { speed: 3.6, ignore: [s] });
         keeper.heading = Math.atan2(sx - kx, szc - kz);
         keeper.arms = 'reach';
         const fish = [];
@@ -284,13 +284,9 @@ export default function (T) {
         say(ctx, thief, catThief ? 'miauw' : 'WOEF!', { size: 15, color: '#b9fbc0', off: 1.0 });
         keeper.arms = 'swing';
         yield* wait(0.6);
-        // together back to the stall (the crate is still on the ground beside it)
-        R.run(go(ctx, thief, sitX, sitZ, 2.8, 0.06, { ignore: [s] }));
-        yield* go(ctx, keeper, kx, kz, 2.8, 0.06, { ignore: [s] });
-        keeper.heading = Math.atan2(sx - kx, szc - kz); keeper.mood = 'happy';
-        yield* R.settle(6);
-        thief.face(Math.atan2(sx - sitX, szc - sitZ));
-        yield* wait(0.5);
+        // the payoff has landed: the camera lets go and the rig walks the pair off together
+        keeper.mood = 'happy';
+        yield* wait(0.6);
         done = true;
       } finally {
         cam.release();
