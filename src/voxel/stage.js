@@ -954,7 +954,6 @@ export class Stage {
     U.uLampN.value = 0; // the lamps nearest the camera are picked again on the first frame (the old list is in the old frame)
     if (this.tr) W.bake.start(this.tr.to.night); // the sky is still changing: this street's tiles join in
     this.scene.add(W.group);
-    // background life on every other street: the detailed area's roads now, each tile's roads as it streams in
     // the city's street life: walkers, bikes, cars and trams on every street, this one included. It is one system
     // for the whole city and outlives the street: when the focus moves it is carried over as it is
     const old = opts.view && opts.view.crowd;
@@ -1090,7 +1089,6 @@ export class Stage {
           if (this.curBeat && this.curBeat.ctx === ctx && this.curBeat.gag === name) this._beatClose();
           if (ctx._beatNow && ctx._beatNow.gag === name) ctx._beatNow = null;
         },
-        /** Everyone and everything on stage, and where the trams are: traffic looks ahead with these. */
         /** Walkers of the city's crowd near x (this spot's street space), nearest first. */
         crowdNear: (x, r) => {
           const c = path.xz(sc + x, 0), reach = W.L.hw + W.L.bw + Math.max(W.L.swB, W.L.swF) + 3, out = [];

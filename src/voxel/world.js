@@ -1,4 +1,4 @@
-// Builds the voxel world around one street from real map data: ground, roads, buildings, trees,
+// Builds the voxel world from real map data, tile by tile: ground, roads, buildings, trees,
 // plus a low-detail model of the whole city for the horizon and the sky drop.
 import * as THREE from 'three';
 import { Vox, MAT, clamp, makeRng, hashStr } from './kit.js';
@@ -1757,7 +1757,6 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     W.stream = new Streamer(W, city);
   };
   /** Per frame: draw the right amount of city for where the camera is. */
-  // (while the camera drops in or rises out, only the place it is heading for is kept up, house fronts included)
   // phase: 'drop' while the camera comes down (the place it is heading for is made ready, house fronts included),
   // 'leave' while it rises out (nothing new is built for a view that is about to close)
   W.lod = (x, z, dist, live, az, phase = '') => {

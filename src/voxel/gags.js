@@ -1672,7 +1672,6 @@ function* director(ctx, delay = 2.4, signature = true) {
   }
 }
 
-/** Street-long background life. */
 /** The road at one spot, as the gags see it: they close it, and wait until the city's traffic has cleared it. */
 const roadOf = (ctx) => ({ closed: 0, vehicles: { get size() { return ctx.trafficNear ? ctx.trafficNear() : 0; }, add() {}, delete() {}, has: () => false } });
 /** The street as a whole. Its walkers, bikes, cars and trams belong to the city's crowd (crowd.js), not to the street. */

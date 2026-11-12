@@ -27,7 +27,7 @@
 //   byCrime    optional: density by the buurt's crime level [0, 1, 2, 3, 4, 5] when a district row does not state
 //              its own number for this archetype (this is how niffo spreads over the whole city).
 //   riders only:
-//     bike      'bike' | 'fatbike' | 'cargo'   (vehicle model, see crowd.js BIKES)
+//     bike      'bike' | 'fatbike' | 'cargo'   (vehicle model, see crowd.js BIKES_)
 //     bikeCols  hex colours of the vehicle body
 //     twoUp     chance (0-1) of a passenger
 //     pave      fat-bike style: relative weight of riding on the pavement. A rider type with pave 0.1 shows up

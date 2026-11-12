@@ -619,7 +619,7 @@ export function laneFor(ctx, dir = 1, x0 = -20, x1 = 20, halfWidth = 0.95, opt =
 
 /**
  * Real house fronts near x, nearest first. opt: { door: true (measure by door, not window), shop: true|false (only /
- * no shops), tower: false (no towers), reach for the standing spot not needed }. A front is only used when a building
+ * no shops), tower: false (no towers) }. A front is only used when a building
  * really stands behind its wall (where that is known), and an invented window is never returned.
  */
 export function housesNear(ctx, x, maxDist, opt = {}) {
@@ -864,7 +864,7 @@ const needKey = (n) => JSON.stringify(n, (k, v) => (v === undefined ? null : v))
  *   { pave: { side: 'near' | 'far' | 'any', len, depth },   a clear pavement strip len x depth metres on that side (default 4 x 2)
  *     road: { len },                                       a clear stretch of carriageway for a car (a lane 1.9 m wide, nothing in it)
  *     cross: true,                                         a clear line across the road between the two pavements, near the strip
- *     anchor: 'door' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'atm' | null, reach }   near one of the spot's anchors (reach 12 m)
+ *     anchor: 'door' | 'home' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'fish' | 'atm' | null, reach }   near one of the spot's anchors (reach 12 m)
  * Returns the placement with the most room { x, side ('near' | 'far' | null), room (metres of clear run), lane (z of a free driving line,
  * with `road`) } or null when it fits nowhere. `avoid`: [{ x, r }] keeps clear of scenes already playing (default 8 m). Cached per spot and need.
  */

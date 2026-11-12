@@ -1,4 +1,4 @@
-// The street's cross-section (lanes, pavements, walking lines), its furniture, and the per-spot
+// The street's cross-section (lanes, pavements, walking lines), the anchors found along it, and the per-spot
 // layouts the gag scripts play on. Everything here is in street coords: s along the street, v across it
 // (negative v = the far side from the camera, where the house fronts are).
 import { clamp } from './kit.js';
@@ -40,7 +40,8 @@ export function crossSection(st, clearB, clearF, night, road = null) {
   return L;
 }
 
-/** Street furniture at believable spots along the real street, and the anchors the gags use. */
+/** The walking lines along the real street and the anchors the gags use: the doors and windows of the fronts and the furniture that
+ * furnish.js placed (nothing is drawn here). */
 export function dress(W) {
   const { path, L, C } = W, G = { get: W.clsAt };
   const A = W.anchors, hb = L.hw + L.bw;
