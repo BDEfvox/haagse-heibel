@@ -12,7 +12,7 @@ export default function (T) {
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
     seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
+    release, needPed, seen, watching,
   } = T;
 
   /** Speed profile for drive(): hold v0, then ease down to v1 over the last part of the line (the nose dives as it brakes). */

@@ -13,7 +13,7 @@ export default function (T) {
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
     seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
+    release, needPed, seen, watching,
   } = T;
 
   /** Which sides can host a scooter run: a real bike lane or road to ride on (not a square, park, beach or pedestrian street) and a pavement for the victim. */

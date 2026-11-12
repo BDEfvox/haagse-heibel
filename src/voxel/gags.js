@@ -1,8 +1,8 @@
 // Ambient street life + crime-level shenanigans, written as generator scripts.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
-import { makePerson, makeDog, makeCat, makeBird, item, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
-import { makeCar, makeBike, makeScooter, makeFatbike, makeHeli, makeBoat } from './props.js';
+import { wait, tween, all, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
+import { makePerson, makeCat, makeBird, item, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
+import { makeCar, makeBike, makeFatbike, makeHeli, makeBoat } from './props.js';
 import * as S from './setting.js';
 import * as ACTS from './acts/index.js';
 
@@ -596,7 +596,7 @@ function rig(ctx) {
         if (policeClosed && cops === 0) { policeClosed = false; R.open(); }
       }
     },
-    /** Walkers near x run for it (like panic(), but tracked so a cancelled gag still tidies them up). */
+    /** Walkers near x run for it (tracked, so a cancelled gag still tidies them up). */
     panic(x, r = 14, n = 5) {
       for (let i = 0; i < n; i++) {
         const p = takePed(ctx, r, null, x);
@@ -1240,26 +1240,6 @@ function* needPed(ctx, xr = 13, filter = null) {
   if (p) { p.busy = true; p.keep = true; }
   return p || null;
 }
-function panic(ctx, x, r = 16) {
-  if (ctx.amb) {
-    const off = ctx.amb.sc - ctx.sc;
-    for (const a of [...ctx.amb.peds]) if (!a.busy && a.alive && Math.abs(a.g.position.x + off - x) <= r) rehome(a, ctx);
-  }
-  // everyone in the crowd nearby runs for it too
-  if (ctx.crowdNear) for (const ag of ctx.crowdNear(x, r).slice(0, 12)) { const p = ctx.promote(ag); if (p) ctx.peds.push(p); }
-  for (const a of [...ctx.peds]) {
-    if (a.busy || !a.alive || Math.abs(a.g.position.x - x) > r) continue;
-    a.busy = true;
-    unped(ctx, a);
-    ctx.run((function* () {
-      a.arms = 'up';
-      if (ctx.rnd() < 0.4) say(ctx, a, ctx.rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
-      yield* walkOff(ctx, a, a.g.position.x < x ? EX0 : EX1, 7.5, a.lineZ);
-      a.arms = 'swing';
-      if (!ctx.demote || !ctx.demote(a)) yield* exitOut(ctx, a);
-    })());
-  }
-}
 
 function* boatSpawner(ctx) {
   const { L, rnd } = ctx;
@@ -1355,37 +1335,6 @@ function* heli(ctx) {
   }
 }
 
-function* closeRoad(ctx) {
-  ctx.road.closed++;
-  yield* waitUntil(() => ctx.road.vehicles.size === 0, 6);
-}
-const openRoad = (ctx) => { ctx.road.closed = Math.max(0, ctx.road.closed - 1); };
-
-function* policeRun(ctx, fromDir, z, speed = 11, delay = 0) {
-  yield* wait(delay);
-  if (!S.roadHere(ctx, z)) return; // no road here: no police car
-  const car = makeCar(ctx.rnd, 'police', ctx.L.night);
-  car.siren = true;
-  ctx.sfx('siren', 3);
-  if (watching(ctx)) yield* wait(0.9);
-  yield* enter(ctx, car, fromDir > 0 ? X0 + 2.5 : X1 - 2.5, z, 0, { dir: fromDir });
-  car.face(fromDir > 0 ? E : W);
-  say(ctx, car, 'WEE-OO!', { color: '#7db8ff', size: 16 });
-  yield* go(ctx, car, fromDir > 0 ? X1 - 2.5 : X0 + 2.5, z, speed);
-  yield* exitOut(ctx, car, { speed });
-}
-function* footCop(ctx, target, speed = 5.6, delay = 0.6) {
-  yield* wait(delay);
-  if (!target.alive) return;
-  const cop = makePerson(ctx.rnd, { kind: 'cop' });
-  const fromLeft = target.heading > 0; // chase from behind
-  ctx.sfx('whistle');
-  yield* enter(ctx, cop, fromLeft ? EX0 : EX1, target.g.position.z, undefined, { dir: fromLeft ? 1 : -1, speed });
-  say(ctx, cop, ctx.rnd.pick(['HALT!', 'STOP!', 'POLITIE!', 'STA STIL!']), { color: '#7db8ff', size: 15 });
-  yield* chase(ctx, cop, target, speed, 0.8, 14);
-  yield* leave(ctx, cop, speed, fromLeft ? EX1 : EX0);
-}
-
 /** The set-piece toolkit, handed to the scenes in ./acts (they cannot import this file: it imports them). */
 const T = {
   X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, exitOut, entryTime, seen, watching, outPoint,
@@ -1393,7 +1342,7 @@ const T = {
   spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
   extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
   tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake,
-  exhaust, spawnPed, unped, stroll, release, needPed, panic, closeRoad, openRoad, policeRun, footCop, doorway, windowAt, doorHouse,
+  exhaust, spawnPed, unped, stroll, release, needPed, doorway, windowAt, doorHouse,
 };
 // ---------------------------------------------------------------- the gags
 const G = {};
