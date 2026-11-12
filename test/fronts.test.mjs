@@ -24,9 +24,10 @@ for (const key of keys) {
     const a = new Vox(1, true), b = new Vox(2, true), c = new Vox(1, true), d = new Vox(2, true);
     const h1 = drawHero(a, b, u, unitRng(u), false, true);
     const h2 = drawHero(c, d, u, unitRng(u), false, false);
-    if (a.n !== c.n || b.n !== d.n || h1.door.x !== h2.door.x) bad++;
+    if (a.n !== c.n || b.n !== d.n || h1.door[0] !== h2.door[0] || h1.door[1] !== h2.door[1]) bad++;
     maxN = Math.max(maxN, c.n + d.n); tot += c.n + d.n;
   }
+  if (bad) process.exitCode = 1;
   console.log(`  dry vs real mismatches ${bad}; vertices per shop front: max ${maxN}, mean ${Math.round(tot / Math.max(1, Math.min(120, shops.length)))}`);
   for (const u of heads.slice(0, 25)) console.log(`   ${u.shop.cat.padEnd(12)} ${String(u.shop.real || '-').padEnd(30)} -> ${u.shop.sign.text} (${u.shop.sign.kind}, ${u.shop.k} unit${u.shop.k > 1 ? 's' : ''}, ${u.shop.look.win})`);
 }
