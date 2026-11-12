@@ -1,6 +1,6 @@
 // Buildings, street furniture and vehicles — the Hague voxel kit.
 import * as THREE from 'three';
-import { Vox, MAT, sculpt, piece, makeSign } from './kit.js';
+import { Vox, MAT, sculpt, piece, makeSign, makeRng } from './kit.js';
 import { makePerson } from './cast.js';
 import { GLYPHS, fitText } from './brands.js';
 
@@ -12,10 +12,13 @@ const DOORS = ['#1f5b3a', '#1d3557', '#8d0801', '#2b2b2b', '#6a4c93', '#0b6e4f',
 const ROOFS = ['#c8553d', '#8a3b2e', '#4a4e57', '#a44a3f', '#d9693f'];
 const STONE = '#efe9dc';
 const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
+// the seed of the night-only dice of a front drawn without its own (world.js drawHero always passes one per unit)
+const NIGHT_SEED = 0x6e696768;
 
 /** How much of the night's lights are on at the hour (set by the stage): the share of lit windows in homes, and in shop fronts. */
 export const litShare = { home: 0.62, shop: 0.8 };
 let _wglass = '#8fc7e8'; // the glass colour win() just drew (the windows that open copy it)
+// rnd: night-only dice (whether the window is lit and its tint); by day win() draws nothing
 function win(v, gl, x, y, z, w, h, night, rnd, litChance = 0.6) {
   v.box(x, y - 0.08, z + 0.04, w + 0.18, h + 0.18, 0.1, '#f6f3ec');
   const lit = night && rnd.chance(litChance * Math.min(1.3, litShare.home / 0.62));
@@ -354,7 +357,9 @@ function dress(kind, c) {
 
 /** Dutch row house with its front face at z, facing +z. Returns anchors. */
 export function house(v, gl, o) {
-  const { x, z, w, rnd, night } = o;
+  // rnd: the front's own dice, drawn the same way by day and by night, so the layout is the day's at any hour; nrnd: dice for
+  // what only the night has (which windows are lit, their tint), so lights never move a door, window or chimney
+  const { x, z, w, rnd, night } = o, nrnd = o.nrnd || makeRng(NIGHT_SEED);
   const depth = o.depth ?? 5, floors = o.floors ?? 3, y0 = o.y ?? 0.15;
   const gh = 2.6, fh = 2.2, H = gh + (floors - 1) * fh, zc = z - depth / 2;
   const wall = o.wall || rnd.pick(BRICK);
@@ -372,13 +377,13 @@ export function house(v, gl, o) {
   if (o.store) {
     // a store block (world.js storeFronts): one band of glass per floor between piers, a few boxes for a front of any height
     for (let f = 1; f < floors; f++) {
-      const y = y0 + gh + (f - 1) * fh + 0.62, lit = night && rnd.chance(litShare.shop > 0.2 ? 0.4 : 0.08);
+      const y = y0 + gh + (f - 1) * fh + 0.62, lit = night && nrnd.chance(litShare.shop > 0.2 ? 0.4 : 0.08);
       v.box(x, y - 0.08, z + 0.04, w - 0.9, 1.41, 0.1, '#f6f3ec');
       (lit ? gl : v).box(x, y, z + 0.07, w - 1.1, 1.25, 0.08, lit ? '#ffe9a8' : night ? '#1c2a44' : '#8fc7e8');
     }
   } else {
     for (let f = 1; f < floors; f++) {
-      for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, rnd); if (f === 1) glass1[c] = _wglass; }
+      for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, nrnd); if (f === 1) glass1[c] = _wglass; }
     }
   }
   const wc = rnd.int(0, cols - 1);
@@ -454,9 +459,9 @@ export function house(v, gl, o) {
     v.box(dx, y0, z + 0.03, 1.14, 2.25, 0.08, '#f6f3ec');
     v.box(dx, y0, z + 0.06, 0.9, 1.8, 0.1, doorCol);
     v.box(dx + 0.28, y0 + 0.9, z + 0.12, 0.08, 0.08, 0.04, '#e9c46a');
-    (night && rnd.chance(0.5) ? gl : v).box(dx, y0 + 1.84, z + 0.07, 0.86, 0.3, 0.06, night ? '#ffd97a' : '#8fc7e8');
+    (night && nrnd.chance(0.5) ? gl : v).box(dx, y0 + 1.84, z + 0.07, 0.86, 0.3, 0.06, night ? '#ffd97a' : '#8fc7e8');
     v.box(dx, y0, z + 0.3, 1.3, 0.12, 0.5, '#bdb6aa');
-    for (let c = 0; c < cols; c++) if (c !== dc) win(v, gl, cx(c), y0 + 0.78, z, 0.95, 1.4, night, rnd, 0.75);
+    for (let c = 0; c < cols; c++) if (c !== dc) win(v, gl, cx(c), y0 + 0.78, z, 0.95, 1.4, night, nrnd, 0.75);
     // the bell: a small plate on the wall beside the frame, on the knob side, when the neighbouring window leaves room for it
     const bellOk = sp >= 1.5;
     if (bellOk) {
@@ -476,7 +481,7 @@ export function house(v, gl, o) {
     const n = 5, D = depth + 0.3;
     for (let i = 0; i < n; i++) v.box(x, ry + i * 0.36, zc, w - 0.04, 0.36, D - (i * D * 0.92) / n, roofCol, 0.05);
     v.box(x, ry + 0.2, z - 0.75, 1.3, 1.0, 1.1, '#f6f3ec');
-    (night && rnd.chance(0.5) ? gl : v).box(x, ry + 0.4, z - 0.2, 0.9, 0.6, 0.06, night ? '#ffd97a' : '#8fc7e8');
+    (night && nrnd.chance(0.5) ? gl : v).box(x, ry + 0.4, z - 0.2, 0.9, 0.6, 0.06, night ? '#ffd97a' : '#8fc7e8');
     v.box(x, ry + 1.2, z - 0.75, 1.5, 0.1, 1.3, shade(roofCol, 0.8));
     out.top = ry + n * 0.36;
   } else {
@@ -490,7 +495,7 @@ export function house(v, gl, o) {
         v.box(x, ry + i * 0.5, z - 0.22, sw, 0.5, 0.44, wall, 0.03);
         v.box(x, ry + (i + 1) * 0.5 - 0.06, z - 0.22, sw + 0.1, 0.08, 0.5, STONE);
       }
-      win(v, gl, x, ry + 0.25, z, 0.6, 0.6, night, rnd);
+      win(v, gl, x, ry + 0.25, z, 0.6, 0.6, night, nrnd);
       out.top = ry + steps * 0.5;
     } else {
       v.box(x, ry, z - 0.22, w * 0.52, 1.7, 0.44, wall, 0.03);
@@ -500,7 +505,7 @@ export function house(v, gl, o) {
       v.box(x + w * 0.3, ry + 0.8, z - 0.22, w * 0.1, 0.5, 0.44, STONE);
       v.box(x, ry + 1.7, z - 0.22, w * 0.6, 0.16, 0.5, STONE);
       v.box(x, ry + 1.86, z - 0.22, w * 0.3, 0.2, 0.44, STONE);
-      win(v, gl, x, ry + 0.45, z, 0.6, 0.7, night, rnd);
+      win(v, gl, x, ry + 0.45, z, 0.6, 0.7, night, nrnd);
       out.top = ry + 2.06;
     }
   }
@@ -514,7 +519,7 @@ export function house(v, gl, o) {
 
 /** Modern tower block, front at z. */
 export function tower(v, gl, o) {
-  const { x, z, w, rnd, night } = o;
+  const { x, z, w, rnd, night } = o, nrnd = o.nrnd || makeRng(NIGHT_SEED); // (nrnd: the night-only dice, as in house)
   const depth = o.depth ?? 5, floors = o.floors ?? 9, y0 = o.y ?? 0.15, fh = 1.5, gh = 2.8;
   const H = gh + floors * fh, zc = z - depth / 2;
   const body = rnd.pick(['#cfd8dc', '#b8c4cc', '#e3ded3', '#9fb0ba', '#d7c9b8', '#8fa3ad']);
@@ -526,13 +531,13 @@ export function tower(v, gl, o) {
   for (let f = 0; f < floors; f++) {
     const y = y0 + gh + f * fh + 0.35;
     for (let c = 0; c < cells; c++) {
-      const lit = night && rnd.chance(0.45);
-      (lit ? gl : v).box(x - (w - 0.8) / 2 + cw * (c + 0.5), y, z + 0.05, cw - 0.12, 0.85, 0.06, lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8');
+      const lit = night && nrnd.chance(0.45);
+      (lit ? gl : v).box(x - (w - 0.8) / 2 + cw * (c + 0.5), y, z + 0.05, cw - 0.12, 0.85, 0.06, lit ? nrnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8');
     }
     // side windows
     for (let c = 0; c < 3; c++) {
-      const lit = night && rnd.chance(0.4);
-      (lit ? gl : v).box(x + w / 2 - 0.02, y, zc - 1.4 + c * 1.4, 0.06, 0.85, 0.9, lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#7fb9db');
+      const lit = night && nrnd.chance(0.4);
+      (lit ? gl : v).box(x + w / 2 - 0.02, y, zc - 1.4 + c * 1.4, 0.06, 0.85, 0.9, lit ? nrnd.pick(LIT) : night ? '#1c2a44' : '#7fb9db');
     }
   }
   v.box(x, y0 + H, zc, w + 0.1, 0.25, depth + 0.1, shade(body, 0.8));

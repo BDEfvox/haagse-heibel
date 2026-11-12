@@ -510,14 +510,17 @@ function drawHero(v, gl, u, rnd, night, dry = false) {
   v.setB(u.cx, u.cz, u.h + 3, u.d / 2); gl.setB(u.cx, u.cz, u.h + 3, u.d / 2);
   const w = u.w, depth = u.d, era = eraOf(u.year);
   const toS = (lx, lz) => [u.cx + lx * c + lz * s, u.cz - lx * s + lz * c];
+  // nrnd: the front's night-only dice (lit windows, their tint), apart from rnd so that the night layout is the day's at any hour
+  // (never seeded from a draw of rnd: that would add a draw by day)
+  const nrnd = makeRng(hashStr('n|' + u.key + '|' + u.bi + '|' + u.i));
   let info;
   if (u.tower) {
-    info = P.tower(v, gl, { x: 0, z: depth / 2, w, rnd, night, floors: clamp(Math.round((u.h - 2.8) / 1.5), 3, 70), depth, y: 0 });
+    info = P.tower(v, gl, { x: 0, z: depth / 2, w, rnd, nrnd, night, floors: clamp(Math.round((u.h - 2.8) / 1.5), 3, 70), depth, y: 0 });
   } else {
     const old = (u.year || 1950) < 1935;
     const roof = u.roof ? (old && w < 9 ? rnd.pick(['step', 'bell', 'pitch']) : 'pitch') : 'flat';
     info = P.house(v, gl, {
-      x: 0, z: depth / 2, w, rnd, night, depth, y: 0, roof, wall: u.wall || rnd.pick(era.wall), roofCol: u.roofCol,
+      x: 0, z: depth / 2, w, rnd, nrnd, night, depth, y: 0, roof, wall: u.wall || rnd.pick(era.wall), roofCol: u.roofCol,
       floors: clamp(Math.round((u.h - (u.roof ? 3.4 : 2.6)) / 2.2) + 1, u.store ? 2 : 1, u.store ? 12 : 9),
       shop: u.shop || null, atm: u.atm, dry, store: !!u.store,
     });
