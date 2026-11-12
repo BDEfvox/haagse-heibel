@@ -1411,7 +1411,7 @@ export class Stage {
         let c = this.cine;
         if (c && c.spec) {
           if (c.pending && this.time >= c.pendAt) this._startShot(c, c.pending, this.time - c.pendReq); // the shot that had to wait for the minimum length
-          else if (this.time > c.touched + Math.max(SAFETY, c.spec.hold || 0)) {
+          else if (this.time > c.touched + SAFETY) {
             // the only way a shot ever ends by itself: a scene that hangs
             console.warn('[stage] "' + c.name + '" asked for nothing new for ' + SAFETY + ' s: camera released');
             this._stat('expired'); this._cineEnd(); c = null;

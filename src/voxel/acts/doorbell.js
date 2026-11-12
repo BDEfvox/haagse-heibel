@@ -108,7 +108,7 @@ export default function (T) {
         // ---- 2. reveal
         B('2 reveal: the brave one grins at us', [a]);
         a.heading = 0; a.mood = 'smug'; a.arms = 'rub';
-        cam.hero(a, { hold: 3 });
+        cam.hero(a);
         cam.card('BELLETJE TREK', 'Nine years old. Zero regrets.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');

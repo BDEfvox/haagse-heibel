@@ -64,12 +64,12 @@ export default function (T) {
 
         // ---- 1. granny: she toddles along with a big handbag on her arm, humming
         B('1 granny: toddling along with her big handbag', [pt(gx + dir * 2, wz)]);
-        cam.wide(pt(gx + dir * 2, wz), { dist: 13, el: 0.3, az: dir * 0.3, hold: 1.4 });
+        cam.wide(pt(gx + dir * 2, wz), { dist: 13, el: 0.3, az: dir * 0.3 });
         yield* waitUntil(() => seen(ctx, gx + dir * 4, wz) && !seen(ctx, gx + dir * 18, wz), 2); // (the tight shot is up before she walks into it)
         yield* R.enter(vic, clamp(gx + dir * 4, EX0, EX1), wz, undefined, { dir: -dir, speed: 2.8 });
         grip(vic, mkPurse());
         vic.mood = 'happy'; vic.heading = -hd;
-        cam.dolly(vic, { dist: 9, az: 0.1, y: 1.1, hold: 5.5 });
+        cam.dolly(vic, { dist: 9, az: 0.1, y: 1.1 });
         say(ctx, vic, '♪ hm hm hmmm ♪', { size: 13, color: '#ffd6f2' });
         const sx = clamp(gx - dir * 20.5, EX0 + 1, EX1 - 1);
         const scIn = R.run((function* () { yield* wait(0.8); ctx.sfx('rev'); yield* R.enter(sc, sx, z, 0, { dir, speed: 9 }); })()); // already on its way while she toddles
@@ -84,7 +84,7 @@ export default function (T) {
         sc.face(hd);
         ctx.wanted = sc;
         r1.arms = 'drive'; r2.arms = 'drive'; r1.mood = 'sly'; r2.mood = 'sly';
-        cam.nose(sc, dir, { hold: 3.2 });
+        cam.nose(sc, dir);
         cam.card('DE TASJESDIEVEN', 'Two wheels, four hands, zero manners.', 2.0);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -153,7 +153,7 @@ export default function (T) {
         // ---- 4. the gloat: the bag held up like a trophy, both laugh, the wheelie
         B('4 the gloat: bag held up high, laughing, wheelie', [sc, r1, r2]);
         r1.mood = 'laugh'; r2.mood = 'laugh';
-        cam.track(sc, { dist: 6.5, el: 0.06, az: dir * 0.75, y: 1.1, lead: 1.5, fov: 40, shake: 0.6, hold: 3.2 });
+        cam.track(sc, { dist: 6.5, el: 0.06, az: dir * 0.75, y: 1.1, lead: 1.5, fov: 40, shake: 0.6 });
         yield* wait(0.3);
         cackle(ctx, r1, 1.6, 'ha');
         cackle(ctx, r2, 1.8, 'ha');
@@ -165,7 +165,7 @@ export default function (T) {
         // ---- 5. granny's revenge: brows down, a shoe comes off, and it flies
         B("5 granny's revenge: a shoe comes off, or something else comes out of her coat", [vic]);
         vic.heading = hd; vic.mood = 'angry'; vic.arms = 'fist'; vic.gait = 'walk';
-        cam.crash(vic, { hold: 2.6 });
+        cam.crash(vic);
         yield* wait(0.5);
         ctx.sfx('hey');
         say(ctx, vic, 'WAT?!', { size: 20, color: '#ff6b6b' });
@@ -177,7 +177,7 @@ export default function (T) {
         yield* wait(0.5);
         B('5b the shoe flies', [vic, sc]);
         const vp = vic.g.position;
-        cam.shot({ on: [vic, sc], dist: 14, el: 0.1, az: -dir * 0.15, y: 1.0, fov: 40, fit: true, cut: 0.3, hold: 3 });
+        cam.shot({ on: [vic, sc], dist: 14, el: 0.1, az: -dir * 0.15, y: 1.0, fov: 40, fit: true, cut: 0.3 });
         yield* wait(0.35);
         vic.drop();
         const shoe = R.add(mkMissile());
@@ -201,7 +201,7 @@ export default function (T) {
 
         // ---- 6. the fall: it wobbles, slides and tips; the bag sails up into granny's hands
         B('6 the fall: the scooter tips over', [sc, r1, r2]);
-        cam.ground(sc, { dist: 6, az: dir * 0.5, cut: 0.2, hold: 3.4 });
+        cam.ground(sc, { dist: 6, az: dir * 0.5, cut: 0.2 });
         yield* wait(0.35);
         const x0 = sc.g.position.x, side = dir; // side * 1.3: it goes down on the camera's side, so the riders land towards us
         ctx.sfx('screech');
@@ -246,7 +246,7 @@ export default function (T) {
         // the bag sails up... and into granny's waiting hands
         B('6b the bag lands in granny\'s hands', [bag, vic]);
         vic.heading = hd; vic.arms = 'reach'; vic.mood = 'neutral'; vic.lookAt = bag;
-        cam.shot({ on: [bag, vic], dist: 12, el: 0.2, az: -dir * 0.2, y: 0.8, fov: 38, fit: true, cut: 0.3, hold: 3.2 });
+        cam.shot({ on: [bag, vic], dist: 12, el: 0.2, az: -dir * 0.2, y: 0.8, fov: 38, fit: true, cut: 0.3 });
         yield* wait(0.3);
         yield* arc(bag, gw.x, 1.0, gw.z, 5, 1.5, 7);
         R.rm(bag);
@@ -282,7 +282,7 @@ export default function (T) {
         yield* whack(n1, 'SCHOFT!');
         yield* wait(0.3);
         // the wince: the camera goes to the cop just before the second whack lands
-        cam.close(cop, { y: 1.5, dist: 6.5, fov: 30, hold: 1.7 });
+        cam.close(cop, { y: 1.5, dist: 6.5, fov: 30 });
         cop.lookAt = vic;
         yield* wait(0.4);
         yield* go(ctx, vic, n2.g.position.x - dir * 0.9, n2.g.position.z - 0.2, 3.6);

@@ -88,7 +88,7 @@ export default function (T) {
         // ---- 2. the reveal: grin to camera, rocket held up like a trophy
         B('2 reveal: the grin, the rocket held up like a trophy', [lad]);
         lad.gait = 'walk'; lad.heading = 0; lad.mood = 'smug';
-        cam.hero(lad, { hold: 3.2 });
+        cam.hero(lad);
         cam.card('DE VUURWERKBENDE', 'Rocket: huge. Plan: a bin.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -100,7 +100,7 @@ export default function (T) {
 
         // ---- 3. the fuse: planted in the bin, lit, everybody backs off with fingers in their ears
         B('3 the fuse: planted in the bin and lit', [binPt, lad]);
-        cam.ground(binPt, { dist: 4.6, el: 0.03, az: -dir * 0.5, y: 0.9, cut: 0.6, hold: 4 });
+        cam.ground(binPt, { dist: 4.6, el: 0.03, az: -dir * 0.5, y: 0.9, cut: 0.6 });
         faceTo(lad, bin.x, bin.z);
         lad.mood = 'focus'; lad.lookAt = binPt;
         yield* wait(0.4);
@@ -144,7 +144,7 @@ export default function (T) {
           })());
         }
         B('3b ears covered: all three backed off', [lad, m1, m2, binPt]);
-        cam.wide([lad, m1, m2, binPt], { dist: 15, el: 0.25, az: -dir * 0.3, fit: true, cut: 0.7, hold: 4 });
+        cam.wide([lad, m1, m2, binPt], { dist: 15, el: 0.25, az: -dir * 0.3, fit: true, cut: 0.7 });
         yield* wait(1.5);
 
         // ---- 4. the fizzle: the sparks die, pfff, and he creeps back to look
@@ -154,7 +154,7 @@ export default function (T) {
         ctx.sfx('womp');
         ctx.fx.puff(bin.x + 0.09, fuseY, bin.z);
         say(ctx, at(bin.x, TOP + 1.5, bin.z), 'pfff...', { size: 16, color: '#cfd8dc' });
-        cam.dolly(lad, { dist: 8, el: 0.12, y: 1.4, az: -dir * 0.3, fov: 36, drift: { dist: -1.8 }, fit: true, cut: 0.5, hold: 7 });
+        cam.dolly(lad, { dist: 8, el: 0.12, y: 1.4, az: -dir * 0.3, fov: 36, drift: { dist: -1.8 }, fit: true, cut: 0.5 });
         yield* wait(0.7);
         lad.pose = null; lad.mood = 'neutral'; lad.arms = 'shrug'; lad.shakeT = 1;
         for (const m of [m1, m2]) { m.pose = null; m.arms = 'hold'; m.mood = 'happy'; m.lookAt = lad; }
@@ -173,7 +173,7 @@ export default function (T) {
         // who the lid will find: the lad who leans over the bin, or (sometimes) the mate crouching further back
         const wearer = flip(ctx, 'mateLid', 0.3) ? m1 : lad, others = [lad, m1, m2].filter((a) => a !== wearer);
         B('5 WHOOSH: the rocket goes past his nose, the lid flies off', [lad]);
-        cam.crash(lad, { hold: 1.5 });
+        cam.crash(lad);
         yield* wait(0.35);
         ctx.sfx('fuse');
         for (let i = 0; i < 4; i++) { ctx.fx.sparks(bin.x + 0.09, fuseY, bin.z, 6); yield* wait(0.05); }
@@ -211,7 +211,7 @@ export default function (T) {
         }, ease.inQuad));
         yield* wait(0.6);
         B('5b the rocket climbs out of the bin and bursts high above the street', [rpt]);
-        cam.shot({ on: rpt, dist: 13, el: -0.14, fov: 56, cut: 0.4, hold: 4 });
+        cam.shot({ on: rpt, dist: 13, el: -0.14, fov: 56, cut: 0.4 });
         yield* waitUntil(() => flight.done, 2);
         R.rm(rocket);
         ctx.incident(1);
@@ -237,7 +237,7 @@ export default function (T) {
         let copIn = false;
         const copTask = R.run((function* () { yield* R.enter(cop, cx, wz, undefined, { speed: 2.8 }); copIn = true; })());
         B('6 the lid: BONK, right on ' + (wearer === lad ? 'his' : 'a mate\'s') + ' head', [wearer]);
-        cam.close(wearer, { dist: 7, y: 1.7, cut: 0.4, hold: 2.4 });
+        cam.close(wearer, { dist: 7, y: 1.7, cut: 0.4 });
         for (const m of [m1, m2]) { m.mood = 'happy'; m.lookAt = wearer === m ? lad : wearer; }
         yield* waitUntil(() => landed, 4);
         ctx.sfx('bonk'); ctx.shake(0.3);
@@ -247,7 +247,7 @@ export default function (T) {
         R.run(seeStars(ctx, wearer, 2.4));
         yield* wait(0.9);
         B('6b the others fall about laughing', [others[0], others[1]]);
-        cam.two(others[0], others[1], { az: dir * 0.2, hold: 2.8 });
+        cam.two(others[0], others[1], { az: dir * 0.2 });
         for (const m of others) { m.arms = 'point'; m.pose = null; m.mood = 'happy'; m.lookAt = wearer; }
         ctx.sfx('laugh');
         cackle(ctx, others[0], 2.2, 'ha');
@@ -259,7 +259,7 @@ export default function (T) {
         faceTo(cop, lidAt.x, wz); cop.arms = 'stop'; cop.mood = 'angry';
         ctx.sfx('whistle');
         say(ctx, cop, 'POLITIE!', { size: 16, color: '#7db8ff' });
-        cam.wide([wearer, cop], { dist: 15, el: 0.25, az: dir * 0.3, fit: true, cut: 0.5, hold: 3 });
+        cam.wide([wearer, cop], { dist: 15, el: 0.25, az: dir * 0.3, fit: true, cut: 0.5 });
         for (const m of others) {
           m.lookAt = cop; m.arms = 'up'; m.mood = 'scared'; m.pose = null; m.gait = 'walk';
           R.run((function* () {
@@ -274,7 +274,7 @@ export default function (T) {
         // the lid has slid down over his eyes
         lid.position.set(0, 0.5, 0.1); lid.rotation.x = 0.5;
         wearer.arms = 'reach'; wearer.mood = 'scared'; wearer.lookAt = null; wearer.gait = 'stagger';
-        cam.two(cop, wearer, { az: dir * 0.2, cut: 0.4, hold: 3.6 });
+        cam.two(cop, wearer, { az: dir * 0.2, cut: 0.4 });
         yield* wait(0.3);
         yield* goEach(ctx, wearer, cx - dir * 0.7, wz, 2.6);
         ctx.sfx('thud'); ctx.shake(0.2);

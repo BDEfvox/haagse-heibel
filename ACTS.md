@@ -154,14 +154,14 @@ A person on a balcony steps back through the window. When the scene ends normall
 by themselves. `R.police`, `R.cop`, `spawnPed`, `needPed`, `resident` and the four ambient gags use the same entrances and exits.
 
 **Order "shot, then entrance".** Walking in takes longer than popping in (an entrance from a frame edge 14 m away is 4 to 5 seconds at
-a walk). So: (1) cut to the shot that will hold the arrival point *before* you call `R.enter`, and give that shot a `hold` longer than the
-walk; (2) if the beat after depends on the arrival (a cop who must be standing there when the thief runs into him), start the entrance
+a walk). So: (1) cut to the shot that will show the arrival point *before* you call `R.enter` (a shot stays until the next one, so it
+needs no length); (2) if the beat after depends on the arrival (a cop who must be standing there when the thief runs into him), start the entrance
 earlier with `R.run(R.enter(...))` and `T.entryTime(ctx, a, x, z, opts)` (seconds it will take now, 0 when it is instant) and
 wait for that, or pass `speed` (runners: 5 to 7); (3) the first beat of a scene is the shot of the place, the entrance is the second
-half of it. In `burglar.js`: beat 1 holds `cam.wide(land, { hold: 3 })` and then calls `R.enter(rob, ...)`, and the track shot is cut after the
-entrance: lengthen the wide hold to the entrance (or cut to `cam.track` first and enter into it); the busted ending `wait(0.9)` then
-enters the cop, who now needs `entryTime` seconds, not 0.3: start him as soon as the getaway begins. The owner's `R.enter(owner,
-h.door.x, h.door.z, 0.001)` already steps out of the door.
+half of it. In `burglar.js`: beat 1 cuts to `cam.wide(doorPt, ...)`, tight on the door, waits until that shot is up and then calls
+`R.enter(rob, ...)` from the frame's edge; the track shot is cut after the entrance. In the busted ending the cop must be standing
+there when the chase reaches him, so his entrance is started two beats earlier, in the background (`R.run` around `R.enter(cop, ...)`);
+in the clean-away ending he only has to arrive late and walks in while the thief goes.
 
 A short lead-in (the first beat should start within about 3 seconds): open on a tight shot of the place and let the first
 entrance wait for it, so the frame edge is a few metres away, not fifteen:
@@ -245,8 +245,8 @@ on springs: it **rolls in bends, dives when braking and squats when accelerating
 A shot follows its subject until the next shot.
 
 **Shots are binding (the camera rules, `stage.js`).** Every shot has a purpose, a minimum length and a motivated cut.
-- *A shot never expires.* It stays until you ask for the next one or call `cam.release()` (or the scene ends). `hold` is
-  gone as an expiry: it no longer cuts to the street's wide view (that was the "jumps up for a second, jumps back" bug).
+- *A shot never expires.* It stays until you ask for the next one or call `cam.release()` (or the scene ends). There is no
+  `hold` option: a shot's length is the time until the scene asks for the next one.
   The only timer left is a safety net for a scene that hangs: 20 s after the last shot or `B(...)` beat the stage releases the
   camera once and logs a warning (the audit counts it as `expired`, which must be 0). If a shot's subjects leave the world the
   last picture is held.

@@ -73,7 +73,7 @@ export default function (T) {
         // ---- 2. the reveal
         B('2 reveal: the burglar grins at us', [rob]);
         rob.lookAt = null; rob.heading = 0; rob.mood = 'smug'; rob.arms = 'rub';
-        cam.hero(rob, { hold: 3 });
+        cam.hero(rob);
         cam.card('DE INBREKER', 'Lets himself in. Never wipes his feet.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');

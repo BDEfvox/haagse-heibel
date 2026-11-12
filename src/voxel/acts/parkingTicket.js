@@ -61,7 +61,7 @@ export default function (T) {
         // ---- 2. reveal
         B('2 reveal: smug look to camera, pen clicked', [cop]);
         cop.lookAt = null; cop.heading = 0; cop.mood = 'smug'; cop.gait = 'walk';
-        cam.hero(cop, { hold: 3 });
+        cam.hero(cop);
         cam.card('DE BOA', 'Gives you a ticket for being right there.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -73,7 +73,7 @@ export default function (T) {
 
         // ---- 3. the ticket: a flourish, a tear, a slap under the wiper
         B('3 the ticket: written, torn off and slapped on the windscreen', [cop, screen]);
-        cam.shot({ on: [cop, screen], y: 0.95, dist: 7, el: 0.03, az: wd * 0.5, fov: 38, fit: true, cut: 0.8, hold: 5 });
+        cam.shot({ on: [cop, screen], y: 0.95, dist: 7, el: 0.03, az: wd * 0.5, fov: 38, fit: true, cut: 0.8 });
         cop.heading = toCar; cop.mood = 'focus';
         yield* wait(0.3);
         for (let i = 0; i < 3; i++) { ctx.sfx('typing'); cop.squash(0.06); yield* wait(0.3); }
@@ -113,7 +113,7 @@ export default function (T) {
           yield* wait(1.5);
         } else {
           B('4 the owner: NEEE! IK STA ER NET!', [res.second]);
-          cam.dolly(carPt, { dist: 12, el: 0.18, az: -wd * 0.4, cut: 0.8, hold: 2 });
+          cam.dolly(carPt, { dist: 12, el: 0.18, az: -wd * 0.4, cut: 0.8 });
           R.run(res.rush('NEEE! IK STA ER NET!', () => spot, { speed: 6.4, size: 14 }));
           yield* wait(0.7);
         }
@@ -125,13 +125,13 @@ export default function (T) {
         cop.lookAt = owner; cop.arms = 'cross'; cop.mood = 'smug';
         ctx.sfx('skid'); owner.squash(0.35);
         ctx.fx.dust(owner.g.position.x, 0, owner.g.position.z, wd, 0, 8);
-        cam.crash(owner, { dist: 4.5, hold: 2 });
+        cam.crash(owner, { dist: 4.5 });
         owner.mood = 'shock';
         yield* wait(0.9);
 
         // ---- 5. the plea: hands together, the watch, the slow no, the knees
         B('5 the plea: owner begs, warden shakes his head', [owner, cop]);
-        cam.orbit([owner, cop], { fit: true, dist: 7, el: 0.1, hold: 6 });
+        cam.orbit([owner, cop], { fit: true, dist: 7, el: 0.1 });
         owner.lookAt = cop; owner.arms = 'beg'; owner.mood = 'sad';
         cop.heading = Math.atan2(wd, 0);
         say(ctx, owner, 'alsjeblieft...', { size: 14, color: '#fff' });
@@ -152,7 +152,7 @@ export default function (T) {
 
         // ---- 6. the second ticket; he faints
         B('6 the second ticket: the owner faints flat on his back', [cop, owner]);
-        cam.dutch([cop, owner], { fit: true, dist: 7, az: wd * 0.3, hold: 3.2 });
+        cam.dutch([cop, owner], { fit: true, dist: 7, az: wd * 0.3 });
         cop.lookAt = owner; cop.mood = 'sly';
         yield* wait(0.3);
         cop.arms = 'write';
@@ -177,7 +177,7 @@ export default function (T) {
         ctx.sfx('gasp');
         yield* wait(0.3);
         // out cold: backwards, flat; the slip flutters down onto his chest
-        cam.ground(owner, { dist: 5, el: 0.0, az: wd * 0.3, y: 0.3, cut: 0.7, hold: 3.5 });
+        cam.ground(owner, { dist: 5, el: 0.0, az: wd * 0.3, y: 0.3, cut: 0.7 });
         B('6b the owner lies flat out', [owner]);
         owner.pose = null; owner.air = true; owner.mood = 'dizzy'; owner.arms = 'swing';
         owner.g.rotation.order = 'YXZ';

@@ -103,7 +103,7 @@ export default function (T) {
         dealer.heading = 0; dealer.mood = 'sly'; dealer.arms = 'hips';
         coat(true);
         ctx.sfx('swish');
-        cam.hero(dealer, { hold: 3.4 });
+        cam.hero(dealer);
         cam.card('DE KRUIDENMAN', 'Everything is oregano. Officially.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -124,7 +124,7 @@ export default function (T) {
         const cs = left ? -1 : 1; // which side of the dealer the customer stands on
         ped.heading = left ? 1.2 : -1.2; dealer.heading = left ? -0.8 : 0.8;
         dealer.arms = 'wave'; dealer.lookAt = ped; ped.lookAt = dealer; ped.mood = 'focus';
-        cam.two(ped, dealer, { az: 0, y: 1.2, hold: 3.6 });
+        cam.two(ped, dealer, { az: 0, y: 1.2 });
         ctx.sfx('tick');
         say(ctx, dealer, 'psst... kom eens kijken', { size: 12, color: '#b9fbc0' });
         yield* wait(0.9);
@@ -154,7 +154,7 @@ export default function (T) {
         cop.heading = cd > 0 ? W : E; cop.mood = 'smug'; cop.gait = 'strut';
         let copIn = false;
         const copTask = R.run((function* () { yield* R.enter(cop, copX, z, undefined, { dir: cd > 0 ? -1 : 1, speed: 3.0 }); copIn = true; })());
-        cam.shot({ on: [ped, dealer], dist: 5.4, el: 0.05, y: 1.15, fov: 30, hold: 2.6 });
+        cam.shot({ on: [ped, dealer], dist: 5.4, el: 0.05, y: 1.15, fov: 30 });
         yield* wait(0.35);
         const wad1 = R.add(item.wad());
         wad1.scale.setScalar(1.6);
@@ -173,7 +173,7 @@ export default function (T) {
 
         // ---- 4. the law: a cop strolls up behind; the customer sees him first, the dealer snaps his coat shut
         B('4 the law: the cop strolls up, the customer points, the dealer whistles', [dealer, ped, pt(x + cd * 6, z)]);
-        cam.shot({ on: [ped, dealer, pt(x + cd * 6, z)], dist: 16, el: 0.2, az: -cd * 0.15, y: 1.2, fov: 34, fit: true, cut: 0.4, hold: 4.2 });
+        cam.shot({ on: [ped, dealer, pt(x + cd * 6, z)], dist: 16, el: 0.2, az: -cd * 0.15, y: 1.2, fov: 34, fit: true, cut: 0.4 });
         yield* wait(0.3);
         yield* waitUntil(() => (Math.abs(cop.g.position.x - x) < 6 && !cop.offstage) || copTask.done, 40);
         ped.lookAt = cop;
@@ -181,7 +181,7 @@ export default function (T) {
         ped.arms = 'point'; ped.mood = 'shock';
         yield* wait(0.3);
         dealer.lookAt = cop;
-        cam.crash(dealer, { hold: 3 });
+        cam.crash(dealer);
         yield* wait(0.35);
         yield* doubleTake(ctx, dealer, 'HÈ?!');
         coat(false);
@@ -213,7 +213,7 @@ export default function (T) {
             yield* arc(jo, s[0] + (i % 2 ? 0.15 : -0.15), 0.02, s[1], 0.15, 0.18, 2);
           })());
         };
-        cam.ground([pt(x, z + 0.3), pt(jx, jz)], { dist: 6.5, az: -cd * 0.25, y: 0.5, fit: true, cut: 0.3, hold: 3.6 });
+        cam.ground([pt(x, z + 0.3), pt(jx, jz)], { dist: 6.5, az: -cd * 0.25, y: 0.5, fit: true, cut: 0.3 });
         yield* wait(0.35);
         for (let i = 0; i < 2; i++) { cop.squash(0.1); ctx.sfx('tick'); ctx.fx.text('snif', at(cop.g.position.x, 2.1, cop.g.position.z), { size: 14, color: '#cfe8ff', dur: 0.6 }); yield* wait(0.3); }
         cop.arms = 'point';
@@ -228,7 +228,7 @@ export default function (T) {
         for (let i = 2; i < 6; i++) { dropJar(i); yield* wait(0.17); }
         ctx.shake(0.12);
         yield* wait(0.5);
-        cam.face(dealer, { hold: 1.6 });
+        cam.face(dealer);
         dealer.heading = 0; dealer.mood = 'shock'; dealer.arms = 'up';
         ctx.fx.pips(x, 1.9, z, 6, ['#bfe9fb', '#ffffff']);
         yield* wait(0.6);
@@ -239,7 +239,7 @@ export default function (T) {
           // ---- 6 (second ending). the cop picks up a jar to sniff it properly, and the oregano gets HIM; the dealer strolls off whistling
           B('6 the sneeze: the cop picks up a jar to smell it and the oregano gets him', [cop, dealer]);
           const j2 = jars[2];
-          cam.shot({ on: [cop, dealer, pt(j2.x, j2.z)], dist: 8, el: 0.12, az: fl * 0.3, y: 1.0, fov: 34, fit: true, hold: 3 });
+          cam.shot({ on: [cop, dealer, pt(j2.x, j2.z)], dist: 8, el: 0.12, az: fl * 0.3, y: 1.0, fov: 34, fit: true });
           dealer.arms = 'cross'; dealer.mood = 'whistle'; dealer.lookAt = null;
           yield* go(ctx, cop, j2.x - cd * 0.5, j2.z - 0.3, 2.4);
           cop.arms = 'reach'; cop.squash(0.2);
@@ -254,7 +254,7 @@ export default function (T) {
           say(ctx, cop, 'HA... HA... HA...', { size: 14, color: '#cfe8ff' });
           yield* wait(0.7);
           B('6b the sneeze: HATSJOE, and the cop sits down in a green cloud', [cop]);
-          cam.close(cop, { dist: 6, cut: 0.4, hold: 2.6 });
+          cam.close(cop, { dist: 6, cut: 0.4 });
           yield* wait(0.4);
           say(ctx, cop, 'HATSJOEEE!', { size: 26, color: '#b9fbc0' });
           ctx.sfx('boing');
@@ -277,7 +277,7 @@ export default function (T) {
         ctx.sfx('hey');
         say(ctx, cop, 'HALT!', { size: 18, color: '#7db8ff' });
         cop.lookAt = null; cop.arms = 'swing'; cop.mood = 'angry';
-        cam.shot({ on: [dealer, cop], dist: 10, el: 0.1, az: fl * 0.5, y: 1.0, fov: 34, lead: 2.5, shake: 0.5, fit: true, cut: 0.3, hold: 4.2 });
+        cam.shot({ on: [dealer, cop], dist: 10, el: 0.1, az: fl * 0.5, y: 1.0, fov: 34, lead: 2.5, shake: 0.5, fit: true, cut: 0.3 });
         const dust = R.run(runDust(ctx, dealer));
         const pchase = R.run((function* () { yield* wait(0.4); cop.mood = 'angry'; yield* chase(ctx, cop, dealer, 5.6, 1.0, 8); })());
         yield* wait(0.7);
@@ -287,7 +287,7 @@ export default function (T) {
           if (!dutch && d < 2.0) {
             dutch = true;
             B('6b the slip', [dealer, jars[slipIdx].o]);
-            cam.dutch([dealer, jars[slipIdx].o], { dist: 7, az: fl * 0.3, face: false, fit: true, cut: 0.2, hold: 2.6 });
+            cam.dutch([dealer, jars[slipIdx].o], { dist: 7, az: fl * 0.3, face: false, fit: true, cut: 0.2 });
           }
           return d < 0.3;
         });
@@ -319,7 +319,7 @@ export default function (T) {
 
         // ---- 7. epilogue: cuffs and stars; the customer pockets one last jar and strolls on
         B('7 epilogue: the cop leads him off', [cop, dealer]);
-        cam.two(cop, dealer, { az: fl * 0.2, hold: 3 });
+        cam.two(cop, dealer, { az: fl * 0.2 });
         yield* go(ctx, cop, dealer.g.position.x - fl * 0.9, dealer.g.position.z, 2.6);
         cop.heading = fl > 0 ? E : W; cop.lookAt = dealer; cop.mood = 'smug'; cop.arms = 'hips';
         ctx.sfx('cuff');
@@ -346,7 +346,7 @@ export default function (T) {
         })());
         ped.mood = 'happy'; ped.arms = 'swing'; ped.lookAt = null;
         B('7b the customer pockets one last jar', [ped, pt(jr.x, jr.z)]);
-        cam.shot({ on: [ped, pt(jr.x, jr.z)], y: 0.9, dist: 6.5, fov: 30, fit: true, cut: 0.5, hold: 3.4 });
+        cam.shot({ on: [ped, pt(jr.x, jr.z)], y: 0.9, dist: 6.5, fov: 30, fit: true, cut: 0.5 });
         yield* go(ctx, ped, jr.x, jr.z - 0.45, 3.0);
         ped.heading = 0;
         ped.arms = 'reach'; ped.squash(0.25); ped.mood = 'focus';
