@@ -531,8 +531,8 @@ function drawHero(v, gl, u, rnd, night, dry = false) {
     const roof = u.roof ? (old && w < 9 ? rnd.pick(['step', 'bell', 'pitch']) : 'pitch') : 'flat';
     info = P.house(v, gl, {
       x: 0, z: depth / 2, w, rnd, night, depth, y: 0, roof, wall: u.wall || rnd.pick(era.wall), roofCol: u.roofCol,
-      floors: clamp(Math.round((u.h - (u.roof ? 3.4 : 2.6)) / 2.2) + 1, 1, 9),
-      shop: u.shop || null, atm: u.atm, dry,
+      floors: clamp(Math.round((u.h - (u.roof ? 3.4 : 2.6)) / 2.2) + 1, u.store ? 2 : 1, u.store ? 12 : 9),
+      shop: u.shop || null, atm: u.atm, dry, store: !!u.store,
     });
   }
   if (u.atm) P.atm(v, gl, -w / 2 + 0.9, depth / 2 + 0.05, 0);
@@ -606,44 +606,74 @@ function assignShops(key, t, F, dice) {
       if (d < bd) { bd = d; owner = bi; }
     }
     if (owner < 0) continue;
-    const us = F.byB.get(owner), u0 = us[0];
+    let us = F.byB.get(owner);
+    if (us[0].store) { // a block with fronts on several sides: the side this place lies nearest to
+      let bd2 = 1e9, face = us[0].face;
+      for (const u of us) { const d = Math.hypot(u.cx + (u.nx * u.d) / 2 - px, u.cz + (u.nz * u.d) / 2 - pz); if (d < bd2) { bd2 = d; face = u.face; } }
+      us = us.filter((u) => u.face === face);
+    }
+    const u0 = us[0];
     const q = ((px - u0.cx) * -u0.nz + (pz - u0.cz) * u0.nx) / u0.w + u0.i; // its place along the facade, in units
-    const c = { cat, name, flags, q, prio: (PRIO[cat] || 5) + (name ? 1 : 0) + (flags & POI_FLAG.CHAIN ? 1 : 0), i };
+    const c = { cat, name, flags, q, face: u0.face, prio: (PRIO[cat] || 5) + (name ? 1 : 0) + (flags & POI_FLAG.CHAIN ? 1 : 0), i };
     if (cat === 'atm') { atms.push({ owner, q }); continue; }
     if (!byBuilding.has(owner)) byBuilding.set(owner, []);
     byBuilding.get(owner).push(c);
   }
+  // one shop over a run of neighbouring units (sorted by i): the first draws the sign for all of them
+  const label = (run, base) => {
+    const k = run.length, uw = run[0].w;
+    run.forEach((u, j) => { u.shop = { ...base, head: j === 0, k: j === 0 ? k : 1, signW: j === 0 ? k * uw - 0.1 : 0, off: j === 0 ? -((k - 1) * uw) / 2 : 0 }; }); // the next unit lies towards local -x
+  };
+  // a store block shows its name every three units along a long front, not once in the middle of eighty metres
+  const labelAll = (run, base, store) => { if (!store) return label(run, base); for (let j = 0; j < run.length; j += 3) label(run.slice(j, j + 3), base); };
   for (const [bi, list] of byBuilding) {
-    const us = F.byB.get(bi), free = (u) => !u.shop && !u.tower;
+    const us = F.byB.get(bi), free = (u) => !u.shop && !u.tower, store = !!us[0].store;
     list.sort((a, b) => b.prio - a.prio || a.q - b.q);
     const taken = [];
     for (const c of list) {
       let best = null, bq = 3.01;
-      for (const u of us) if (free(u) && Math.abs(u.i - c.q) < bq) { bq = Math.abs(u.i - c.q); best = u; }
+      for (const u of us) if (free(u) && u.face === c.face && Math.abs(u.i - c.q) < bq) { bq = Math.abs(u.i - c.q); best = u; }
       if (!best) continue;
       const sg = signFor(c.cat, c.name, c.flags, dice(best, 'shop'));
       const L = shopLook(sg.cat), chainy = sg.kind === 'chain' || (c.flags & POI_FLAG.CHAIN) !== 0;
       // big stores take more than one unit; a one-off clothes shop or garage does not
       const want = sg.cat === 'supermarket' || sg.cat === 'department' ? L.span : chainy ? L.span || 1 : 1;
       best.shop = { cat: sg.cat, real: c.name, sign: sg, look: sg.win ? { ...L, win: sg.win } : L, head: true, k: 1, signW: 0, off: 0, flags: c.flags };
-      taken.push({ u: best, q: c.q, want });
+      taken.push({ u: best, q: c.q, want, lo: best.i, hi: best.i });
     }
+    const unitAt = (i, face) => us.find((u) => u.i === i && u.face === face);
+    const grow = (g, up) => {
+      const a = unitAt(up ? g.hi + 1 : g.lo - 1, g.u.face);
+      if (!a || !free(a)) return false;
+      a.shop = { ...g.u.shop, head: false };
+      if (up) g.hi++; else g.lo--;
+      return true;
+    };
+    for (const g of taken) for (let extra = g.want - 1, up = g.q > g.u.i; extra > 0; extra--, up = !up) if (!grow(g, up) && !grow(g, !up)) break;
+    // in a store block nothing is left over as a home: the shops grow, turn by turn, into the units beside them
+    if (store) for (let any = true; any;) { any = false; for (const g of taken) { if (grow(g, true)) any = true; if (grow(g, false)) any = true; } }
     for (const g of taken) {
-      let lo = g.u.i, hi = g.u.i;
-      const unitAt = (i) => us.find((u) => u.i === i);
-      for (let extra = g.want - 1, up = g.q > g.u.i; extra > 0; extra--, up = !up) {
-        const a = unitAt(up ? hi + 1 : lo - 1), b = unitAt(up ? lo - 1 : hi + 1);
-        const pick = a && free(a) ? [a, up] : b && free(b) ? [b, !up] : null;
-        if (!pick) break;
-        pick[0].shop = { ...g.u.shop, head: false };
-        if (pick[1]) hi++; else lo--;
-      }
-      const k = hi - lo + 1, head = unitAt(lo), uw = g.u.w;
-      if (head !== g.u) { head.shop = g.u.shop; g.u.shop = { ...head.shop, head: false }; }
-      head.shop.head = true; head.shop.k = k;
-      head.shop.signW = k * uw - 0.1;
-      head.shop.off = -((k - 1) * uw) / 2; // the next unit lies towards local -x
+      const run = [];
+      for (let i = g.lo; i <= g.hi; i++) run.push(unitAt(i, g.u.face));
+      labelAll(run, g.u.shop, store);
     }
+  }
+  // the sides of a store block that no mapped shop reached carry the block's biggest shop (or a nameless department store)
+  for (const us of F.byB.values()) {
+    if (!us[0].store) continue;
+    const heads = us.filter((u) => u.shop && u.shop.head).sort((a, b) => (PRIO[b.shop.cat] || 5) - (PRIO[a.shop.cat] || 5) || b.shop.k - a.shop.k || a.i - b.i);
+    let base = heads.length ? heads[0].shop : null;
+    if (!base) {
+      const sg = signFor('department', null, 0, dice(us[0], 'shop')), L = shopLook(sg.cat);
+      base = { cat: sg.cat, real: null, sign: sg, look: sg.win ? { ...L, win: sg.win } : L, head: true, k: 1, signW: 0, off: 0, flags: 0 };
+    }
+    const left = us.filter((u) => !u.shop).sort((a, b) => a.i - b.i);
+    let run = [];
+    for (const u of left) {
+      if (run.length && u.i !== run[run.length - 1].i + 1) { labelAll(run, base, true); run = []; }
+      run.push(u);
+    }
+    if (run.length) labelAll(run, base, true);
   }
   // cash machines: on a bank, where the map has one, and (only where there is no map data) on a blank wall now and then
   for (const a of atms) {
@@ -652,6 +682,166 @@ function assignShops(key, t, F, dice) {
     if (us.length) us[0].atm = true;
   }
   for (const u of F.units) u.atm = u.atm || (!u.tower && ((u.shop && u.shop.cat === 'bank' && u.shop.head) || (!ps && !u.shop && u.w >= 4.4 && dice(u, 'atm') % 13 === 0)));
+}
+/**
+ * A store block: a tall building the map types as retail (a department store, a mall, a supermarket under flats). It is
+ * not the low shed landmarks.js draws for a supermarket: it stands at its real height with shop fronts on every side
+ * that looks at a street, so the shopping streets have doors, windows and names like any other street.
+ */
+const STORE_H = 9;
+const isStore = (t, bi) => !!t.bt && t.bt[bi] === 16 && t.b[bi][0] >= STORE_H;
+const STREETY = new Set([2, 3, 4, 5, 6, 7, 8, 11, 13]); // road classes a shop can front on (not a motorway, a service yard, a lone cycle path)
+const _near = new WeakMap();
+/** For a tile: does the wall at this point (tile metres), looking along (nx, nz), look at a street? */
+function streetTest(t) {
+  let N = _near.get(t);
+  if (N) return N;
+  const segs = [];
+  for (const e of t.r || []) {
+    if (!(STREETY.has(e[0]) || (e[0] === 9 && e[2] >= 0)) || (e[3] & 4)) continue; // (a service road with a street's name is a street)
+    const reach = e[1] / 20 + 4; // (half the mapped width, plus the pavement)
+    for (let i = 4; i + 3 < e.length; i += 2) segs.push([e[i] / 10, TILE - e[i + 1] / 10, e[i + 2] / 10, TILE - e[i + 3] / 10, reach]);
+  }
+  const rings = (t.b || []).map((e) => {
+    const ring = [];
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let i = 3; i + 1 < e.length; i += 2) { const x = e[i] / 10, z = TILE - e[i + 1] / 10; ring.push([x, z]); if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z; }
+    return { ring, x0, x1, z0, z1 };
+  });
+  // squares and pedestrian areas (the map draws a wide shopping street as an area, not as a line)
+  const squares = [];
+  for (const g of t.g || []) {
+    if (g[0] !== 8 || !g[2]) continue;
+    const ring = [];
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let i = 0; i + 1 < g[2].length; i += 2) { const x = g[2][i] / 10, z = TILE - g[2][i + 1] / 10; ring.push([x, z]); if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z; }
+    if (ring.length > 2) squares.push({ ring, x0, x1, z0, z1 });
+  }
+  // walk outwards from a wall: a street within 30 m with nothing built in between (a wide shopping street's centre line
+  // lies far from its fronts)
+  N = (x, z, nx, nz, self) => {
+    for (let d = 2.5; d <= 30; d += 2.5) {
+      const px = x + nx * d, pz = z + nz * d;
+      for (let i = 0; i < rings.length; i++) { const r = rings[i]; if (i !== self && px >= r.x0 && px <= r.x1 && pz >= r.z0 && pz <= r.z1 && r.ring.length > 2 && inRing(px, pz, r.ring)) return false; }
+      for (const g of segs) if (segDist(px, pz, g[0], g[1], g[2], g[3]) < g[4]) return true;
+      for (const q of squares) if (px >= q.x0 && px <= q.x1 && pz >= q.z0 && pz <= q.z1 && inRing(px, pz, q.ring)) return true;
+    }
+    return false;
+  };
+  _near.set(t, N);
+  return N;
+}
+function storeFronts(key, t, bi, F) {
+  const e = t.b[bi], full = [];
+  for (let i = 3; i + 1 < e.length; i += 2) full.push([e[i] / 10, TILE - e[i + 1] / 10]);
+  if (full.length < 3) return;
+  const area = ringArea(full);
+  if (area < 60) return;
+  const o = obbOf(full), b = { ring: full, h: e[0], roof: e[1], year: e[2], o, area };
+  if (Math.min(o.w, o.d) < 7) return;
+  // its outline with the nearly straight corners taken out, so a gently bending facade is one front
+  const ring = full.filter((p, i) => { const a = full[(i + full.length - 1) % full.length], c = full[(i + 1) % full.length]; return segDist(p[0], p[1], a[0], a[1], c[0], c[1]) > 0.35; });
+  if (ring.length < 3) return;
+  let twice = 0;
+  for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) twice += ring[k][0] * ring[i][1] - ring[i][0] * ring[k][1];
+  const turn = twice > 0 ? 1 : -1; // which way round the outline runs (decides which side of an edge is outside)
+  const look = lookOf(key, bi, b), near = streetTest(t), ci = cellOf(o.cx, o.cz);
+  const bf = t.bf ? t.bf[bi] : -1, ba = (bf * 10 * Math.PI) / 180, bx = Math.sin(ba), bz = -Math.cos(ba);
+  const sd = clamp(Math.min(o.w, o.d) / 2 - 0.5, 3.4, 6); // how deep the row of shops is; the rest of the block is a plain core
+  const n = ring.length, edges = ring.map((p, i) => {
+    const q = ring[(i + 1) % n], dx = q[0] - p[0], dz = q[1] - p[1], len = Math.hypot(dx, dz) || 1;
+    return { p, q, len, tx: dx / len, tz: dz / len, nx: (turn * dz) / len, nz: (-turn * dx) / len };
+  });
+  // how much of an edge's end is lost at a sharp outward corner, where its row of shops would stick out through the next
+  // wall (a, b: the two edges in the order the outline runs)
+  const lost = (a, b, len) => {
+    const cr = turn * (a.tx * b.tz - a.tz * b.tx), dot = a.tx * b.tx + a.tz * b.tz; // cr > 0: an outward corner; dot < 0: sharper than a right angle
+    return cr > 0 && dot < -0.1 ? Math.min(sd * (-dot / Math.max(0.2, cr)), len / 2) : 0;
+  };
+  const mine = [];
+  edges.forEach((g, k) => {
+    if (g.len < 5) return;
+    const mx = (g.p[0] + g.q[0]) / 2, mz = (g.p[1] + g.q[1]) / 2;
+    let seen = 0;
+    for (const f of [-0.3, 0, 0.3]) if (near(mx + g.tx * f * g.len, mz + g.tz * f * g.len, g.nx, g.nz, bi)) seen++;
+    if (seen < 2 && !(bf >= 0 && g.nx * bx + g.nz * bz > 0.8)) return;
+    const t0 = lost(edges[(k + n - 1) % n], g, g.len), t1 = lost(g, edges[(k + 1) % n], g.len), run = g.len - t0 - t1;
+    if (run < 4) return;
+    // units run along (-nz, nx), so that the next one lies towards the front's own -x (see assignShops)
+    const ax = -g.nz, az = g.nx, fwd = ax * g.tx + az * g.tz > 0;
+    const sx = fwd ? g.p[0] + g.tx * t0 : g.q[0] - g.tx * t1, sz = fwd ? g.p[1] + g.tz * t0 : g.q[1] - g.tz * t1;
+    const cnt = Math.max(1, Math.round(run / 8)), uw = run / cnt;
+    for (let i = 0; i < cnt; i++) {
+      const x0 = sx + ax * (i + 0.5) * uw, z0 = sz + az * (i + 0.5) * uw;
+      // is the block really that deep behind this stretch? a thin wing gets a shallower row, or none
+      const deep = (d) => [-0.3, 0, 0.3].every((f) => inRing(x0 + ax * f * uw - g.nx * (d - 0.3), z0 + az * f * uw - g.nz * (d - 0.3), full) && inRing(x0 + ax * f * uw - g.nx * 1.2, z0 + az * f * uw - g.nz * 1.2, full));
+      const d = deep(sd) ? sd : deep(3.4) ? 3.4 : 0;
+      if (!d) continue;
+      mine.push({ key, bi, i: k * 1000 + i, face: k, store: true, ci, cx: x0 - (g.nx * d) / 2, cz: z0 - (g.nz * d) / 2, nx: g.nx, nz: g.nz, w: uw, d, h: b.h, roof: 0, year: b.year, tower: false, wall: look.wall, roofCol: look.roof, shop: null, atm: false, side: -1 });
+    }
+  });
+  if (!mine.length) return;
+  // the core behind the shops: the block's own shape in small squares, without the ones that would show through a row of
+  // shops (a square may lie askew to the front, so it keeps its whole diagonal behind the wall; the rows are deep enough
+  // that the core always reaches into them and the roof has no gap)
+  const cell = 2.5, keep = cell * 0.71 + 0.3;
+  const list = rectsOf(full, o, (x, z) => {
+    if (!inRing(x, z, full)) return false;
+    for (const u of mine) {
+      const rx = x - u.cx, rz = z - u.cz, along = rx * -u.nz + rz * u.nx, out = rx * u.nx + rz * u.nz; // out: from the middle of the row towards the street
+      if (Math.abs(along) <= u.w / 2 + keep && out > u.d / 2 - keep && out < u.d / 2 + cell) return false;
+    }
+    return true;
+  }, cell);
+  if (list.length) mine[0].backs = { list, th: Math.atan2(-o.uz, o.ux), cx: o.cx, cz: o.cz, rad: Math.min(o.w, o.d) / 2, h: b.h, wall: look.wall };
+  F.byB.set(bi, mine); F.rings.set(bi, full); F.units.push(...mine);
+}
+/**
+ * A wide pedestrian street is mapped as an area, and the line the map gives it can run along the very fronts of its
+ * shops (Grote Marktstraat). A street scene needs its line out in the open, with the fronts across a strip of paving. So
+ * where the line lies within a metre of a wall (or just inside it) and the other side is open for 12 m, it moves 5 m off
+ * that wall. Ordinary streets and alleys, whose lines keep their distance or have walls on both sides, come back unchanged.
+ */
+function offWalls(spine, bld) {
+  const total = polyLen(spine);
+  if (total < 20 || !bld.length) return spine;
+  let sx0 = 1e9, sx1 = -1e9, sz0 = 1e9, sz1 = -1e9;
+  for (const p of spine) { if (p[0] < sx0) sx0 = p[0]; if (p[0] > sx1) sx1 = p[0]; if (p[1] < sz0) sz0 = p[1]; if (p[1] > sz1) sz1 = p[1]; }
+  const boxes = [];
+  for (const b of bld) {
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (const p of b.ring) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < z0) z0 = p[1]; if (p[1] > z1) z1 = p[1]; }
+    if (x1 > sx0 - 30 && x0 < sx1 + 30 && z1 > sz0 - 30 && z0 < sz1 + 30) boxes.push({ ring: b.ring, x0, x1, z0, z1 }); // (only what stands along the street)
+  }
+  const inside = (x, z) => { for (const b of boxes) if (x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1 && inRing(x, z, b.ring)) return true; return false; };
+  const P = new Path(spine), n = Math.max(2, Math.round(total / 6)), pts = [];
+  for (let i = 0; i <= n; i++) { const p = P.raw((i / n) * total); pts.push([p[0], p[1]]); }
+  const free = (x, z, nx, nz, max) => { for (let d = 0.5; d <= max; d += 0.5) if (inside(x + nx * d, z + nz * d)) return d - 0.5; return max; };
+  const out = (x, z, nx, nz) => { for (let d = 0.5; d <= 6; d += 0.5) if (!inside(x + nx * d, z + nz * d)) return d; return 99; };
+  const norm = pts.map((p, i) => { const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n, i + 1)], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [-(b[1] - a[1]) / l, (b[0] - a[0]) / l]; });
+  let any = false;
+  const shift = pts.map((p, i) => {
+    const [nx, nz] = norm[i];
+    let near, sg; // how far the nearer wall is (negative: the line is inside it), and which side is the open one
+    if (inside(p[0], p[1])) {
+      const a = out(p[0], p[1], nx, nz), b = out(p[0], p[1], -nx, -nz);
+      if (Math.min(a, b) > 6) return 0;
+      sg = a <= b ? 1 : -1; near = -Math.min(a, b);
+    } else {
+      const a = free(p[0], p[1], nx, nz, 20), b = free(p[0], p[1], -nx, -nz, 20);
+      if (Math.min(a, b) >= 1) return 0;
+      sg = a >= b ? 1 : -1; near = Math.min(a, b);
+    }
+    const x = p[0] + sg * nx * Math.max(0, -near), z = p[1] + sg * nz * Math.max(0, -near); // (from the wall's face)
+    const room = free(x, z, sg * nx, sg * nz, 20);
+    if (room < 12) return 0;
+    any = true;
+    return sg * (5 - near);
+  });
+  if (!any) return spine;
+  // no kinks: the move eases in and out over a few points
+  for (let pass = 0; pass < 2; pass++) { const c = shift.slice(); for (let i = 0; i <= n; i++) shift[i] = (c[Math.max(0, i - 1)] + c[i] * 2 + c[Math.min(n, i + 1)]) / 4; }
+  return pts.map((p, i) => [p[0] + norm[i][0] * shift[i], p[1] + norm[i][1] * shift[i]]);
 }
 const _fronts = new WeakMap();
 /** The street fronts of a tile, in tile coordinates (x east, z south). { units, byB: building index -> its units } */
@@ -663,6 +853,7 @@ function frontsOf(key, t) {
   if (!t.bf || !t.b) return F;
   t.b.forEach((e, bi) => {
     const bf = t.bf[bi];
+    if (isStore(t, bi)) { if (!(t.bp && t.bp[bi]) && !specialOf(key, t, bi)) storeFronts(key, t, bi, F); return; }
     if (!(bf >= 0) || e[0] < 3.2) return;
     // a church stays a church: buildings with a type or a landmark's own shape keep their own drawer
     if ((t.bp && t.bp[bi]) || (t.bt && TYPED.has(t.bt[bi])) || specialOf(key, t, bi)) return;
@@ -1317,6 +1508,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       bld = decodeB();
     }
   }
+  if (st.cls === 'pedestrian') spine = offWalls(spine, bld);
   const R = regionOf(f, margin);
   const inR = (x, z, pad = 0) => x > R.x0 - pad && x < R.x1 + pad && z > R.z0 - pad && z < R.z1 + pad;
   // streamed tiles leave the buildings inside this rectangle to the street's own, more detailed ones
@@ -1874,6 +2066,9 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   // street's detailed area, so they look the same whether or not their street is open
   const vx = new Vox(rnd.int(1, 9999), true), glx = new Vox(rnd.int(1, 9999), true);
   const F = lod === 0 ? frontsOf(key, t) : null, cellVox = F ? new Map() : null;
+  // store blocks (storeFronts) are plain blocks at their real height from afar and shop fronts from near; a retail building
+  // that found no street to front on stays the supermarket it was. Asked at every level of detail, so nothing changes shape.
+  const stores = t.bt && t.bt.some((x, bi) => isStore(t, bi)) ? F || frontsOf(key, t) : null;
   (t.b || []).forEach((e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
@@ -1886,7 +2081,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
     const look = lookOf(key, bi, b), type = t.bt ? t.bt[bi] : 0;
-    if (sp || (type && TYPED.has(type))) {
+    if (sp || (type && TYPED.has(type) && !(stores && isStore(t, bi) && stores.byB.has(bi)))) {
       const n0 = vx.n, g0 = glx.n;
       let done = false;
       try { done = drawTyped(vx, glx, b, type, { wall: look.wall, roof: look.roof }, look.rnd, night, sp); } catch (err) { vx.n = n0; glx.n = g0; if (import.meta.env.DEV) console.warn('landmark drawer failed', sp ? sp.id : type, err); }

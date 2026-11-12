@@ -200,14 +200,15 @@ export function obbOf(ring) {
   };
 }
 /** Cover an odd-shaped footprint with a few rectangles, in the frame of its bounding rectangle. */
-export function rectsOf(ring, o) {
-  const g = Math.max(1.5, Math.min(5, Math.sqrt(o.w * o.d) / 9));
+export function rectsOf(ring, o, inside = null, cell = 0) {
+  const g = cell || Math.max(1.5, Math.min(5, Math.sqrt(o.w * o.d) / 9));
   const nx = Math.max(1, Math.round(o.w / g)), nz = Math.max(1, Math.round(o.d / g));
   const sx = o.w / nx, sz = o.d / nz;
   const on = new Uint8Array(nx * nz);
   for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
     const a = -o.w / 2 + (i + 0.5) * sx, b = -o.d / 2 + (j + 0.5) * sz;
-    if (inRing(o.cx + a * o.ux - b * o.uz, o.cz + a * o.uz + b * o.ux, ring)) on[j * nx + i] = 1;
+    const x = o.cx + a * o.ux - b * o.uz, z = o.cz + a * o.uz + b * o.ux;
+    if (inside ? inside(x, z) : inRing(x, z, ring)) on[j * nx + i] = 1;
   }
   const out = [];
   for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
@@ -222,7 +223,7 @@ export function rectsOf(ring, o) {
     for (let jj = j; jj <= j1; jj++) for (let k = i; k <= i1; k++) on[jj * nx + k] = 0;
     out.push({ x: -o.w / 2 + ((i + i1 + 1) / 2) * sx, z: -o.d / 2 + ((j + j1 + 1) / 2) * sz, w: (i1 - i + 1) * sx, d: (j1 - j + 1) * sz });
   }
-  return out.length ? out : [{ x: 0, z: 0, w: o.w, d: o.d }];
+  return out.length || inside ? out : [{ x: 0, z: 0, w: o.w, d: o.d }];
 }
 
 /** Join polyline pieces end to end where they meet without a sharp turn. pieces: arrays of [x, z]. */

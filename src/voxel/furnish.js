@@ -667,7 +667,8 @@ export function furnishTile(o) {
   const rnd = makeRng(hashStr('furn|' + key));
   const props = [];
   const cap = lite ? 120 : 320;
-  const used = () => v.n + gl.n;
+  let bonus = 0; // what a terrace field may hold on top of the tile's allowance (see the fields below)
+  const used = () => v.n + gl.n - bonus;
   const LIMIT = lite ? 30000 : 60000; // vertices of furniture a tile may hold in all
   let RESERVE = lite ? 12000 : 26000; // of which terraces and places may take this much before the generic items go in
 
@@ -1475,7 +1476,9 @@ export function furnishTile(o) {
       cands.push({ x, z, d: bd, q: best, i, j });
     }
     cands.sort((a, b) => a.d - b.d || a.i - b.i || a.j - b.j);
-    const cap = LIMIT - (lite ? 3000 : 6000);
+    // a square full of tables is what the place is known for: its field gets half as much again as a tile's furniture
+    // allowance, and that extra is not held against the benches, bins and racks that come after it
+    const base = LIMIT - (lite ? 3000 : 6000), cap = base + (lite ? 0 : 30000), before = used();
     CHEAP = true;
     const hw = ST.cp / 2 - 0.15, hd = ST.hd - 0.1;
     for (const c of cands) {
@@ -1484,7 +1487,8 @@ export function furnishTile(o) {
       let ok = !crowded('terr', x, z, 1.0);
       if (ok) for (const [sx, sz] of [[0, 0], [hw, 0], [-hw, 0], [0, hd], [0, -hd]]) {
         const px = x + ux * sx + vx * sz, pz = z + uz * sx + vz * sz;
-        if (!GOOD[grid.get(px, pz)] || treeNear(px, pz, sx || sz ? 1.4 : 1.9) || barrierNear(px, pz, 0.4) || railNear(px, pz, 1.9)) { ok = false; break; }
+        // (a square's trees have high crowns: the tables stand right up to the trunks, as they do on the real squares)
+        if (!GOOD[grid.get(px, pz)] || treeNear(px, pz, sx || sz ? 0.75 : 1.05) || barrierNear(px, pz, 0.4) || railNear(px, pz, 1.9)) { ok = false; break; }
       }
       if (ok) for (const [dx, dz] of [[3, 0], [-3, 0], [0, 3], [0, -3], [2.1, 2.1], [-2.1, 2.1], [2.1, -2.1], [-2.1, -2.1]]) if (grid.get(x + dx, z + dz) === C.BUILDING) { ok = false; break; } // 3 m lane along the facades
       if (!ok) continue;
@@ -1497,6 +1501,7 @@ export function furnishTile(o) {
     }
     CHEAP = false;
     v.setT(); gl.setT();
+    bonus += Math.max(0, used() - Math.max(before, base));
   }
 
   // ---- how much: a dense tile should not end up with more than `cap` props

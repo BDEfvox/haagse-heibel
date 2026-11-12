@@ -370,12 +370,21 @@ export function house(v, gl, o) {
   const cols = Math.max(2, Math.round(w / 1.75)), sp = w / cols;
   const cx = (c) => x - w / 2 + sp * (c + 0.5);
   const glass1 = [];
-  for (let f = 1; f < floors; f++) {
-    for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, rnd); if (f === 1) glass1[c] = _wglass; }
+  if (o.store) {
+    // a store block (world.js storeFronts): one band of glass per floor between piers, a few boxes for a front of any height
+    for (let f = 1; f < floors; f++) {
+      const y = y0 + gh + (f - 1) * fh + 0.62, lit = night && rnd.chance(litShare.shop > 0.2 ? 0.4 : 0.08);
+      v.box(x, y - 0.08, z + 0.04, w - 0.9, 1.41, 0.1, '#f6f3ec');
+      (lit ? gl : v).box(x, y, z + 0.07, w - 1.1, 1.25, 0.08, lit ? '#ffe9a8' : night ? '#1c2a44' : '#8fc7e8');
+    }
+  } else {
+    for (let f = 1; f < floors; f++) {
+      for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, rnd); if (f === 1) glass1[c] = _wglass; }
+    }
   }
   const wc = rnd.int(0, cols - 1);
-  // (w, h, face, glass, real: what the window that opens needs; a one-storey front has no first-floor window at all)
-  out.win = { x: cx(wc), y: y0 + gh + 0.62, z: z + 0.2, w: 0.9, h: 1.2, face: z + 0.11, glass: glass1[wc] || '#8fc7e8', real: floors >= 2, y0 };
+  // (w, h, face, glass, real: what the window that opens needs; a one-storey front and a store block have none)
+  out.win = { x: cx(wc), y: y0 + gh + 0.62, z: z + 0.2, w: 0.9, h: 1.2, face: z + 0.11, glass: glass1[wc] || '#8fc7e8', real: floors >= 2 && !o.store, y0 };
 
   // ground floor
   const doorCol = rnd.pick(DOORS);
@@ -496,6 +505,7 @@ export function house(v, gl, o) {
       out.top = ry + 2.06;
     }
   }
+  if (o.store) return out; // (no chimney on a department store)
   const chx = x + w * 0.27 * (rnd.chance(0.5) ? 1 : -1);
   v.box(chx, ry + 0.2, zc - 0.8, 0.6, 1.5, 0.6, shade(wall, 0.85));
   v.box(chx, ry + 1.7, zc - 0.8, 0.72, 0.12, 0.72, STONE);

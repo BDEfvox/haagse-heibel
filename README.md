@@ -118,7 +118,9 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   Schilderswijk and Laak, mullets and jackets around the centre and Duindorp, civil servants, tourists, joggers,
   surfers, cargo-bike parents...) that the crowd draws from. Types are outfit, vehicle and behaviour only
 - `src/voxel/brands.js` — shop fronts show the real business at that spot under a parody name: chains from a
-  hand-written table (name, colours, a small drawn mark of their own), every other name respelled in Hague dialect
+  hand-written table (name, colours, a small drawn mark of their own), every other name respelled in Hague dialect.
+  Department stores and other tall retail blocks stand at their real height with shop fronts on every side that
+  looks at a street (`storeFronts` in `world.js`)
 - `src/voxel/statues/` — the city's statues, monuments and fountains, each drawn from its own recipe
   (`node scripts/check-statues.mjs` validates them)
 - `src/voxel/places.js` — the places that are lively in reality (Grote Markt, Het Plein, Chinatown, the Haagse
