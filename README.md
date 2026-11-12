@@ -34,6 +34,10 @@ right-drag or two fingers = turn, scroll or pinch = zoom, WASD/arrows also work)
 whole city. Red `!` pins mark gags elsewhere on the street; **Follow the action** hands the camera
 back.
 
+### Tests
+
+`npm test` runs, in this order and stopping at the first failure: the house-front test, the night-furniture test, the statue recipe check and the shop-name test; it needs no browser and reads only committed files. To compare the generated geometry before and after a change, run `node scripts/snapshot/snapshot.mjs src out.json` on each version (about a minute) and then `node scripts/snapshot/diff.mjs a.json b.json`; `scripts/snapshot/README.md` explains what it covers.
+
 ## Where the numbers come from
 
 | What | Source |

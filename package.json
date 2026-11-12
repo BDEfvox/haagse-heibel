@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node test/fronts.test.mjs && node test/furnish-night.test.mjs && node scripts/check-statues.mjs --quiet && node test/brands.test.mjs",
     "data": "node scripts/build-data.mjs",
     "world": "node scripts/build-world.mjs && node scripts/special-parts.mjs"
   },
