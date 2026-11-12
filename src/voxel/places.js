@@ -34,7 +34,7 @@
 //     wind      true: glass wind screens along the open side (the boulevard)
 //   Keep boxes tight: a recipe is only as good as the ground it finds (it never builds on the carriageway, cycle path,
 //   tram rails, water or within reach of a tree).
-export const PLACES = [
+const PLACES = [
   // ---- squares and old-town terraces
   { id: 'grote-markt', name: 'Grote Markt', x: 622, y: 640, box: [560, 575, 665, 700],
     recipes: { terraces: { parasol: 'dark', big: true, tables: 'bench', chairs: 'wood', heaters: 0.8, lights: 1, busy: 1.25, maxRows: 4, width: 1.3 }, garlands: { density: 1 }, field: { reach: 20, style: 'bench', lane: 13, keep: [[627, 618, 10]], statue: 10 } } },

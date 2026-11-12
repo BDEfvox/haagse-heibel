@@ -1,6 +1,6 @@
 // Buildings, street furniture and vehicles — the Hague voxel kit.
 import * as THREE from 'three';
-import { Vox, MAT, sculpt, piece, makeSign, TAU } from './kit.js';
+import { Vox, MAT, sculpt, piece, makeSign } from './kit.js';
 import { makePerson } from './cast.js';
 import { GLYPHS, fitText } from './brands.js';
 
@@ -10,7 +10,6 @@ export const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexStrin
 const BRICK = ['#9a6452', '#8f5a4a', '#b08064', '#80524a', '#d8b07a', '#e9e2d3', '#74504a', '#c9a070', '#a47058'];
 const DOORS = ['#1f5b3a', '#1d3557', '#8d0801', '#2b2b2b', '#6a4c93', '#0b6e4f', '#e0a100'];
 const ROOFS = ['#c8553d', '#8a3b2e', '#4a4e57', '#a44a3f', '#d9693f'];
-const AWN = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff']];
 const STONE = '#efe9dc';
 const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
@@ -544,21 +543,6 @@ export function tower(v, gl, o) {
 }
 
 // ---------------------------------------------------------------- greenery & furniture
-const GREENS = ['#4caf50', '#43a047', '#66bb6a', '#2e9e55', '#58b368'];
-export function tree(v, x, z, rnd, y = 0.15, autumn = false) {
-  const h = rnd.range(1.3, 2.0), g = autumn ? rnd.pick(['#e9a23b', '#d9622b', '#c94f2e', '#8fae3a']) : rnd.pick(GREENS);
-  v.box(x, y, z, 0.42, h, 0.42, '#7a5234', 0.05);
-  const s = rnd.range(0.85, 1.15);
-  v.box(x, y + h, z, 2.2 * s, 0.8, 2.2 * s, shade(g, 0.86), 0.05);
-  v.box(x, y + h + 0.8, z, 2.7 * s, 1.0, 2.7 * s, g, 0.05);
-  v.box(x + rnd.range(-0.2, 0.2), y + h + 1.8, z + rnd.range(-0.2, 0.2), 1.9 * s, 0.8, 1.9 * s, shade(g, 1.1), 0.05);
-  v.box(x, y + h + 2.6, z, 0.9 * s, 0.4, 0.9 * s, shade(g, 1.18));
-}
-export function bush(v, x, z, rnd, y = 0.15, s = 1) {
-  const g = rnd.pick(GREENS);
-  v.box(x, y, z, 1.0 * s, 0.6 * s, 0.9 * s, shade(g, 0.9), 0.06);
-  v.box(x + 0.1, y + 0.6 * s, z, 0.6 * s, 0.3 * s, 0.6 * s, g, 0.06);
-}
 export function tulips(v, x, z, rnd, y = 0.15, n = 5, spread = 0.9) {
   for (let i = 0; i < n; i++) {
     const px = x + rnd.range(-spread, spread), pz = z + rnd.range(-spread * 0.4, spread * 0.4);
@@ -584,18 +568,6 @@ export function bin(v, x, z, y = 0.15) {
   v.box(x, y, z, 0.5, 0.8, 0.5, '#2e7d4f');
   v.box(x, y + 0.8, z, 0.58, 0.1, 0.58, '#1f5a38');
   v.box(x, y + 0.5, z + 0.26, 0.3, 0.1, 0.02, '#111');
-}
-export function bollard(v, x, z, y = 0.15) {
-  v.box(x, y, z, 0.2, 0.7, 0.2, '#3d3d3d');
-  v.box(x, y + 0.7, z, 0.26, 0.1, 0.26, '#e9c46a');
-}
-export function mailbox(v, x, z, y = 0.15) {
-  v.box(x, y, z, 0.2, 0.5, 0.2, '#555');
-  v.box(x, y + 0.5, z, 0.7, 0.8, 0.5, '#f77f00');
-  v.box(x, y + 1.0, z + 0.26, 0.4, 0.06, 0.02, '#222');
-}
-export function hedge(v, x, z, len, y = 0.15) {
-  for (let i = 0; i < len; i++) v.box(x + i - len / 2 + 0.5, y, z, 1.0, 0.7, 0.5, '#3f9a52', 0.07);
 }
 export function atm(v, gl, x, z, y = 0.15) {
   v.box(x, y, z + 0.2, 1.1, 2.0, 0.4, '#dfe6ea');
@@ -623,7 +595,7 @@ function bikeBox(v, alongZ, x, y, z, col, dir = 1) {
   B(0.4, 0.96, 0.07, 0.5, 0.07, '#2b2b2b');
 }
 /** Static parked bicycle drawn into a Vox (lying along x), same size as the ridden one. */
-export function bikeStatic(v, x, z, col, y = 0.15) {
+function bikeStatic(v, x, z, col, y = 0.15) {
   bikeBox(v, false, x, y, z, col);
 }
 export function bikeRack(v, x, z, rnd, n = 4, y = 0.15) {
@@ -650,18 +622,6 @@ export function stall(g, v, x, z, label, colors, y = 0.15, face = 1) {
   s.position.set(x, y + 2.75, z + face * 1.0);
   if (face < 0) s.rotation.y = Math.PI;
   g.add(s);
-}
-export function terrace(v, x, z, rnd, y = 0.15) {
-  const col = rnd.pick(['#e63946', '#ffb703', '#2a9d8f', '#ffffff']);
-  v.box(x, y, z, 0.12, 0.7, 0.12, '#666');
-  v.box(x, y + 0.7, z, 0.9, 0.08, 0.9, '#d9c7a3');
-  for (const [dx, dz] of [[-0.8, 0], [0.8, 0]]) {
-    v.box(x + dx, y, z + dz, 0.42, 0.42, 0.42, '#7a5234');
-    v.box(x + dx * 1.22, y + 0.42, z + dz, 0.08, 0.5, 0.42, '#7a5234');
-  }
-  v.box(x, y + 0.78, z, 0.08, 1.7, 0.08, '#ddd');
-  v.box(x, y + 2.3, z, 2.2, 0.12, 2.2, col);
-  v.box(x, y + 2.42, z, 1.2, 0.12, 1.2, shade(col, 0.9));
 }
 export function tramStop(v, gl, x, z, night, y = 0.15) {
   v.box(x, y + 2.3, z, 3.4, 0.12, 1.2, '#c8102e');
@@ -874,39 +834,6 @@ export function makeCar(rnd, type = 'car', night = false) {
   return a;
 }
 
-/** HTM tram: red skirt, cream top. Forward +z. */
-export function makeTram(night = false) {
-  const g = new THREE.Group(), body = new THREE.Group();
-  g.add(body);
-  const v = new Vox(5), gl = new Vox(6);
-  const seg = 5.2, n = 5, W = 2.4; // 5 segments, about 27.5 m long, 2.4 m wide, 3.3 m high
-  const win = night ? '#ffe9a8' : '#3b5b7a';
-  for (let i = 0; i < n; i++) {
-    const z = (i - (n - 1) / 2) * (seg + 0.3);
-    v.box(0, 0.3, z, W, 1.0, seg, '#c8102e');
-    v.box(0, 1.3, z, W, 1.8, seg, '#f3ecd9');
-    v.box(0, 3.1, z, W - 0.2, 0.2, seg - 0.2, '#8d99a6');
-    for (const sx of [-1, 1]) {
-      for (let k = 0; k < 4; k++) (night ? gl : v).box(sx * (W / 2 + 0.005), 1.65, z - seg / 2 + 0.7 + k * 1.2, 0.03, 1.0, 0.9, win);
-      v.box(sx * (W / 2 + 0.005), 0.4, z, 0.03, 2.2, 0.8, '#f3ecd9'); // door
-    }
-    v.box(0, 0.05, z - 1.6, W - 0.4, 0.4, 1.0, '#222');
-    v.box(0, 0.05, z + 1.6, W - 0.4, 0.4, 1.0, '#222');
-    if (i < n - 1) v.box(0, 0.4, z + seg / 2 + 0.15, W - 0.6, 2.3, 0.3, '#333');
-  }
-  const front = ((n - 1) / 2) * (seg + 0.3) + seg / 2;
-  (night ? gl : v).box(0, 1.65, front + 0.01, W - 0.5, 1.0, 0.04, win);
-  (night ? gl : v).box(0, 1.65, -front - 0.01, W - 0.5, 1.0, 0.04, win);
-  gl.box(-0.75, 0.7, front + 0.02, 0.3, 0.2, 0.04, '#fff6c9');
-  gl.box(0.75, 0.7, front + 0.02, 0.3, 0.2, 0.04, '#fff6c9');
-  v.box(0, 3.3, 0, 0.12, 0.8, 1.6, '#444'); // pantograph
-  v.box(0, 4.1, 0, 1.4, 0.06, 0.1, '#444');
-  body.add(v.mesh(), gl.mesh(MAT.glow));
-  const s = makeSign('HTM', 0.4, { bg: '#111', fg: '#ffb703', pad: 4 });
-  s.position.set(0, 2.8, front + 0.03);
-  body.add(s);
-  return vehicleActor(g, { body, type: 'tram', len: n * (seg + 0.3), wid: W, hgt: 3.3, rigid: true });
-}
 
 /** Bicycle group (forward +z); rider optional. */
 export function makeBike(rnd, rider = null, col = null) {
@@ -1147,4 +1074,3 @@ export function makeBoat(rnd) {
   return a;
 }
 
-export { piece };

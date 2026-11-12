@@ -71,7 +71,7 @@ function* goCar(ctx, a, x, z, speed, stop, o) {
  * rest of the obstacle picture (setting.js `obstacles`) on a detour worked out once per call; if there is no way, it stops at
  * the last clear point of the straight line. `o`: { ignore: [things the walker is deliberately AT], straight: true (opt out) }.
  */
-export function* go(ctx, a, x, z, speed = a.speed, stop = 0.06, o = null) {
+function* go(ctx, a, x, z, speed = a.speed, stop = 0.06, o = null) {
   if (isCar(a)) { yield* goCar(ctx, a, x, z, speed, stop, o); return; }
   const pts = walkRoute(ctx, a, x, z, o);
   if (!pts) { yield* leg(ctx, a, x, z, speed, stop, null); return; }
@@ -1620,7 +1620,7 @@ const weight = (ctx, n) => G[n].w[ctx.level - 1] * (ctx.mix?.factor?.[n] ?? 1);
  * The free ground a scene needs when it does not say (`stage:` next to `w`, `crime`, `avail`; `stage: false` = none): a modest
  * clear patch of pavement, about 4 x 2 m, on either side. See S.findStage for the vocabulary.
  */
-export const DEFAULT_STAGE = { pave: { side: 'any', len: 4, depth: 2 } };
+const DEFAULT_STAGE = { pave: { side: 'any', len: 4, depth: 2 } };
 const stageOf = (n) => (G[n].stage === false ? null : G[n].stage || DEFAULT_STAGE);
 /** Scenes playing on this spot right now keep their stage x (so a second one is not put on top of the first). */
 const busyStages = (ctx) => (ctx._stages && ctx._stages.size ? [...ctx._stages] : null);

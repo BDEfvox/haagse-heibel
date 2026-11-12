@@ -209,7 +209,7 @@ export function clearSigns() {
   for (const t of signCache.values()) t.dispose();
   signCache.clear();
 }
-export function signTexture(text, { fg = '#fff', bg = '#1d4ed8', pad = 6, px = 16, border = null } = {}) {
+function signTexture(text, { fg = '#fff', bg = '#1d4ed8', pad = 6, px = 16, border = null } = {}) {
   const key = [text, fg, bg, pad, px, border].join('|');
   if (signCache.has(key)) return signCache.get(key);
   const c = document.createElement('canvas');

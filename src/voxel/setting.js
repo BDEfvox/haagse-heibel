@@ -190,8 +190,6 @@ export function obstacles(ctx) {
 }
 /** Take a fresh look at the moving part of the picture (the crowd's standing groups and waiting vehicles): after `R.close()`, say. */
 export function refreshCrowd(ctx) { const pic = PICS.get(ctx); if (pic) crowdShapes(ctx, pic); }
-/** Throw the cached picture away (the next ask rebuilds it). */
-export function forgetObstacles(ctx) { PICS.delete(ctx); }
 
 /** Distance from a point to the edge of shape i (negative inside). */
 function gapTo(pic, i, px, pz) {

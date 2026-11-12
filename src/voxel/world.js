@@ -67,7 +67,7 @@ const hash2 = (x, y) => {
 
 // ---------------------------------------------------------------- loading
 const getJson = (u) => fetch(u).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-export function loadIndex() {
+function loadIndex() {
   return (_index ||= getJson(ROOT + 'index.json').then((ix) => {
     if (!ix || !Array.isArray(ix.tiles) || !ix.proj) throw new Error('world index missing');
     ix.set = new Set(ix.tiles);
@@ -90,7 +90,7 @@ let _maxTex = 16384;
 /** The largest texture the graphics card takes (the stage tells us before anything is loaded). */
 export function setMaxTexture(n) { if (n > 0) _maxTex = n; }
 const SMALL = typeof matchMedia === 'function' && (matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) < 560);
-export function loadCity() {
+function loadCity() {
   return (_city ||= (async () => {
     const ix = await loadIndex();
     // phones, and graphics cards that cannot hold the full height map as a texture, get the half-size one
@@ -106,7 +106,7 @@ export function loadCity() {
 // ---------------------------------------------------------------- terrain
 // Ground heights come from the national height model (8 m cells, metres above sea level). The Hague is
 // nearly flat, so heights are stretched a little; water sits below its banks like it does in real life.
-export const EX = 1.4;
+const EX = 1.4;
 const NATURAL = new Uint8Array(256);
 for (const c of [2, 3, 4, 5, 6, 7]) NATURAL[c] = 1;
 function setupTerrain(city, img, div = 1) {
@@ -915,7 +915,7 @@ function frontInfo(u, night) {
 }
 export { frontsOf, drawHero, frontInfo, unitRng }; // for the node checks in test/
 /** Is a tree trunk within r metres of this point (map metres)? Only knows the tiles that are built. */
-export function treeNearMap(mx, my, r) {
+function treeNearMap(mx, my, r) {
   const t0x = Math.floor((mx - r) / TILE), t1x = Math.floor((mx + r) / TILE), t0y = Math.floor((my - r) / TILE), t1y = Math.floor((my + r) / TILE);
   for (let tx = t0x; tx <= t1x; tx++) for (let ty = t0y; ty <= t1y; ty++) {
     const c = _byNum.get(tileNum(tx, ty));
@@ -2038,7 +2038,7 @@ function surfaceAt(city, mx, my) {
   return city.landAt(mx, my) + 0.14;
 }
 /** Ground class at a point in map metres, if a tile is there (255 otherwise). */
-export function classAt(mx, my) {
+function classAt(mx, my) {
   const c = _byNum.get(tileNum(Math.floor(mx / TILE), Math.floor(my / TILE)));
   if (!c) return 255;
   const g = c.grid, i = Math.floor((mx - c.ox) / g.cell), j = Math.floor((c.oy + TILE - my) / g.cell);

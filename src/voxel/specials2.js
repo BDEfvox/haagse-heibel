@@ -4,7 +4,6 @@
 // Orientation is never assumed. Anything placed by "where it is on the map" goes through frame(): a point given as
 // (east, north) metres from the footprint's centre of mass is turned into the local frame with c.compass.
 
-const NL = ['#ae1c28', '#ffffff', '#21468b'];
 
 /** Map offsets (metres east / north of the footprint's centre of mass) <-> the local frame. */
 function frame(c) {

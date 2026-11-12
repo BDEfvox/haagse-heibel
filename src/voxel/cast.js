@@ -1,6 +1,6 @@
 // The cast: blocky people, critters and their little walk cycles.
 import * as THREE from 'three';
-import { Vox, MAT, sculpt, piece, TAU, clamp } from './kit.js';
+import { sculpt, piece, TAU, clamp } from './kit.js';
 
 const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33'];
 const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788', '#fb8500'];
@@ -27,7 +27,7 @@ export const PERSON_K = 0.72;
  *  br brow height, bs brow slant (+ = inner ends down: angry), eye openness, mw mouth width, mo mouth open,
  *  mc mouth corners (+1 smile, -1 frown), hp head pitch (+ = chin down).
  */
-export const MOODS = {
+const MOODS = {
   neutral: { br: 0, bs: 0, eye: 1, mw: 1, mo: 0, mc: 0, hp: 0 },
   happy: { br: 0.03, bs: -0.12, eye: 0.82, mw: 1.35, mo: 0.3, mc: 1, hp: 0 },
   laugh: { br: 0.05, bs: -0.22, eye: 0.2, mw: 1.55, mo: 1, mc: 1, hp: -0.32 },

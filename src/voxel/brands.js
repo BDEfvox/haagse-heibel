@@ -30,8 +30,7 @@ function hash(s) { // FNV-1a: the same everywhere, no dependency
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 const hx = (a) => '#' + a.map((c) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0')).join('');
 /** hex colour times k (k < 1 darker, > 1 lighter towards white). */
-export const shadeHex = (hex, k) => hx(rgb(hex).map((c) => (k <= 1 ? c * k : c + (255 - c) * (k - 1))));
-const mix = (a, b, t) => { const p = rgb(a), q = rgb(b); return hx(p.map((c, i) => c + (q[i] - c) * t)); };
+const shadeHex = (hex, k) => hx(rgb(hex).map((c) => (k <= 1 ? c * k : c + (255 - c) * (k - 1))));
 
 /** Lower case, no accents, no apostrophes, '&' and punctuation as spaces: how names are compared. */
 export const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
@@ -514,6 +513,3 @@ export function signFor(cat, realName, flags = 0, seed = 0) {
   const words = Array.isArray(L.word) ? L.word : [L.word];
   return { text: words[seed % words.length], bg: L.bg, fg: L.fg, mark: g, kind: 'cat', cat, chain: null, win: null };
 }
-/** For buildings drawn elsewhere (landmarks.js supermarkets, fuel stations): the sign for a real name of a given kind. */
-export const signForName = (name, cat = 'other', flags = 0) => signFor(cat, name, flags, 0);
-export { POI_FLAG, mix };

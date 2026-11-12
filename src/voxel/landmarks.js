@@ -20,7 +20,7 @@ const hexOf = (n, fb) => (n >= 0 ? '#' + (n & 0xffffff).toString(16).padStart(6,
 const HALF = Math.PI / 2;
 
 const BRICKS = ['#8f5546', '#9a6350', '#80524a', '#a47058', '#74504a'];
-const STONE = '#d9d2c3', CONC = '#a9a59c', SLATE = '#4f545c', GLASS = '#9fd0e6', DARK = '#1f2328';
+const STONE = '#d9d2c3', SLATE = '#4f545c', GLASS = '#9fd0e6', DARK = '#1f2328';
 const BRIGHT = ['#e63946', '#ffb703', '#3a86ff', '#2a9d8f', '#f4a261', '#8338ec', '#fb5607'];
 const NL = ['#ae1c28', '#ffffff', '#21468b']; // Dutch flag
 

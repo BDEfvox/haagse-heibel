@@ -140,7 +140,6 @@ function person(h, hex, pose, o) {
     return [px, py, pz];
   };
   const ah = armTo(1, act, cloth), ih = armTo(-1, idle, cloth);
-  void ih;
   // hands in skin when clothes are a different colour
   if (o.col2) { q(ah[0], ah[1] - 0.03, ah[2], 0.06, 0.06, 0.06, skin); q(ih[0], ih[1] - 0.03, ih[2], 0.06, 0.06, 0.06, skin); }
   if (pose === 'read') q(0, dy(0.55), 0.18, 0.17, 0.13, 0.03, '#efe6cf');

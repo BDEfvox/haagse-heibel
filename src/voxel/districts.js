@@ -2,7 +2,7 @@
 //
 // HOW THE TABLE WORKS
 // -------------------
-// The crowd (crowd.js) asks `populationAt(mapX, mapY)` for the spot a lane runs through and gets back
+// The crowd (crowd.js) asks `spotAt(mapX, mapY)` for the spot a lane runs through and reads its `pop`:
 //   { [archetypeId]: density }.
 // UNIT OF A DENSITY: the *share per 100* of the people spawned there who are of that type. A walker archetype
 // is a share of the walkers on the pavement (28 = 28 of every 100 walkers); a rider archetype is a share of the
@@ -145,7 +145,7 @@ const WORKING = { pop: { pensioner: 6, courier: 4, shopper: 3, parent: 3 }, mult
 const PARK = { pop: { jogger: 12, pensioner: 4, parent: 2 }, mult: { walk: 0.5, bike: 0.7, car: 0.3 } };
 const OFFICE = { pop: { civil: 14, courier: 5, jogger: 2, tourist: 3 }, mult: { walk: 1.0, bike: 1.0, car: 1.0 } };
 
-export const DISTRICTS = {
+const DISTRICTS = {
   // ---- the core
   'Centrum': row(CITY, { civil: 12, tourist: 14, harry: 7 }, { walk: 1.6, car: 1.1 }),
   'Stationsbuurt': row(CITY, { civil: 11, courier: 8, harry: 5 }, { walk: 1.6, bike: 1.3 }),
@@ -270,12 +270,3 @@ export function spotAt(mx, my) {
   }
   return fallback;
 }
-/** Map metres (x east of 4.30 E, y north of 52.07 N) -> { wijk, buurt, level } or null outside every buurt. */
-export function districtAt(mx, my) {
-  const s = spotAt(mx, my);
-  return s === fallback ? null : { wijk: s.wijk, buurt: s.buurt, level: s.level };
-}
-/** { [archetypeId]: density } for a spot (district row, else the default row scaled by crime level). Shared object: do not mutate. */
-export function populationAt(mx, my) { return spotAt(mx, my).pop; }
-/** { walk, bike, car } multipliers for a spot. */
-export function multipliersAt(mx, my) { return spotAt(mx, my).mult; }

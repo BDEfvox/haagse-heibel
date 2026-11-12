@@ -82,10 +82,10 @@
 
 import { makeRng } from '../kit.js';
 import { S, begin, hooks, MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS } from './core.js';
-import { runParts, SPEC, DRAW } from './parts.js';
+import { runParts, SPEC } from './parts.js';
 import { genericParts, fountainParts } from './generic.js';
 
-export { MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS, SPEC, DRAW, hooks, makeRng };
+export { MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS, SPEC, hooks, makeRng };
 
 // ------------------------------------------------------------------ far level of detail
 const _far = new WeakMap();
