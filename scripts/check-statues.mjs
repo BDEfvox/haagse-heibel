@@ -10,7 +10,7 @@ const quiet = process.argv.includes('--quiet');
 const ids = JSON.parse(fs.readFileSync(path.join(dir, 'ids.json'), 'utf8'));
 const idSet = new Set(ids);
 const kit = await import(pathToFileURL(path.join(dir, 'kit.js')).href);
-const { MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS, SPEC, drawStatue, deriveFar, makeRng, hooks } = kit;
+const { MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS, SPEC, drawStatue, makeRng, hooks } = kit;
 
 const problems = [];
 const bad = (file, id, msg) => problems.push(`${file} ${id}: ${msg}`);
@@ -131,5 +131,4 @@ if (process.argv.includes('--list')) for (const r of rows.sort((a, b) => b[2] - 
 console.log(`  problems              ${problems.length}`);
 for (const p of problems.slice(0, quiet ? 20 : 400)) console.log('  - ' + p);
 if (problems.length > (quiet ? 20 : 400)) console.log(`  ... and ${problems.length - 20} more`);
-void deriveFar;
 process.exit(problems.length ? 1 : 0);

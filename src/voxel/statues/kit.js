@@ -136,11 +136,11 @@ export function deriveFar(parts) {
     const e = ext(a);
     if (e) { items.push({ base: 0, e }); top = Math.max(top, e[4]); }
   }
-  const out = [], U = (m, e) => { if (!m) return e.slice(0, 6); for (let k = 0; k < 3; k++) { m[k] = Math.min(m[k], e[k]); m[k + 3] = Math.max(m[k + 3], e[k + 3]); } return m; };
+  const U = (m, e) => { if (!m) return e.slice(0, 6); for (let k = 0; k < 3; k++) { m[k] = Math.min(m[k], e[k]); m[k + 3] = Math.max(m[k + 3], e[k + 3]); } return m; };
   let plinth = null, ground = null, gcol = null, mass = null, mcol = null, mvol = 0;
   for (const it of items) {
     const e = it.e, h = e[4] - e[1];
-    if (it.base) { plinth = U(plinth, e); if (!out.length) out.push(e[6]); continue; }
+    if (it.base) { plinth = U(plinth, e); continue; }
     if (e[1] < 0.3 && h < Math.max(1.2, top * 0.3) && e[3] - e[0] > 1.5 * h) { ground = U(ground, e); if (!gcol) gcol = e[6]; continue; }
     mass = U(mass, e);
     const vol = (e[3] - e[0]) * (e[5] - e[2]) * h;
@@ -163,7 +163,6 @@ export function deriveFar(parts) {
     } else res.push(box(mass, c, 0.85));
   }
   if (!res.length) res.push(['box', 0, 0, 0, 1, 1.5, 1, 'stone']);
-  void out;
   _far.set(parts, res);
   return res;
 }

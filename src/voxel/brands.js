@@ -19,8 +19,6 @@
 //  * parodyName(): the rule that twists every other real name (Hague dialect, then small letter play).
 //  * signFor(cat, realName, flags, seed) -> { text, bg, fg, mark, kind, cat, chain } is what the drawing code uses.
 
-import { POI_FLAG } from './poicats.js';
-
 // ---------------------------------------------------------------- small helpers
 function hash(s) { // FNV-1a: the same everywhere, no dependency
   let h = 2166136261;
@@ -472,7 +470,6 @@ export function parodyName(realName, cat = 'other') {
   if (!words.length) words.push(s);
   const h = hash(norm(orig));
   const base = words.map(dialectWord);
-  const same = (arr) => norm(arr.join(' ')) === norm(orig) || norm(arr.join(' ')) === norm(words.join(' '));
   const attempt = (k) => {
     const outs = base.slice();
     let keep = fitIdx(words, outs, 16);
