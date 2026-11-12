@@ -1,9 +1,8 @@
 // Ambient street life + crime-level shenanigans, written as generator scripts.
 import * as THREE from 'three';
 import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
-import { makePerson, makeDog, makeCat, makeBird, item } from './cast.js';
+import { makePerson, makeDog, makeCat, makeBird, item, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 import { makeCar, makeBike, makeScooter, makeFatbike, makeHeli, makeBoat } from './props.js';
-import { SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
 import * as S from './setting.js';
 import * as ACTS from './acts/index.js';
 

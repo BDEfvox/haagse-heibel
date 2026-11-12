@@ -7,9 +7,9 @@ import { buildWorld, preload, U, cutWeight, cutLimit, CUT, setMaxTexture, trimTi
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
-import { makeBird, makePerson, PERSON_K } from './cast.js';
+import { makeBird, makePerson, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 import { litShare } from './props.js';
-import { Crowd, PED, SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
+import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
 import { sfx } from '../audio.js';
 

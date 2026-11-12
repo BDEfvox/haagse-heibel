@@ -17,6 +17,7 @@ import * as P from './props.js';
 import { makeRng, hashStr, clamp } from './kit.js';
 import { POI_CATS, POI_FLAG } from './poicats.js';
 import { placesFor, placeHas } from './places.js';
+import { SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 
 const STALLS = { HARING: ['#21468b', '#ffffff'], FRIET: ['#e63946', '#ffd166'], BLOEM: ['#ff70a6', '#ffffff'], VIS: ['#1d6fa5', '#ffffff'] };
 const TILE = 256, EDGE = 2;
@@ -27,11 +28,7 @@ const EAT = new Set(['restaurant', 'cafe', 'pub', 'ice_cream', 'terrace', 'snack
 const FORCE = new Set(['restaurant', 'cafe', 'pub', 'ice_cream', 'terrace', 'bakery', 'coffeeshop']);
 const TAU = Math.PI * 2;
 
-// the crowd's own palettes (crowd.js; copied, since crowd.js imports the world): seated people match the walkers
-const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33'];
-const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788', '#fb8500'];
-const PANTS = ['#2b3a55', '#3d405b', '#6b705c', '#1d3557', '#5c4033', '#22223b', '#4a4e69'];
-const HAIRS = ['#2b1d14', '#5a3825', '#c58b3c', '#e6c36a', '#111111', '#a33b20', '#cfcfcf'];
+// (the people palettes come from cast.js, the same ones the crowd uses: seated people match the walkers)
 const WARM = ['#ffd98a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
 // ---------------------------------------------------------------- polylines

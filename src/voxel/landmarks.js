@@ -2,19 +2,17 @@
 // Pure drawing code: every function draws boxes into tagged Vox builders (see kit.js) and nothing else.
 // Conventions: metres, y up, buildings drawn from y = 0 (the shader seats them on the terrain), every box
 // tagged with setB(centreX, centreZ, height + 2, halfDepth) so the cutaway shader can flatten them.
-import * as THREE from 'three';
 import { inRing, obbOf, rectsOf } from './geo.js';
 import { SPECIALS as S1 } from './specials.js';
 import { SPECIALS2 as S2 } from './specials2.js';
 import { makeRng } from './kit.js';
+import { shade } from './props.js';
 import { drawStatue, drawGeneric, drawFountain, statueRot } from './statues/kit.js';
 import { recipeFor } from './statues/index.js';
 
 // hand-made landmarks (the Ridderzaal, the Peace Palace, the skyline towers, ...): see specials.js and specials2.js
 const SPECIALS = [...S1, ...S2];
 
-const _c = new THREE.Color();
-const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexString();
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const hexOf = (n, fb) => (n >= 0 ? '#' + (n & 0xffffff).toString(16).padStart(6, '0') : fb);
 const HALF = Math.PI / 2;

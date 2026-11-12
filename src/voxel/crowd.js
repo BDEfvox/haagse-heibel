@@ -6,14 +6,10 @@
 // paths, tram tracks. A gag that needs a passer-by takes one out of the crowd (see take/adopt) and puts them back.
 import * as THREE from 'three';
 import { clamp } from './kit.js';
-import { PERSON_K } from './cast.js';
+import { PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 import { zebrasOn, U, LAMP_KIND, LAMP_GLSL } from './world.js';
 import { ARCHETYPES, spotAt } from './districts.js';
 
-export const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33'];
-export const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788', '#fb8500'];
-export const PANTS = ['#2b3a55', '#3d405b', '#6b705c', '#1d3557', '#5c4033', '#22223b', '#4a4e69'];
-export const HAIRS = ['#2b1d14', '#5a3825', '#c58b3c', '#e6c36a', '#111111', '#a33b20', '#cfcfcf'];
 const CARS = ['#b3261e', '#d9d9d6', '#2f3a48', '#3a6ea5', '#8a8f96', '#1c1f24', '#f1f1ee', '#5b6b52', '#7a2b2b', '#c9a227', '#30343f', '#c9d1d6', '#1d3557'];
 const BIKES = ['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#111111', '#ff70a6', '#8ecae6'];
 const lin = (list) => list.map((h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; });
