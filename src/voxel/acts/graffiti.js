@@ -209,7 +209,7 @@ export default function (T) {
         ctx.sfx('boing');
         yield* all(hop(kid, 0.5, 0.35), wait(0.5));
         // (in the second ending the critic is left holding the can: that is what the cop finds)
-        if (critEnd) { cr.arms = 'hold'; cr.mood = 'smug'; } else { cr.drop(); cr.arms = 'swing'; }
+        if (critEnd) { cr.arms = 'hold'; cr.mood = 'smug'; } else { R.discard(cr); cr.arms = 'swing'; }
 
         // ---- 5. the law arrives, and the lookout was looking the wrong way (he watches the street end, the cop comes from behind the wall)
         B('5 the law arrives: FWEEET, and the lookout was looking the wrong way', [pt(cx1, padZ(ctx, walk, cx1)), kid, lookout]);
@@ -299,7 +299,7 @@ export default function (T) {
           cr.lookAt = cop; cr.mood = 'shock'; cr.arms = 'up';
           say(ctx, cop, 'IK ZIE HET. DE SPUITBUS.', { size: 13, color: '#7db8ff' });
           yield* wait(0.9);
-          cr.drop();
+          R.discard(cr);
           say(ctx, cr, 'MAAR... HET IS KUNST!', { size: 15, color: '#fff' });
           ctx.sfx('cuff'); ctx.shake(0.2);
           cop.arms = 'hips';

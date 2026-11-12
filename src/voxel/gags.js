@@ -1,6 +1,6 @@
 // Ambient street life + crime-level shenanigans, written as generator scripts.
 import * as THREE from 'three';
-import { wait, tween, all, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
+import { wait, tween, all, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from './kit.js';
 import { makePerson, makeCat, makeBird, item, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 import { makeCar, makeBike, makeFatbike, makeHeli, makeBoat } from './props.js';
 import * as S from './setting.js';
@@ -514,7 +514,7 @@ const padSpot = (ctx, k, x, r = 0.6, tries = 10) => S.findSpot(ctx, x, padZ(ctx,
 
 /** Put a borrowed or scripted person back into neutral. */
 function tidy(a) {
-  if (a.drop) a.drop();
+  if (a.drop) { const h = a.drop(); if (h) disposeTree(h); } // what they still held was the scene's, and the scene is done with it
   a.pose = null; a.air = false; a.arms = 'swing'; a.gait = 'walk'; a.offstage = false;
   a.mood = 'neutral'; a.lookAt = null; a.laughT = 0; a.nodT = 0; a.shakeT = 0; // faces go back to neutral too
   a.g.visible = true; a.g.rotation.x = 0; a.g.rotation.z = 0;
@@ -562,6 +562,8 @@ function rig(ctx) {
     /** a real door or window (doorway/windowAt) the script opens: shut when the script ends (waits for those still walking through it) or is cancelled */
     guard(d) { if (d) guards.add(d); return d; },
     rm(o) { if (objs.delete(o)) ctx.world.remove(o); },
+    /** `a` lets go of what they hold and it is freed for good: only for a thing nothing uses again (to keep it, use a.drop()) */
+    discard(a) { const h = a.drop(); if (h) ctx.world.remove(h); },
     /** survives a normal finish (lasting damage such as a tag); still removed if the script is cancelled */
     stay(o) { keep.add(o); },
     borrow(p) { peds.add(p); return p; },
@@ -1417,7 +1419,7 @@ G.boredCop = {
     ctx.focus(cop.g.position.x, cop.g.position.z, 0.62, 3.5);
     ctx.news('Police blotter: one (1) stroopwafel consumed');
     yield* wait(2.2);
-    cop.drop(); cop.arms = 'swing';
+    ctx.world.remove(cop.drop()); cop.arms = 'swing';
     say(ctx, cop, '*geeuw*', { size: 13, color: '#cfe8ff' });
     ctx.sfx('zzz');
     yield* wait(1.6);

@@ -1,7 +1,7 @@
 // Builds the voxel world from real map data, tile by tile: ground, roads, buildings, trees,
 // plus a low-detail model of the whole city for the horizon and the sky drop.
 import * as THREE from 'three';
-import { Vox, MAT, clamp, makeRng, hashStr } from './kit.js';
+import { Vox, MAT, clamp, makeRng, hashStr, SHARED } from './kit.js';
 import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
@@ -406,6 +406,7 @@ export const CUT = {
   glow: cutPatch(new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })),
   depth: cutPatch(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking }), false),
 };
+for (const m of [CUT.solid, CUT.glow, CUT.depth]) SHARED.add(m); // shared by the whole street: disposeTree (kit.js) leaves them alone
 /** The same three for streamed tiles (tile-local geometry, hidden inside the detailed area). */
 const CUTT = {
   solid: cutPatch(new THREE.MeshLambertMaterial({ vertexColors: true }), true, true),

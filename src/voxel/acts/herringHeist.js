@@ -90,7 +90,7 @@ export default function (T) {
           keeper.squash(0.1);
         }
         const hero = fish[2], loose = fish[1];
-        keeper.drop();
+        R.discard(keeper);
         const crateOnGround = R.add(crate());
         crateOnGround.position.set(kx - dir * 0.7, 0, kz - fn * 0.3);
         keeper.arms = 'rub';
@@ -185,7 +185,7 @@ export default function (T) {
         B('4b the keeper slips on a herring', [keeper, loose]);
         cam.dutch(keeper, { dist: 7, el: 0.1, az: dir * 0.3, y: 0.8 });
         ctx.sfx('boing');
-        keeper.drop();
+        R.discard(keeper);
         const flung = R.add(ladle());
         flung.position.set(keeper.g.position.x, 1.2, keeper.g.position.z);
         R.run(arc(flung, slipX + dir * 4, 0.0, runZ - fn * 0.8, 3, 1.1, 8));

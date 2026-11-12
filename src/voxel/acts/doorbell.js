@@ -217,7 +217,7 @@ export default function (T) {
           say(ctx, owner, 'HAH! DAAR!', { size: 18, color: '#ff6b6b' });
           yield* wait(0.5);
           owner.arms = 'push';
-          owner.drop();
+          R.discard(owner);
           // the pail swings out: a wave of water flies across to the kid
           const wave = R.add(sculpt((v) => v.box(-0.45, 0, -0.3, 0.9, 0.45, 0.6, '#4f9bff')));
           const pail2 = R.add(bucket(false));

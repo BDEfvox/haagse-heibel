@@ -270,7 +270,7 @@ export default function (T) {
         d1.lookAt = d2.lookAt = c3;
         cam.nose(c3, dir, { dist: 8 });
         ctx.sfx('honk'); say(ctx, c3, 'HÉ! DOORRIJDEN!', { size: 13, color: '#ffd166' });
-        d1.drop(); d2.drop();
+        R.discard(d1); R.discard(d2);
         d1.arms = d2.arms = 'stop'; d1.mood = d2.mood = 'scared';
         yield* wait(0.9);
         const tx = b.g.position.x - dir * (b.len + 0.1), dC = Math.abs(tx - c3.g.position.x);
@@ -334,7 +334,7 @@ export default function (T) {
         // ---- 15. a gust of wind: the form takes off
         B('15 a gust: papers everywhere', [d1, d2, d3, spot]);
         const src = cop || d1;
-        src.drop();
+        R.discard(src);
         cam.high(spot, { dist: 18, el: 0.55, cut: 0.3 });
         yield* wait(0.3);
         ctx.fx.text('FWOEF!', at(xs, 3.2, sz), { size: 24, color: '#e8f7ff' });

@@ -405,7 +405,7 @@ export default function (T) {
         cam.shot({ on: cop ? [a, b, cop] : [a, b], dist: 9, el: 0.15, fit: true });
         yield* wait(0.3);
         if (cop) { say(ctx, cop, lv >= 4 ? 'MEEKOMEN, DE HEREN.' : 'HAND GEVEN. NU.', { size: 13, color: '#7db8ff' }); cop.arms = 'point'; }
-        a.drop();
+        R.discard(a);
         yield* all(getUp(a, 'sad'), getUp(b, 'sad'));
         a.arms = b.arms = 'swing';
         yield* both(go(ctx, a, cc.x - 0.4, cc.z, 1.4), go(ctx, b, cc.x + 0.4, cc.z, 1.4));

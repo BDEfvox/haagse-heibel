@@ -1,6 +1,6 @@
 // The cast: blocky people, critters and their little walk cycles.
 import * as THREE from 'three';
-import { sculpt, piece, TAU, clamp } from './kit.js';
+import { sculpt, piece, TAU, clamp, disposeTree } from './kit.js';
 
 export const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33'];
 export const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788', '#fb8500'];
@@ -300,7 +300,7 @@ export function makePerson(rnd, o = {}) {
     squash(k = 0.28) { sqv -= k * 9; return this; },
     /** Attach an object to the right hand, or 'handL' | 'back' | 'shoulder' | 'head' | 'front'. */
     hold(obj, where = 'hand') {
-      if (this.held) this.drop();
+      if (this.held) { const old = this.drop(); if (old !== obj) disposeTree(old); } // whatever was held before is gone for good (to keep it, drop() it first)
       this.held = obj;
       if (where === 'back') { obj.position.set(0, 0.85, -0.42); b.add(obj); }
       else if (where === 'shoulder') { obj.position.set(0.22, 0.92, -0.5); obj.rotation.set(0.18, 0, -0.12); b.add(obj); } // slung over the right shoulder (use arms 'bag')

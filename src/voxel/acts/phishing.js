@@ -80,7 +80,7 @@ export default function (T) {
         })());
         hk.hold(foldedDesk(), 'front'); hk.arms = 'carry'; hk.mood = 'sly';
         yield* R.enter(hk, hx, hz, undefined, { speed: 3.8, dir: -cs });
-        hk.drop(); hk.arms = 'swing'; hk.heading = hh;
+        R.discard(hk); hk.arms = 'swing'; hk.heading = hh;
 
         B('1b the desk unfolds', [hk, deskPt]);
         cam.ground(deskPt, { dist: 6.5, el: 0.12, az: 0.35 });
@@ -167,7 +167,7 @@ export default function (T) {
           ln.aim(tipX, tipY, tipZ, x, y, z);
         });
         R.rm(wal); R.rm(hook); ln.visible = false;
-        hk.drop(); // the rod is done
+        R.discard(hk); // the rod is done
         const w2 = item.wallet();
         w2.scale.setScalar(1.7); w2.position.set(0, -0.78, 0.1);
         hk.armL.add(w2);

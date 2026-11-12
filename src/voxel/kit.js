@@ -61,6 +61,18 @@ export const MAT = {
   glow: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
   water: new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.86 }),
 };
+/** Materials that many objects share and that are never disposed with one of them (world.js adds its cutaway set, CUT). */
+export const SHARED = new Set([MAT.solid, MAT.glow, MAT.water]);
+/**
+ * Free the GPU buffers of an object that has left the scene for good: every geometry, and every material that is not shared
+ * (per-object materials: signs, beams, clouds). Here, in the leaf module, so that cast.js, gags.js and stage.js use one copy.
+ */
+export function disposeTree(o) {
+  o.traverse((c) => {
+    if (c.geometry) c.geometry.dispose();
+    if (c.material && !SHARED.has(c.material)) c.material.dispose(); // per-object materials (signs, beams, clouds); shared ones stay
+  });
+}
 
 // ---------------------------------------------------------------- Vox builder
 const _c = new THREE.Color();

@@ -187,7 +187,7 @@ export default function (T) {
         coat(false);
         ctx.sfx('slam');
         ctx.fx.burst(x, 1.2, z + 0.3, { n: 10, colors: ['#5a8f3c', '#7cfc9a', '#3f6f2a'], speed: 3, up: 4, size: [0.05, 0.1] });
-        dealer.drop();
+        R.discard(dealer);
         dealer.arms = 'cross'; dealer.lookAt = null; dealer.heading = 0; dealer.mood = 'whistle';
         say(ctx, dealer, '♪ fluit fluit ♪', { size: 14, color: '#ffffff' });
         say(ctx, dealer, 'NIKS!', { size: 16, color: '#ffffff', off: 0.6 });
@@ -259,7 +259,7 @@ export default function (T) {
           say(ctx, cop, 'HATSJOEEE!', { size: 26, color: '#b9fbc0' });
           ctx.sfx('boing');
           ctx.fx.smoke(cop.g.position.x, 1.6, cop.g.position.z, 16, ['#7cfc9a', '#5a8f3c', '#3f6f2a'], 0.6);
-          cop.drop();
+          R.discard(cop);
           const cq = cop.g.position;
           R.run(R.away(dealer, fl * 10, 2.4)); // (the dealer strolls off whistling, hands in pockets)
           yield* tumble(ctx, cop, cq.x + cd * 1.6, cq.z, 0.7, 0.5);

@@ -133,7 +133,7 @@ export default function (T) {
         R.stop(looking);
         ctx.slowmo(0.25, 0.7);
         ctx.sfx('yoink');
-        vic.drop();
+        R.discard(vic);
         grip(r2, mkPurse());
         r2.arms = 'cheer';
         say(ctx, sc, 'YOINK!', { size: 24, color: '#ffd60a' });
@@ -179,7 +179,7 @@ export default function (T) {
         const vp = vic.g.position;
         cam.shot({ on: [vic, sc], dist: 14, el: 0.1, az: -dir * 0.15, y: 1.0, fov: 40, fit: true, cut: 0.3 });
         yield* wait(0.35);
-        vic.drop();
+        R.discard(vic);
         const shoe = R.add(mkMissile());
         shoe.position.set(vp.x + dir * 0.3, 1.5, vp.z);
         vic.arms = 'push'; ctx.sfx('swish');
@@ -229,7 +229,7 @@ export default function (T) {
               return { x: sp.x + lx * Math.cos(h) + lz * Math.sin(h), y: sp.y + ly, z: sp.z - lx * Math.sin(h) + lz * Math.cos(h) };
             };
             const w0 = where(0), w1 = where(1);
-            r2.drop();
+            R.discard(r2);
             sc.riders.splice(0); // (the scooter no longer animates them)
             for (const [r, w] of [[r1, w0], [r2, w1]]) { sc.g.remove(r.g); r.pose = null; r.air = false; R.spawn(r, w.x, w.z, Math.max(0, w.y - 0.3)); r.heading = h; r.g.rotation.set(0, h, 0); }
             n1 = r1; n2 = r2;

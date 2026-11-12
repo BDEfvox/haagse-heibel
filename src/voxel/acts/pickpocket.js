@@ -280,7 +280,7 @@ export default function (T) {
         ctx.fx.text('BONK!', at(tp.x, 2.4, lz), { size: 30, color: '#ffd60a' });
         ctx.fx.pips(tp.x, 1.9, lz, 8);
         thief.lookAt = null;
-        thief.drop();
+        R.discard(thief);
         const wp = R.add(mkWallet());
         wp.position.set(tp.x, 1.3, tp.z);
         R.stop(pchase);

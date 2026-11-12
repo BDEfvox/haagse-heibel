@@ -2,8 +2,8 @@
 // contexts handed to gag scripts. Gag scripts think in "street space" (x along the street, z across it);
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
-import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, MAT, wait } from './kit.js';
-import { buildWorld, preload, U, cutWeight, cutLimit, CUT, setMaxTexture, trimTiles, tileOf, LAMP_KIND } from './world.js';
+import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, wait, disposeTree } from './kit.js';
+import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
@@ -116,14 +116,7 @@ const RESTAND_GLIDE = 0.5; // the move to the new stand takes about this long
 const SAME_AZ = 0.52, SAME_DIST = 0.3; // 'nearly the same shot': within 30 degrees and 30% of the distance
 
 
-/** Free the GPU buffers of an object that has left the scene for good. */
-const SHARED = new Set([MAT.solid, MAT.glow, MAT.water, CUT.solid, CUT.glow, CUT.depth]);
-function disposeTree(o) {
-  o.traverse((c) => {
-    if (c.geometry) c.geometry.dispose();
-    if (c.material && !SHARED.has(c.material)) c.material.dispose(); // per-object materials (signs, beams, clouds); shared ones stay
-  });
-}
+// (disposeTree, which frees the GPU buffers of an object that has left the scene for good, lives in kit.js)
 const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 /**
  * How much more of the street a cutscene shot takes in on a screen narrower than the wide picture it was framed for

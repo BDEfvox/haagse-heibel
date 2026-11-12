@@ -126,7 +126,7 @@ export default function (T) {
         const fuse = R.run((function* () { for (;;) { ctx.fx.sparks(bin.x + 0.09, fuseY, bin.z, 2); yield* wait(0.1); } })());
         ctx.stageMode('flee'); // the people about see what he is up to and back off
         yield* wait(0.5);
-        lad.drop();
+        R.discard(lad);
         // he runs back, the mates cover their ears
         lad.lookAt = null; lad.mood = 'scared'; lad.arms = 'swing';
         R.run((function* () {

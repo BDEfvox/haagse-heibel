@@ -173,7 +173,7 @@ export default function (T) {
         // ...and the second cop, who stood aside and watched the whole line go by, falls in at the back
         if (hasCop2) {
           yield* waitUntil(() => d * (tail().g.position.x - cop2.g.position.x) < 0.9, 8);
-          cop2.lookAt = tail(); cop2.drop();
+          cop2.lookAt = tail(); R.discard(cop2);
           say(ctx, cop2, 'HÈ?! PAK HEM!', { size: 14, color: '#7db8ff' });
           ctx.sfx('whistle');
           cop2.arms = 'point'; cop2.mood = 'angry';
@@ -242,7 +242,7 @@ export default function (T) {
           const bag2 = item.moneybag(0.6);
           bag2.position.set(0, 0.5, 0.75);
           ctx.sfx('yoink');
-          rob.drop();
+          R.discard(rob);
           dog.b.add(bag2);
           rob.arms = 'swing'; rob.mood = 'shock'; rob.lookAt = dog;
           yield* hop(dog, 0.4, 0.25);

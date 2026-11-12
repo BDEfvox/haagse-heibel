@@ -315,7 +315,7 @@ export default function (T) {
         yield* wait(0.3);
         keeper.arms = 'point';
         yell(ctx, keeper, 'DAT IS DAN €1.249,95!', '#ffd166', 13);
-        rob.drop();
+        R.discard(rob);
         yield* wait(0.5);
         B('9c contant?: a very small voice', [rob]);
         cam.face(rob);

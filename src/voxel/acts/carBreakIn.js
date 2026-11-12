@@ -324,7 +324,7 @@ export default function (T) {
         ctx.fx.text('Z', at(car.x, 2.3, car.z), { size: 18, color: '#cfe8ff', rise: 1.4, dur: 1.8 });
         thief.arms = 'swing'; thief.mood = 'sad';
         R.run(R.away(thief, dir * 6, cop ? 3.4 : 6));
-        if (cop) { cop.drop(); cop.lookAt = null; cop.arms = 'swing'; R.run(R.away(cop, dir * 6, 3.4)); }
+        if (cop) { R.discard(cop); cop.lookAt = null; cop.arms = 'swing'; R.run(R.away(cop, dir * 6, 3.4)); }
         yield* wait(0.6);
         cam.wide(pt(car.x, z), { dist: 20 });
         yield* wait(1.4); // (the payoff has landed: the camera lets go and the rig walks the thief off)
