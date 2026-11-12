@@ -1655,7 +1655,7 @@ function* director(ctx, delay = 2.4, signature = true) {
     if (recent.length > 3) recent.shift();
     noteSeen(name);
     PLAYING.set(name, (PLAYING.get(name) || 0) + 1);
-    ctx.gagStart?.(name, { stage: G[name].stage || null });
+    ctx.gagStart?.(name);
     ctx.run((function* () {
       try { yield* runGag(ctx, name); } finally { active--; if (g.lock) locks.delete(g.lock); PLAYING.set(name, Math.max(0, (PLAYING.get(name) || 1) - 1)); ctx.gagEnd?.(name); }
     })());
@@ -1693,7 +1693,7 @@ export function startLocale(ctx, { only = null, delay = 2.4, signature = true, w
     ctx.run((function* () {
       for (;;) {
         yield* wait(2);
-        if (ready(ctx, only)) { ctx.gagStart?.(only, { stage: G[only].stage || null }); try { yield* runGag(ctx, only); } finally { ctx.gagEnd?.(only); } }
+        if (ready(ctx, only)) { ctx.gagStart?.(only); try { yield* runGag(ctx, only); } finally { ctx.gagEnd?.(only); } }
         yield* wait(2);
       }
     })());
@@ -1705,7 +1705,7 @@ export const canPlay = (ctx, name) => Object.hasOwn(G, name) && ready(ctx, name)
 export function playGag(ctx, name) {
   if (!canPlay(ctx, name)) return null;
   const state = { done: false };
-  ctx.gagStart?.(name, { stage: G[name].stage || null });
+  ctx.gagStart?.(name);
   ctx.run((function* () { try { yield* runGag(ctx, name); } finally { state.done = true; ctx.gagEnd?.(name); } })());
   return state;
 }

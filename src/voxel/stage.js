@@ -108,6 +108,7 @@ const _col = new THREE.Color(), _W = new THREE.Matrix4(), _T = new THREE.Matrix4
 /** The director's camera rules (see _cam and the follow branch of _frame). Seconds unless noted. */
 const MIN_SHOT = 0.9;      // a new shot waits until the last cut is this old (unless `quick`, or it glides)
 const SAFETY = 20;         // a scene that asks for nothing new for this long loses the camera (once, with a warning)
+const STAGE_R = 15;        // metres the crowd keeps clear around the scene that holds the camera
 const BLOCKED_FOR = 0.7;   // the sight line must stay blocked this long before the stand is reconsidered (once)
 const RECLEAR_FOR = 1.0;   // ...and clear this long before the high fallback is left again
 const RECONSIDER = 2;      // after any such decision: no new one for this long
@@ -426,8 +427,8 @@ export class Stage {
   }
   /** The crowd makes room for the scene that holds the camera: `crowd.setStage({ x, z, r, mode })`, `setStage(null)` when it lets go. */
   _takeStage(ctx, name) {
-    const gg = ctx._gags && ctx._gags.get(name), p = this.W.path.xz(ctx.sc, 0);
-    this._stage = { ctx, x: p[0], z: p[1], r: (gg && gg.stage && gg.stage.r) || (ctx.stage && ctx.stage.r) || 15, mode: 'watch' };
+    const p = this.W.path.xz(ctx.sc, 0);
+    this._stage = { ctx, x: p[0], z: p[1], r: STAGE_R, mode: 'watch' };
     this._pushStage();
   }
   _pushStage() { const S = this._stage; if (this.crowd && this.crowd.setStage) this.crowd.setStage(S ? { x: S.x, z: S.z, r: S.r, mode: S.mode } : null); }
@@ -1075,8 +1076,8 @@ export class Stage {
         },
         news: (t) => hooks.onNews?.(t),
         incident: (k = 1) => hooks.onIncident?.(k),
-        gagStart: (name, info) => {
-          const g = { ctx, name, t0: this.time, stage: info && info.stage }; // info.stage = { r }: how far the crowd keeps clear while the gag holds the camera
+        gagStart: (name) => {
+          const g = { ctx, name, t0: this.time };
           (ctx._gags ||= new Map()).set(name, g);
           this.gags.add(g);
           if (this.mode === 'follow' && ctx !== this.camCtx && ![...this.gags].some((q) => q.ctx === this.camCtx) && this.time - this.lastSwitch > 4) { this.camCtx = ctx; this.lastSwitch = this.time; this.idleT = 0; }
