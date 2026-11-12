@@ -420,7 +420,7 @@ export default function (T) {
         }
         ped.arms = 'swing'; ped.mood = 'neutral'; ped.lookAt = null;
         R.give(ped);
-        yield* R.settle(10);
+        yield* R.settle(2); // (the cop of the last ending walks off on his own: the picture does not wait for him)
         done = true;
       } finally {
         cam.release();

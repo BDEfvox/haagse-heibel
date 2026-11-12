@@ -524,11 +524,11 @@ function tidy(a) {
 }
 /** Like needPed, but never waits: borrow a walker near cx if one is there. */
 function takePed(ctx, xr = 13, filter = null, cx = 0) {
-  const ok = (p) => !p.busy && p.alive && Math.abs(p.g.position.x - cx) < xr && Math.abs(p.exitX - p.g.position.x) > 6 && (!filter || filter(p));
+  const ok = (p) => !p.busy && p.alive && Math.abs(p.g.position.x - cx) < xr && Math.abs(p.exitX - p.g.position.x) > 6 && !S.jutNear(ctx, p.g.position.x) && (!filter || filter(p)); // (not somebody the camera would have to film round a building)
   let p = ctx.peds.find(ok);
   if (!p && ctx.amb) {
     const off = ctx.amb.sc - ctx.sc;
-    const q = ctx.amb.peds.find((a) => !a.busy && a.alive && Math.abs(a.g.position.x + off - cx) < xr && (!filter || filter(a)));
+    const q = ctx.amb.peds.find((a) => !a.busy && a.alive && Math.abs(a.g.position.x + off - cx) < xr && !S.jutNear(ctx, a.g.position.x + off) && (!filter || filter(a)));
     if (q) { rehome(q, ctx); p = q; }
   }
   if (!p) p = fromCrowd(ctx, cx, xr, ok);

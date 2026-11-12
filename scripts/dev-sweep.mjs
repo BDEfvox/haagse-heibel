@@ -6,9 +6,10 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 const [street, time = '14:00', outFile] = process.argv.slice(2);
 const port = 9400 + Math.floor(Math.random() * 400);
+const profile = `/tmp/heibel-sweep-${port}`; // the browser's throwaway profile (some 100 MB): removed again at the end
 const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
   '--headless=new', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', '--window-size=1280,800',
-  '--ignore-gpu-blocklist', '--enable-gpu', '--use-angle=metal', `--user-data-dir=/tmp/heibel-sweep-${port}`, 'about:blank',
+  '--ignore-gpu-blocklist', '--enable-gpu', '--use-angle=metal', `--user-data-dir=${profile}`, 'about:blank',
 ], { stdio: 'ignore' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (s) => { fs.appendFileSync(outFile, s + '\n'); };
@@ -39,4 +40,4 @@ try {
   }
   log('# done');
 } catch (e) { log('ERR ' + e.message); }
-finally { try { ws && ws.close(); } catch (e) {} chrome.kill('SIGKILL'); setTimeout(() => process.exit(0), 300); }
+finally { try { ws && ws.close(); } catch (e) {} chrome.kill('SIGKILL'); setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) {} process.exit(0); }, 600); }

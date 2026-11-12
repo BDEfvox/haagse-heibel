@@ -5,7 +5,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 const [outFile, ...streets] = process.argv.slice(2);
 const port = 9400 + Math.floor(Math.random() * 400);
-const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', '--window-size=1280,800', '--ignore-gpu-blocklist', '--enable-gpu', '--use-angle=metal', `--user-data-dir=/tmp/heibel-avail-${port}`, 'about:blank'], { stdio: 'ignore' });
+const profile = `/tmp/heibel-avail-${port}`; // the browser's throwaway profile (some 100 MB): removed again at the end
+const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', '--window-size=1280,800', '--ignore-gpu-blocklist', '--enable-gpu', '--use-angle=metal', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let ws, id = 0; const pend = new Map();
 const send = (method, params = {}) => new Promise((res, rej) => { const i = ++id; pend.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params })); });
@@ -28,4 +29,4 @@ try {
   }
   fs.appendFileSync(outFile, '# done\n');
 } catch (e) { fs.appendFileSync(outFile, 'ERR ' + e.message + '\n'); }
-finally { try { ws && ws.close(); } catch (e) {} chrome.kill('SIGKILL'); setTimeout(() => process.exit(0), 300); }
+finally { try { ws && ws.close(); } catch (e) {} chrome.kill('SIGKILL'); setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) {} process.exit(0); }, 600); }

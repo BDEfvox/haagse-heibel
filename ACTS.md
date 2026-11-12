@@ -96,6 +96,10 @@ stage: { pave: { side: 'far', len: 8, depth: 1.2 }, anchor: 'rack', reach: 10 },
 stage: { road: { len: 16 }, cross: true },
 ```
 `S.findStage(ctx, need, avoid)` / `S.stageClear` are in setting.js if you want to ask for something else (cached per spot and need).
+The scan never places a stage within 6 m (along the street) of a building that stands in the street's own ground on the
+camera's side (a block that juts into a square, a pavilion, an old house forward of its row: `S.jutNear(ctx, x)`). The
+camera films from that side, so a scene there is seen through the building or round it. `takePed` does not hand out a
+passer-by who walks there either. Ordinary streets have no such buildings; on a square it moves the scene to open ground.
 The needs are your assumptions written down: a scene that runs 10 m along a pavement says `len: 10`. `depth` is the width of the
 walkable corridor the scene truly needs, not a wish: one person about 0.8 m, two side by side 1.6 m (a real Dutch pavement is 2 to
 2.5 m with a lamp post every 27 m, and a terrace or a shelter takes most of it). The scan looks for that corridor anywhere on the

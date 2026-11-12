@@ -747,12 +747,31 @@ function runs(free) {
   for (let i = n - 1; i >= 0; i--) right[i] = free[i] ? (i < n - 1 ? right[i + 1] : 0) + 1 : 0;
   return { left, right };
 }
+const JUTS = new WeakMap();
+/**
+ * Does a building stand in the street's own ground on the camera's side within 6 m of x (a block jutting into a square,
+ * a pavilion, an old house that stands forward of its row)? The camera films from that side: a scene played there is
+ * seen through the building or round it, and whoever steps behind its corner is gone. So the stage scan never takes
+ * such a place, and a scene does not borrow a passer-by who walks there. (On the far side such a block is just
+ * backdrop.) Ordinary streets have none.
+ */
+export function jutNear(ctx, x) {
+  let J = JUTS.get(ctx);
+  if (!J) {
+    const L = ctx.L || {}, edge = (L.s0 ?? 0) - 0.5, STEP = 0.5, lo = X0 - 8, n = Math.floor((X1 + 8 - lo) / STEP) + 1, jut = new Uint8Array(n), near = new Uint8Array(n), m = Math.ceil(6 / STEP);
+    for (let i = 0; i < n; i++) for (let z = 0.5; z < edge; z += 0.5) if (builtAt(ctx, lo + i * STEP, z)) { jut[i] = 1; break; }
+    for (let i = 0; i < n; i++) if (jut[i]) for (let k = Math.max(0, i - m); k <= Math.min(n - 1, i + m); k++) near[k] = 1;
+    JUTS.set(ctx, (J = { lo, STEP, n, near }));
+  }
+  const i = Math.round((x - J.lo) / J.STEP);
+  return i >= 0 && i < J.n && J.near[i] === 1;
+}
 function computeStages(ctx, need) {
   const L = ctx.L || {}, pic = obstacles(ctx), STEP = 0.5;
   const lo = Math.max(X0, pic.lo + 1), hi = Math.min(X1, pic.hi - 1), n = Math.max(1, Math.floor((hi - lo) / STEP) + 1);
   const xs = Array.from({ length: n }, (_, i) => lo + i * STEP);
   const rooms = new Float32Array(n).fill(24), side = new Array(n).fill(null), lane = new Array(n).fill(null);
-  const okAll = new Uint8Array(n).fill(1);
+  const okAll = new Uint8Array(n).fill(1), crowd = new Uint8Array(n);
   const apply = (ok, room, tag) => {
     for (let i = 0; i < n; i++) {
       if (!ok[i]) { okAll[i] = 0; continue; }
@@ -768,8 +787,11 @@ function computeStages(ctx, need) {
   if (need.pave) {
     const len = need.pave.len ?? 4, depth = need.pave.depth ?? 2, sd = need.pave.side || 'any';
     const sides = sd === 'near' ? [1] : sd === 'far' ? [-1] : [1, -1];
-    const best = { ok: new Uint8Array(n), room: new Float32Array(n), side: new Array(n).fill(null) };
+    const best = { ok: new Uint8Array(n), room: new Float32Array(n), side: new Array(n).fill(null), crowd: new Uint8Array(n) };
     for (const sgn of sides) {
+      // beside a building that juts into the street on the camera's side, the far side is the one to play on (see jutNear)
+      const near = new Uint8Array(n);
+      if (sgn > 0) for (let i = 0; i < n; i++) near[i] = jutNear(ctx, xs[i]) ? 1 : 0;
       // per column: the widest clear walking corridor (ground you may walk on, nothing standing in it) on this side of the street,
       // anywhere across the pavement or, on a pedestrian street or square, across the whole width. A lamp post only splits it.
       const free = new Uint8Array(n), lim = L.kind === 'ped' ? -1.5 : Math.max(0.3, (L.hw ?? 2.6) + (L.bw ?? 0) - 0.2); // (beyond the kerb: brick roads and parking bays count as walkable ground)
@@ -784,7 +806,7 @@ function computeStages(ctx, need) {
         free[i] = widest > 0 && (widest - 1) * 0.25 + 0.3 >= depth - 1e-6 ? 1 : 0;
       }
       const w = windowOf(free, len);
-      for (let i = 0; i < n; i++) if (w.ok[i] && (!best.ok[i] || w.room[i] > best.room[i])) { best.ok[i] = 1; best.room[i] = w.room[i]; best.side[i] = sgn < 0 ? 'far' : 'near'; }
+      for (let i = 0; i < n; i++) if (w.ok[i] && (!best.ok[i] || (best.crowd[i] && !near[i]) || (best.crowd[i] === near[i] && w.room[i] > best.room[i]))) { best.ok[i] = 1; best.room[i] = w.room[i]; best.side[i] = sgn < 0 ? 'far' : 'near'; best.crowd[i] = near[i]; }
     }
     apply(best.ok, best.room, (i) => { side[i] = best.side[i]; });
   }
@@ -820,9 +842,12 @@ function computeStages(ctx, need) {
     for (let i = 0; i < n; i++) for (const ax of anchor) if (Math.abs(ax - xs[i]) <= reach) { ok[i] = 1; break; }
     apply(ok, new Float32Array(n).fill(24), null);
   }
+  // whatever the scene needs: not beside a building that juts into the street on the camera's side (see jutNear). A scene
+  // that fits nowhere else on this spot does not play here.
+  for (let i = 0; i < n; i++) crowd[i] = jutNear(ctx, xs[i]) ? 1 : 0;
   const cand = [];
   for (let i = 0; i < n; i++) {
-    if (!okAll[i]) continue;
+    if (!okAll[i] || crowd[i]) continue;
     let near = Math.abs(xs[i]) * 0.08;
     if (anchor) near = Math.min(...anchor.map((a) => Math.abs(a - xs[i]))) * 0.4;
     cand.push({ x: xs[i], side: side[i], room: rooms[i], lane: lane[i], score: Math.min(rooms[i], 24) - near });
