@@ -21,10 +21,10 @@ export default function (T) {
    * What the tag goes on (the module's "wall" choice): the transformer box with room left, else a plain house wall
    * (a real front, no shop sign, clear of its own door and window, pavement in front). { x, z (the wall's face), y, tags, wall }.
    */
-  function canvasFor(ctx) {
+  function canvasFor(ctx, near = 0) {
     const L = ctx.L;
     if (L.box && (L.box.tags || 0) < 3) return L.box;
-    const hs = L.houses.filter((h) => !h.shop && !h.tower && h.w >= 5 && Math.abs(h.x) < 14 && ((h.canvas && h.canvas.tags) || 0) < 3).sort((p, q) => Math.abs(p.x) - Math.abs(q.x));
+    const hs = L.houses.filter((h) => !h.shop && !h.tower && h.w >= 5 && Math.abs(h.x) < 14 && ((h.canvas && h.canvas.tags) || 0) < 3).sort((p, q) => Math.abs(p.x - near) - Math.abs(q.x - near));
     for (const h of hs) {
       // along the wall in 0.6 m steps from the middle outwards, clear of the front door and the window
       for (let k = 0; k <= 12; k++) {
@@ -40,12 +40,16 @@ export default function (T) {
 
   return {
     w: [0, 0, 3, 2, 1.5], crime: 1,
+    // 10 m of pavement with room to stand in front of the wall, run off along it and slip
+    stage: { pave: { side: 'any', len: 10, depth: 2.2 } },
     avail: (ctx) => !!canvasFor(ctx),
     *run(ctx) {
-      const { L, rnd } = ctx, lv = ctx.level, bx = canvasFor(ctx), cam = camFor(ctx, 'graffiti'), R = rig(ctx);
+      const stageX = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
+      const { L, rnd } = ctx, lv = ctx.level, bx = canvasFor(ctx, stageX), cam = camFor(ctx, 'graffiti'), R = rig(ctx);
       if (!bx) return;
       const n = bx.tags || 0, col = ['#ff006e', '#3a86ff', '#ffbe0b'][n];
       let done = false, counted = false;
+      const critEnd = flip(ctx, 'critic', 0.35); // second ending: the cop arrests the critic, who is holding the can
       try {
         bx.tags = n + 1; counted = true;
         const dir = rnd.sign(), spot = pt(bx.x, bx.z);
@@ -61,18 +65,19 @@ export default function (T) {
         const B = beatsFor(ctx, 'graffiti'), tagPt = { x: bx.x, z: bx.z + 0.05, y: by + 1.1 };
 
         // ---- 1. set-up: a lookout takes position; the tagger creeps in from the other side
-        B('1 set-up: a lookout takes position, the tagger creeps in', [lookout, kid, tagPt]);
+        B('1 set-up: the wall that is going to be tagged, the lookout and the tagger walk in', [tagPt]);
         cam.wide(spot, { dist: 20, el: 0.3, az: 0.3 * dir, hold: 4.2 });
         R.run((function* () {
-          const lx0 = clamp(bx.x + dir * 14, EX0, EX1), look = spotNear(ctx, lookX, padZ(ctx, walk, lookX));
+          const lx0 = clamp(bx.x + dir * 10, EX0, EX1), look = spotNear(ctx, lookX, padZ(ctx, walk, lookX));
           yield* R.enter(lookout, lx0, padZ(ctx, walk, lx0));
           yield* go(ctx, lookout, look.x, look.z, 3);
           lookout.heading = dir > 0 ? E : W; lookout.arms = 'sneak'; lookout.mood = 'whistle';
           say(ctx, lookout, '♪ doe-niks ♪', { size: 12, color: '#cfe8ff' });
           for (let i = 0; i < 3; i++) yield* lookAround(lookout, 0.7, 0.3);
         })());
-        const kx0 = clamp(bx.x - dir * 13, EX0, EX1), kpos = spotNear(ctx, bx.x - 1.3, sz);
+        const kx0 = clamp(bx.x - dir * 9, EX0, EX1), kpos = spotNear(ctx, bx.x - 1.3, sz);
         yield* R.enter(kid, kx0, padZ(ctx, walk, kx0));
+        B('1b the tagger creeps up to the wall', [kid]);
         cam.track(kid, { dist: 9.5, el: 0.14, az: -dir * 0.5, lead: 1.5, cut: 1.0, hold: 5 });
         yield* tiptoe(ctx, kid, kpos.x, kpos.z, 3.2);
 
@@ -128,7 +133,7 @@ export default function (T) {
         const vs = spotNear(ctx, bx.x - dir * 2.3, bx.z + 2.2), vx = vs.x, vz = vs.z;
         let crHere = false;
         if (critic) R.borrow(critic);
-        else cr = makePerson(rnd, { kind: 'civ' });
+        else cr = makePerson(rnd, { kind: T.extraKind ? T.extraKind(ctx) : 'civ' });
         R.run((function* () {
           if (!critic) { const cx0 = clamp(bx.x - dir * 8, EX0, EX1); yield* R.enter(cr, cx0, padZ(ctx, walk, cx0)); }
           yield* go(ctx, cr, vx, vz, 3.6);
@@ -180,6 +185,11 @@ export default function (T) {
         cr.hold(can);
         cr.arms = 'spray';
         say(ctx, kid, 'HÉ!', { size: 15, color: '#fff' });
+        // the law walks in from the side the lookout is NOT watching (he faces the other way), starting now, out of the picture
+        const cop = makePerson(rnd, { kind: 'cop' });
+        const cx1 = clamp(bx.x - dir * 11, EX0, EX1);
+        let copIn = false;
+        const copTask = R.run((function* () { yield* wait(0.8); yield* R.enter(cop, cx1, padZ(ctx, walk, cx1), undefined, { speed: 3 }); copIn = true; })());
         B('4c the improvement: the critic adds a gold underline', [cr, tagPt]);
         cam.dolly([cr, tagPt], { y: by + 1.1, dist: 7, el: 0.22, az: -0.3 * dir, fit: true, hold: 3.4 });
         yield* go(ctx, cr, bx.x + 0.1, sz, 3.2);
@@ -198,21 +208,20 @@ export default function (T) {
         kid.arms = 'up'; kid.mood = 'shock'; kid.lookAt = null;
         ctx.sfx('boing');
         yield* all(hop(kid, 0.5, 0.35), wait(0.5));
-        cr.drop(); cr.arms = 'swing';
+        // (in the second ending the critic is left holding the can: that is what the cop finds)
+        if (critEnd) { cr.arms = 'hold'; cr.mood = 'smug'; } else { cr.drop(); cr.arms = 'swing'; }
 
-        // ---- 5. the law arrives, and the lookout was looking the wrong way
-        const cop = makePerson(rnd, { kind: 'cop' });
-        const cx1 = clamp(bx.x + dir * 11, EX0, EX1);
-        B('5 the law arrives: FWEEET, and the lookout was looking the wrong way', [cop, kid, lookout]);
-        cam.wide([pt(cx1, padZ(ctx, walk, cx1)), kid, lookout], { dist: 16, el: 0.25, az: -dir * 0.2, fit: true, hold: 2.6 });
-        yield* wait(0.3);
-        yield* R.enter(cop, cx1, padZ(ctx, walk, cx1));
+        // ---- 5. the law arrives, and the lookout was looking the wrong way (he watches the street end, the cop comes from behind the wall)
+        B('5 the law arrives: FWEEET, and the lookout was looking the wrong way', [pt(cx1, padZ(ctx, walk, cx1)), kid, lookout]);
+        cam.wide([pt(cx1, padZ(ctx, walk, cx1)), kid, lookout], { dist: 16, el: 0.25, az: dir * 0.2, fit: true, hold: 2.6 });
+        yield* waitUntil(() => copTask.done, 40);
+        yield* wait(0.9);
         ctx.sfx('whistle');
         cop.arms = 'stop'; cop.mood = 'angry';
         say(ctx, cop, 'FWEEET! HÉ JIJ!', { size: 15, color: '#7db8ff' });
-        lookout.lookAt = cop; lookout.mood = 'shock';
+        lookout.lookAt = cop; lookout.mood = 'shock'; faceTo(lookout, cop.g.position.x, cop.g.position.z);
         yell(ctx, lookout, 'AGENT!!!', '#b9fbc0', 16);
-        const kidOut = dir > 0 ? EX0 : EX1; // they flee away from the cop
+        const kidOut = dir > 0 ? EX1 : EX0; // they flee away from the cop
         kid.lookAt = cop;
         yield* wait(0.35);
         yield* fright(ctx, kid, 'OEPS');
@@ -222,7 +231,6 @@ export default function (T) {
         // from above: the paint trail zig-zags away
         B('5b the flight: wet footprints zig-zag away', [kid]);
         cam.high(kid, { dist: 14, az: -dir * 0.3, hold: 1.8 });
-        let sk = 0;
         const flee = R.run((function* () {
           yield* goEach(ctx, kid, S.runway(ctx, kid.g.position.x, kid.g.position.z, kidOut > 0 ? 1 : -1, 24), padZ(ctx, walk, kidOut), 7.4, (dt) => {
             const q = kid.g.position;
@@ -235,54 +243,81 @@ export default function (T) {
           });
           yield* R.out(kid);
         })());
-        // the cop heads straight for the tag and the puddle
         const cp = cop.g.position;
         cop.arms = 'swing'; cop.mood = 'focus';
         yield* wait(1.0);
-        B('6 the slip: the cop finds the puddle', [cop, pud]);
-        cam.ground([cop, pud], { dist: 7, el: 0.1, az: dir * 0.4, fit: true, hold: 3 });
-        yield* go(ctx, cop, bx.x + dir * 1.6, pud.position.z, 5.2);
-        cop.heading = Math.PI; cop.lookAt = pud.position;
-        yield* lookAround(cop, 0.8, 0.28);
-        say(ctx, cop, 'VOETAFDRUKKEN?', { size: 13, color: '#7db8ff' });
-        yield* wait(0.3);
-        // whoops
-        ctx.sfx('skid'); ctx.sfx('boing');
-        say(ctx, cop, 'WHOEAH!', { size: 20, color: '#ffffff' });
-        cop.lookAt = null;
-        yield* tumble(ctx, cop, cp.x - dir * 2.4, cp.z, 0.9, 0.6);
-        ctx.shake(0.3);
-        ctx.fx.puff(cp.x, 0.1, cp.z, col);
-        ctx.fx.text('PLOF!', cop, { size: 24, color: '#ffd60a' });
-        cop.heading = 0;
-        say(ctx, cop, '★ ★', { size: 15, color: '#ffe066', dur: 1 });
-        B('6b stars: the cop sits in the paint', [cop]);
-        cam.close(cop, { dist: 4.5, hold: 1.8 });
-        if (lv >= 4) R.run(R.cop(kid, 7, 0.3, 'POLITIE!'));
-        if (lv >= 5 && L.kind !== 'ped') R.run(R.police(-dir, L.chaseZ, 11, 0.5));
-        yield* wait(0.3);
-        R.run(seeStars(ctx, cop, 1.0));
-        yield* wait(1.1);
-        // ---- 7. punchline: blue-booted cop, smug critic, a gold underline on the tag
-        B('7 punchline: Zie je wel. Kunst. The tag, the critic, the cop in the paint', [cr, cop, tagPt]);
-        cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true, hold: 3.6 });
-        yield* wait(0.3);
-        yield* getUp(cop, 'sad');
-        cop.arms = 'swing';
-        cr.mood = 'smug'; cr.arms = 'hips'; cr.lookAt = tagPt;
-        say(ctx, cr, 'Zie je wel. Kunst.', { size: 13, color: '#fff' });
-        yield* laugh(ctx, cr, 1.0, 'ha');
-        ctx.news('Unknown artist tags "070" on transformer box. Critics: "derivative", then "improved"');
-        cr.lookAt = null;
-        R.give(critic ? cr : null);
-        yield* wait(0.3);
-        B('8 exit: the cop squelches off, the tag shines', [cop, tagPt]);
-        cam.wide(spot, { dist: 22, hold: 3 });
-        R.run(R.away(cop, dir * 6, 3.6));
-        if (!critic) R.run(R.away(cr, -dir * 6, 3.4));
+        if (!critEnd) {
+          // the cop follows the footprints to the tag and the puddle, and walks right into it
+          B('6 the slip: the cop finds the puddle', [cop, pud]);
+          cam.ground([cop, pud], { dist: 7, el: 0.1, az: -dir * 0.4, fit: true, hold: 3 });
+          yield* go(ctx, cop, pud.position.x - dir * 1.2, pud.position.z, 4.6);
+          cop.heading = dir > 0 ? E : W; cop.lookAt = pud.position;
+          yield* lookAround(cop, 0.8, 0.28);
+          say(ctx, cop, 'VOETAFDRUKKEN?', { size: 13, color: '#7db8ff' });
+          yield* wait(0.4);
+          cop.lookAt = null;
+          yield* goEach(ctx, cop, pud.position.x + dir * 0.2, pud.position.z, 2.6, () => Math.abs(cp.x - pud.position.x) < 0.45);
+          // whoops: his boot finds the paint
+          ctx.sfx('skid'); ctx.sfx('boing');
+          say(ctx, cop, 'WHOEAH!', { size: 20, color: '#ffffff' });
+          yield* tumble(ctx, cop, cp.x + dir * 1.6, cp.z, 0.9, 0.6);
+          ctx.shake(0.3);
+          ctx.fx.puff(cp.x, 0.1, cp.z, col);
+          ctx.fx.text('PLOF!', cop, { size: 24, color: '#ffd60a' });
+          cop.heading = 0;
+          say(ctx, cop, '★ ★', { size: 15, color: '#ffe066', dur: 1 });
+          B('6b stars: the cop sits in the paint', [cop]);
+          cam.close(cop, { dist: 4.5, hold: 1.8 });
+          if (lv >= 4) R.run(R.cop(kid, 7, 0.3, 'POLITIE!'));
+          if (lv >= 5 && L.kind !== 'ped') R.run(R.police(-dir, L.chaseZ, 11, 0.5));
+          yield* wait(0.3);
+          R.run(seeStars(ctx, cop, 1.0));
+          yield* wait(1.1);
+          // ---- 7. punchline: blue-booted cop, smug critic, a gold underline on the tag
+          B('7 punchline: Zie je wel. Kunst. The tag, the critic, the cop in the paint', [cr, cop, tagPt]);
+          cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true, hold: 3.6 });
+          yield* wait(0.3);
+          yield* getUp(cop, 'sad');
+          cop.arms = 'swing';
+          cr.mood = 'smug'; cr.arms = 'hips'; cr.lookAt = tagPt;
+          say(ctx, cr, 'Zie je wel. Kunst.', { size: 13, color: '#fff' });
+          yield* laugh(ctx, cr, 1.0, 'ha');
+          ctx.news('Unknown artist tags "070" on transformer box. Critics: "derivative", then "improved"');
+          cr.lookAt = null;
+          R.give(critic ? cr : null);
+          yield* wait(0.3);
+          B('8 exit: the cop squelches off, the tag shines', [cop, tagPt]);
+          cam.wide(spot, { dist: 22, hold: 3 });
+          R.run(R.away(cop, -dir * 6, 3.6));
+          if (!critic) R.run(R.away(cr, dir * 6, 3.4));
+        } else {
+          // the cop skips the footprints: the man holding the spray can next to a fresh tag is the one in front of him
+          B('6 the arrest: the cop finds the critic holding the can', [cop, cr]);
+          cam.two(cop, cr, { az: -dir * 0.25, hold: 3.4 });
+          yield* go(ctx, cop, cr.g.position.x - dir * 1.1, cr.g.position.z, 4.2);
+          faceTo(cop, cr.g.position.x, cr.g.position.z); cop.arms = 'point'; cop.mood = 'smug'; cop.lookAt = cr;
+          cr.lookAt = cop; cr.mood = 'shock'; cr.arms = 'up';
+          say(ctx, cop, 'IK ZIE HET. DE SPUITBUS.', { size: 13, color: '#7db8ff' });
+          yield* wait(0.9);
+          cr.drop();
+          say(ctx, cr, 'MAAR... HET IS KUNST!', { size: 15, color: '#fff' });
+          ctx.sfx('cuff'); ctx.shake(0.2);
+          cop.arms = 'hips';
+          yield* wait(0.8);
+          ctx.news('Art critic arrested at scene of "improved" tag. "Het mist diepgang," he repeats');
+          cr.mood = 'sad'; cr.arms = 'swing';
+          B('7 punchline: the critic is led away past his own gold underline', [cr, cop, tagPt]);
+          cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true, hold: 3.2 });
+          yield* wait(0.3);
+          R.run(R.away(cop, -dir * 8, 2.8));
+          R.run((function* () { yield* wait(0.3); yield* R.away(cr, -dir * 8, 2.8); })());
+          yield* wait(0.8);
+          B('8 exit: the cop marches him off, the tag shines', [tagPt]);
+          cam.wide(spot, { dist: 22, hold: 3 });
+        }
         yield* R.settle(10);
-        // the wet footprints dry up and fade
-        yield* tween(0.5, (t) => { for (const f of prints) f.scale.setScalar(Math.max(0.001, 1 - t)); });
+        // the wet footprints and the puddle dry up and fade
+        yield* tween(0.5, (t) => { for (const f of prints) f.scale.setScalar(Math.max(0.001, 1 - t)); pud.scale.setScalar(Math.max(0.001, 1 - t)); });
         for (const f of prints) R.rm(f);
         R.rm(pud);
         R.stay(tg);

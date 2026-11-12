@@ -106,6 +106,15 @@ function seated(v, o, L, pose, glass = '#e8a317') {
 }
 /** A standing person. pose: idle, tray, drink, phone, cone, bag. */
 function standing(v, o, L, pose, extra = '#e8a317') {
+  if (CHEAP) { // a few boxes: legs in one, no left arm
+    fb(v, o, 0, 0, 0, 0.3, 0.82, 0.17, L.pants);
+    fb(v, o, 0, 0, 0.82, 0.40, 0.62, 0.22, L.shirt);
+    head(v, o, L, 1.46);
+    if (pose === 'bag') { fb(v, o, 0.26, 0, 0.8, 0.1, 0.56, 0.12, L.shirt); fb(v, o, 0.32, 0.04, 0.35, 0.1, 0.4, 0.3, extra); }
+    else if (pose === 'trolley') { fb(v, o, 0.0, 0.55, 0.15, 0.45, 0.7, 0.35, extra); fb(v, o, 0.0, 0.4, 0.85, 0.45, 0.04, 0.05, '#555'); }
+    else fb(v, o, 0.26, 0.1, 0.9, 0.1, 0.5, 0.12, L.shirt);
+    return;
+  }
   fb(v, o, -0.09, 0, 0, 0.15, 0.82, 0.17, L.pants);
   fb(v, o, 0.09, 0, 0, 0.15, 0.82, 0.17, L.pants);
   fb(v, o, 0, 0, 0.82, 0.40, 0.62, 0.22, L.shirt);
@@ -536,6 +545,7 @@ function windbreak(v, w, c1, c2) {
   for (let i = 0; i < n; i++) v.box(-w / 2 + (i + 0.5) * (w / n), 0.2, 0, w / n, 1.0, 0.03, i % 2 ? c1 : c2);
 }
 function marketStall(v, gl, night, r, vr, w) {
+  if (night) return stallShut(v, r, w);
   const A = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff'], ['#1d6fa5', '#ffffff'], ['#7b2d8f', '#f4f1e8']];
   const [a, b] = pick(r, A), d = 1.5;
   v.box(0, 0, 0.1, w, 0.95, d - 0.4, vr === 3 ? '#cfe5ee' : '#cdbfa3'); // counter
@@ -561,7 +571,6 @@ function marketStall(v, gl, night, r, vr, w) {
   } else { // household goods
     for (let i = 0; i < Math.floor(w / 0.45); i++) v.box(-w / 2 + 0.3 + i * 0.45, 0.95, 0.35, 0.3, 0.2 + r() * 0.25, 0.3, pick(r, ['#ff70a6', '#8ecae6', '#ffd166', '#e9e2d0', '#52b788']));
   }
-  if (night) { gl.box(0, 2.28, -0.2, w * 0.7, 0.06, 0.08, '#ffe9a8'); }
 }
 
 // ---- the four common kinds of street furniture, each in several looks (the gag anchors only need where they stand)
@@ -606,6 +615,41 @@ function boxV(v, r, vr) {
   v.box(w * 0.25, 0.2, -0.36, w * 0.35, h * 0.73, 0.03, P.shade(c, 0.9));
   if (vr % 4 === 2) v.box(-w * 0.25, 0.2, -0.36, w * 0.35, h * 0.73, 0.03, P.shade(c, 0.9));
   return { w, h };
+}
+
+
+const AWNS = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff'], ['#1d6fa5', '#ffffff'], ['#7b2d8f', '#f4f1e8'], ['#c1121f', '#ffd166'], ['#118a7e', '#f1faee']];
+/** A market stall closed for the night: bare frame with the awning folded down over the counter. Front towards +z. */
+function stallShut(v, r, w) {
+  const [a] = pick(r, AWNS);
+  v.box(0, 0, -0.72, w, 2.2, 0.05, '#cfcfca');
+  for (const sx of [-1, 1]) v.box(sx * (w / 2 - 0.05), 0, 0.7, 0.07, 2.2, 0.07, '#d8d8d8');
+  v.box(0, 0.05, 0.1, w, 1.0, 1.2, P.shade(a, 0.7)); // tarp over the counter
+  v.box(0, 2.2, 0, w + 0.1, 0.08, 1.6, '#b9b9b4');
+}
+/** The bulk market stall: ~10 boxes. kind 0 vegetables, 1 fish, 2 fabrics, 3 clothes, 4 snacks. Front towards +z, footprint w x 1.5. */
+function stallCheap(v, r, kind, w) {
+  const [a, b] = kind === 1 ? ['#1d6fa5', '#ffffff'] : kind === 4 ? pick(r, [['#c1121f', '#ffd166'], ['#e85d04', '#ffffff']]) : pick(r, AWNS);
+  v.box(0, 0, 0.15, w, 0.92, 0.9, kind === 4 ? '#454a52' : kind === 1 ? '#cfe5ee' : '#cdbfa3');
+  v.box(0, 0, -0.72, w, 2.2, 0.05, '#cfcfca');
+  for (const sx of [-1, 1]) v.box(sx * (w / 2 - 0.05), 0.9, 0.68, 0.07, 1.3, 0.07, '#d8d8d8');
+  v.box(-w / 4, kind === 4 ? 2.5 : 2.3, 0, w / 2 + 0.02, 0.07, 1.65, a);
+  v.box(w / 4, kind === 4 ? 2.5 : 2.3, 0, w / 2 + 0.02, 0.07, 1.65, b);
+  if (kind === 0) {
+    for (let i = 0; i < 3; i++) v.box(-w / 3 + i * (w / 3), 0.92, 0.3, w / 3 - 0.08, 0.16, 0.5, pick(r, ['#d62828', '#f77f00', '#52b788', '#ffd166', '#7d8e57', '#9d4edd']));
+    v.box(-w / 2 + 0.35, 0, 1.0, 0.5, 0.35, 0.4, '#9a7b4f'); v.box(w / 2 - 0.35, 0, 1.0, 0.5, 0.5, 0.4, '#b08a52');
+  } else if (kind === 1) {
+    v.box(0, 0.92, 0.3, w * 0.9, 0.1, 0.6, '#e8f2f6');
+    for (let i = 0; i < 3; i++) v.box(-w / 3 + i * (w / 3), 1.02, 0.3, 0.38, 0.05, 0.16, pick(r, ['#8a9ba8', '#c9d3da', '#d9a15b']));
+  } else if (kind === 2) {
+    for (let i = 0; i < 4; i++) v.box(-w * 0.36 + i * (w * 0.24), 0.92, 0.35, 0.26, 0.85, 0.26, pick(r, ['#e63946', '#2a9d8f', '#ffd166', '#3a86ff', '#9d4edd', '#ff70a6']));
+  } else if (kind === 3) {
+    v.box(0, 1.85, 0.5, w * 0.9, 0.04, 0.04, '#8a9199');
+    for (let i = 0; i < 4; i++) v.box(-w * 0.34 + i * (w * 0.23), 1.0, 0.5, 0.2, 0.85, 0.06, pick(r, SHIRTS));
+  } else {
+    v.box(-w / 4, 0.92, 0.15, w * 0.3, 0.25, 0.4, '#9aa5ad');
+    v.box(w / 4, 1.0, 0.7, w * 0.5, 0.35, 0.05, pick(r, ['#ffd166', '#ffffff', '#ff8fab']));
+  }
 }
 
 // ================================================================ the tile
@@ -1149,13 +1193,12 @@ export function furnishTile(o) {
     if (R.market) {
       const r = placeSeed(pl, 'market'), names = R.market.streets, inRoad = !!R.market.inRoad;
       const MK = set(C.WALK, C.LAND, C.PLAZA, C.PED, C.FOOT, ...(inRoad ? [C.ASPHALT, C.KLINKER, C.CURB, C.MARK, C.SERVICE] : []));
-      const budget = used() + (lite ? 9000 : 20000);
       let nst = 0;
       pieces.forEach((pc, pi) => {
         if (names && !names.includes(pc.name)) return;
         for (const side of [-1, 1]) {
           let s = 3 + r.range(0, 2);
-          while (s < pc.len - 3 && used() < budget && nst < 60) {
+          while (s < pc.len - 3 && nst < (lite ? 4 : 8)) {
             const w = r.range(2.6, 3.4), sm = s + w / 2, f = frameAt(pc, sm), m = toMap(f.x, f.z);
             const step = w + r.range(0.15, 0.5) + (r() < 0.07 ? 5 : 0);
             if (placeHas(pl, m[0], m[1]) && r() < 0.93) {
@@ -1177,11 +1220,11 @@ export function furnishTile(o) {
                   const vr = Math.floor(r() * 4);
                   aim(fr[2], x, z);
                   marketStall(v, gl, night, r, vr, w);
-                  if (r() < 0.5) { v.setT(fr[2], x, z, yAt(x, z)); crateStack(v, r, 0.5); }
+                  if (!night && r() < 0.5) { v.setT(fr[2], x, z, yAt(x, z)); crateStack(v, r, 0.5); }
                   stand('mstall', x, z, w / 2 + 0.2); nst++;
                   add('mstall', x, z, f, nx, nz, { w, label: ['groente', 'kleding', 'textiel', 'vis'][vr] });
                   // a shopper or two in front (the crowd walks past them)
-                  if (r() < 0.8) {
+                  if (!night && r() < 0.8) {
                     for (let i = 0, n = 1 + (r() < 0.5 ? 1 : 0); i < n; i++) {
                       const lx = r.range(-w / 2 + 0.3, w / 2 - 0.3), lz = 1.5 + r.range(0, 0.4);
                       const px = x + lx * fr[1] + lz * fr[0], pz = z - lx * fr[0] + lz * fr[1];
@@ -1196,6 +1239,67 @@ export function furnishTile(o) {
           }
         }
       });
+
+      // ---- the market ground itself: back-to-back rows of stalls with 3.5 m aisles, a wide cross aisle every ~30 m,
+      // a 2 m free edge all round (the entrances), shoppers and vendors by day, everything shut at night
+      const G2 = R.market.ground;
+      if (G2) {
+        const MG = set(C.WALK, C.LAND, C.PLAZA, C.PED, C.FOOT, C.PARKING);
+        const a = (G2.angle || 0) * Math.PI / 180, ux = Math.cos(a), uz = Math.sin(a), vx = -uz, vz = ux;
+        const [sx, sz] = tileOfMap(G2.seed[0], G2.seed[1]), halfW = G2.halfW || 36, halfL = G2.halfL || 170;
+        const th = Math.atan2(-uz, ux), PITCH_U = 3.4, PITCH_V = 6.5;
+        const cells = [];
+        const iMax = Math.ceil(halfL / PITCH_U), jMax = Math.ceil(halfW / PITCH_V);
+        for (let i = -iMax; i <= iMax; i++) {
+          if (((i % 9) + 9) % 9 < 2) continue; // cross aisle (6.8 m) every 30.6 m
+          for (let j = -jMax; j <= jMax; j++) {
+            const x = sx + ux * i * PITCH_U + vx * j * PITCH_V, z = sz + uz * i * PITCH_U + vz * j * PITCH_V;
+            if (!inTile(x, z, 3)) continue;
+            const m = toMap(x, z);
+            if (!placeHas(pl, m[0], m[1])) continue;
+            cells.push({ x, z, i, j, d: Math.hypot(i * PITCH_U, j * PITCH_V) });
+          }
+        }
+        cells.sort((p, q) => p.d - q.d);
+        const capM = used() + (lite ? 10000 : 30000), placed = [];
+        const rm = placeSeed(pl, 'mground');
+        CHEAP = true;
+        for (const c of cells) {
+          if (used() > capM || placed.length >= (lite ? 20 : 48)) break; // the same count by day and night
+          const w = 2.9 + ((hashStr(key + c.i + '|' + c.j) % 5) * 0.1); // 2.9 to 3.3 m wide
+          const bad = (px, pz) => !MG[grid.get(px, pz)] || treeNear(px, pz, 1.4) || barrierNear(px, pz, 0.6) || railNear(px, pz, 2.2);
+          let ok = !crowded('mstall', c.x, c.z, 2.0);
+          if (ok) for (const [lx, lz] of [[0, 0], [w / 2 + 2, 0], [-w / 2 - 2, 0], [0, 1.5 + 2], [0, -1.5 - 2], [w / 2 + 2, 3.5], [-w / 2 - 2, -3.5], [w / 2 + 2, -3.5], [-w / 2 - 2, 3.5]]) {
+            if (bad(c.x + ux * lx + vx * lz, c.z + uz * lx + vz * lz)) { ok = false; break; }
+          }
+          if (!ok) continue;
+          const r2 = makeRng(hashStr(key + '|ms|' + c.i + '|' + c.j));
+          for (const side of [-1, 1]) { // the two stalls of a pair, fronts to opposite aisles
+            const px = c.x + vx * side * 0.75, pz = c.z + vz * side * 0.75, kind = Math.floor(r2() * 5);
+            aim(side > 0 ? th : th + Math.PI, px, pz);
+            if (night) stallShut(v, r2, w);
+            else {
+              stallCheap(v, r2, kind, w);
+              if (r2() < 0.7) standing(v, person(v, r2.range(-w / 3, w / 3), -0.35, 0), lookOf(r2), pick(r2, ['idle', 'idle', 'phone']), '#ffffff'); // the vendor, behind the counter
+            }
+          }
+          stand('mstall', c.x, c.z, 2.0);
+          placed.push(c);
+          add('mstall', c.x, c.z, { tx: ux, tz: uz }, vx, vz, { w, label: 'markt' });
+        }
+        // shoppers in the aisles, some with bags or a trolley (never at night: the market is closed)
+        if (!night) for (const c of placed) {
+          if (used() > capM + (lite ? 1500 : 3500)) break;
+          if (rm() > 0.42) continue;
+          const side = rm() < 0.5 ? -1 : 1, lx = rm.range(-1.4, 1.4), lz = side * (3.25 + rm.range(-0.8, 0.8));
+          const x = c.x + ux * lx + vx * lz, z = c.z + uz * lx + vz * lz;
+          if (!MG[grid.get(x, z)] || treeNear(x, z, 0.5)) continue;
+          aim(th, x, z);
+          const face = Math.floor(rm() * 4);
+          standing(v, person(v, 0, 0, face, rm() < 0.12 ? 0.62 : 1), lookOf(rm), pick(rm, ['bag', 'bag', 'trolley', 'idle', 'phone']), pick(rm, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557', '#8d99ae']));
+        }
+        CHEAP = false;
+      }
       v.setT(); gl.setT();
     }
     // ---- harbour: fish stalls, crates and baskets along the quay

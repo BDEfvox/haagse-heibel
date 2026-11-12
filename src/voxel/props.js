@@ -16,10 +16,12 @@ const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
 /** How much of the night's lights are on at the hour (set by the stage): the share of lit windows in homes, and in shop fronts. */
 export const litShare = { home: 0.62, shop: 0.8 };
+let _wglass = '#8fc7e8'; // the glass colour win() just drew (the windows that open copy it)
 function win(v, gl, x, y, z, w, h, night, rnd, litChance = 0.6) {
   v.box(x, y - 0.08, z + 0.04, w + 0.18, h + 0.18, 0.1, '#f6f3ec');
   const lit = night && rnd.chance(litChance * Math.min(1.3, litShare.home / 0.62));
-  (lit ? gl : v).box(x, y, z + 0.07, w, h, 0.08, lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8');
+  _wglass = lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8';
+  (lit ? gl : v).box(x, y, z + 0.07, w, h, 0.08, _wglass);
   v.box(x, y + h / 2 - 0.03, z + 0.09, w, 0.06, 0.07, '#f6f3ec');
   v.box(x, y - 0.14, z + 0.14, w + 0.3, 0.08, 0.2, STONE);
   return lit;
@@ -367,10 +369,13 @@ export function house(v, gl, o) {
 
   const cols = Math.max(2, Math.round(w / 1.75)), sp = w / cols;
   const cx = (c) => x - w / 2 + sp * (c + 0.5);
+  const glass1 = [];
   for (let f = 1; f < floors; f++) {
-    for (let c = 0; c < cols; c++) win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, rnd);
+    for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, rnd); if (f === 1) glass1[c] = _wglass; }
   }
-  out.win = { x: cx(rnd.int(0, cols - 1)), y: y0 + gh + 0.62, z: z + 0.2 };
+  const wc = rnd.int(0, cols - 1);
+  // (w, h, face, glass, real: what the window that opens needs; a one-storey front has no first-floor window at all)
+  out.win = { x: cx(wc), y: y0 + gh + 0.62, z: z + 0.2, w: 0.9, h: 1.2, face: z + 0.11, glass: glass1[wc] || '#8fc7e8', real: floors >= 2, y0 };
 
   // ground floor
   const doorCol = rnd.pick(DOORS);
@@ -431,7 +436,8 @@ export function house(v, gl, o) {
         out.sign.position.set((tL + tR) / 2, bandY, z + 0.165);
       }
     }
-    out.door = { x: dx, z: z + 0.9 };
+    // (the door leaf itself, for the doorway helper: size, colour, the face it shows, the glass in it)
+    out.door = { x: dx, z: z + 0.9, y: y0, w: 0.9, h: 1.85, col: doorCol, face: z + 0.1, shop: true, glass: L.dark || (night && !shopOn) ? '#2a2118' : night ? '#ffe9a8' : '#a9dcf5', lit: !!(shopOn && !L.dark) };
     out.shop = sg.text;
     out.cat = S.cat;
     out.name = sg.text;
@@ -443,7 +449,13 @@ export function house(v, gl, o) {
     (night && rnd.chance(0.5) ? gl : v).box(dx, y0 + 1.84, z + 0.07, 0.86, 0.3, 0.06, night ? '#ffd97a' : '#8fc7e8');
     v.box(dx, y0, z + 0.3, 1.3, 0.12, 0.5, '#bdb6aa');
     for (let c = 0; c < cols; c++) if (c !== dc) win(v, gl, cx(c), y0 + 0.78, z, 0.95, 1.4, night, rnd, 0.75);
-    out.door = { x: dx, z: z + 0.9 };
+    // the bell: a small plate on the wall beside the frame, on the knob side, when the neighbouring window leaves room for it
+    const bellOk = sp >= 1.5;
+    if (bellOk) {
+      v.box(dx + 0.7, y0 + 1.03, z + 0.02, 0.14, 0.3, 0.05, '#cfcac0');
+      v.box(dx + 0.7, y0 + 1.13, z + 0.06, 0.07, 0.07, 0.03, '#ffd60a');
+    }
+    out.door = { x: dx, z: z + 0.9, y: y0, w: 0.9, h: 1.8, col: doorCol, face: z + 0.11, shop: false, bell: bellOk ? { lx: 0.7, y: y0 + 1.165, face: z + 0.09 } : null };
   }
 
   // roof

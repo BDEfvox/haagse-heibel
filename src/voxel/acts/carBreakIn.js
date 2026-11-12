@@ -36,12 +36,15 @@ export default function (T) {
 
   return {
     w: [0, 0.6, 2.5, 2.5, 2], crime: 2, need: ['parked'],
+    stage: { pave: { side: 'near', len: 16, depth: 1.6 }, anchor: 'parked', reach: 14 }, // the raid runs along the near pavement, past a row of parked cars
     avail: (ctx) => ctx.L.parked.some((c) => breakPlan(ctx, c)),
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'carBreakIn'), B = beatsFor(ctx, 'carBreakIn'), R = rig(ctx);
       const cars = L.parked.filter((c) => breakPlan(ctx, c));
       if (!cars.length) return;
-      const car = rnd.pick(cars);
+      const ox = ctx.stage ? ctx.stage.x : 0; // read before the first yield
+      const near = cars.slice().sort((p, q) => Math.abs(p.x - ox) - Math.abs(q.x - ox)).slice(0, 3); // the target is one of the cars nearest the stage's clear strip
+      const car = rnd.pick(near);
       let done = false;
       try {
         const plan = breakPlan(ctx, car), dir = plan.dir, z = plan.z, edge = plan.edge;
@@ -50,6 +53,12 @@ export default function (T) {
         const row = L.parked.filter((c) => c !== car && dir * (car.x - c.x) > 2.5 && dir * (car.x - c.x) < 13).sort((p, q) => dir * (p.x - q.x));
         const decoys = row.slice(-2);
         const thief = makePerson(rnd, { kind: rnd.chance(0.5) ? 'raccoon' : 'robber' });
+        // the owner has been asleep in the back seat since before the scene: sitting low inside the car, hidden by its body
+        const owner = makePerson(rnd, { shirt: rnd.pick(['#9d4edd', '#457b9d', '#e9c46a']) });
+        const cap = item.nightcap(); cap.position.set(0, 0.62, 0); owner.head.add(cap);
+        owner.air = true; owner.pose = 'sit'; owner.mood = 'sleepy';
+        R.spawn(owner, car.x, car.z + 0.15, -0.4);
+        owner.heading = 0; owner.g.visible = false; // (inside the car: nothing of him shows until he sits up)
         const alarm = (c, dur) => {
           const l = R.add(alarmLights(c.x, c.z));
           return R.run((function* () {
@@ -70,8 +79,8 @@ export default function (T) {
         B('1 a quiet row of parked cars; one snores', [carPt]);
         cam.wide(pt(car.x - dir * 3, z), { dist: 26, hold: 3.4 });
         const snore = R.run((function* () { for (;;) { ctx.sfx('zzz'); ctx.fx.text('Z', at(car.x, 2.3, car.z), { size: 15, color: '#cfe8ff', rise: 1.2, dur: 1.6 }); yield* wait(1.5); } })());
-        yield* wait(0.8);
-        yield* R.enter(thief, plan.start, padZ(ctx, 'walkF0', plan.start));
+        yield* wait(0.3);
+        yield* R.enter(thief, plan.start, padZ(ctx, 'walkF0', plan.start), undefined, { speed: 3.4 });
 
         // ---- 2. he tiptoes in along the row
         B('2 he tiptoes along the row of cars', [thief]);
@@ -193,13 +202,11 @@ export default function (T) {
         yield* laugh(ctx, thief, 1.0, 'he');
 
         // ---- 10. the owner has been in the back seat all along
-        const owner = makePerson(rnd, { shirt: rnd.pick(['#9d4edd', '#457b9d', '#e9c46a']) });
-        const cap = item.nightcap(); cap.position.set(0, 0.62, 0); owner.head.add(cap);
-        owner.air = true;
-        B('10 the owner sits up in the back seat', [thief, owner]);
+        B('10 the owner sits up in the back seat', [thief, carPt]);
         cam.two(thief, carPt, { dist: 9, hold: 2.6, cut: 0.4 });
         yield* wait(0.4);
-        yield* R.enter(owner, car.x, car.z, 0.7);
+        owner.g.visible = true;
+        yield* tween(0.35, (u) => { owner.g.position.y = lerp(-0.4, 0.1, ease.outBack(u)); }); // he sits bolt upright
         owner.heading = 0; owner.arms = 'up'; owner.mood = 'shock'; thief.lookAt = owner;
         ctx.sfx('gasp');
         yell(ctx, owner, 'AAAH!', '#ffffff', 18); yell(ctx, thief, 'AAAH!', '#ffffff', 18);
@@ -212,8 +219,8 @@ export default function (T) {
         cam.crash(owner, { hold: 1.8 });
         owner.arms = 'fist'; owner.mood = 'angry';
         yield* wait(0.3);
-        yield* arc(owner.g, car.x + dir * 0.9, 0, z + 0.4, 1.0, 0.45);
-        owner.air = false;
+        yield* arc(owner.g, car.x + dir * 0.9, 0, z + 0.4, 1.0, 0.45); // out through the broken window
+        owner.air = false; owner.pose = null;
         owner.squash(0.25);
         yell(ctx, owner, rnd.pick(['IK SLAAP HIER!', 'MIJN AUTORADIO!', 'HÉ! IK LIGT TE SLAPEN!']), '#ff6b6b', 15);
 
@@ -304,7 +311,12 @@ export default function (T) {
         cam.low(carPt, { dist: 8, hold: 3.4, cut: 0.5 });
         say(ctx, owner, '*geeuw*', { size: 13, color: '#cfe8ff' });
         yield* wait(0.8);
-        yield* R.out(owner);
+        // back in through the broken window and down into the seat, where the body hides him again
+        owner.air = true;
+        const ox0 = owner.g.position.x, oz0 = owner.g.position.z;
+        owner.pose = 'sit';
+        yield* tween(0.5, (u) => { owner.g.position.set(lerp(ox0, car.x, u), lerp(0, 0.1, Math.sin(u * Math.PI)) + lerp(0, -0.4, u), lerp(oz0, car.z + 0.15, u)); });
+        R.gone(owner);
         ctx.sfx('zzz');
         ctx.fx.text('Z', at(car.x, 2.3, car.z), { size: 18, color: '#cfe8ff', rise: 1.4, dur: 1.8 });
         thief.arms = 'swing'; thief.mood = 'sad';

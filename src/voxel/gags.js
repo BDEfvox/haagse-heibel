@@ -149,15 +149,160 @@ function outPoint(ctx, x, z, dir, pad = 3, y = 1) {
   const ox = dir > 0 ? Math.min(lim, px + pad) : Math.max(lim, px - pad);
   return { x: ox, hidden: !seen(ctx, ox, z, y) };
 }
-/** A real front door of the spot within maxD metres of (x, z), or null. */
+/** The house whose real front door (one with a leaf we can open: not a tower's glass front) is within maxD metres of (x, z), or null. */
 function doorNear(ctx, x, z, maxD) {
   let best = null, bd = maxD;
   for (const h of ctx.L.houses || []) {
-    if (!h.door) continue;
+    if (!h.door || !h.leaf || h.tower) continue;
     const d = Math.hypot(h.door.x - x, h.door.z - z);
-    if (d <= bd) { best = h.door; bd = d; }
+    if (d <= bd) { best = h; bd = d; }
   }
   return best;
+}
+
+// ---------------------------------------------------------------- real doors and windows that open
+const DARK = '#0a090c';
+const LIT_GLASS = new Set(['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1']);
+/**
+ * A real front door (`'door'`, also shop doors) or first-floor window (`'window'`) of a house record `h` (ctx.L.houses[i]) that can open.
+ * The real door is part of the merged street front and cannot swing, so opening shows a dark doorway ON the real door (a pane the size of
+ * the door or glass, just proud of it) and a leaf of the real door's own colour and size (a window: two white sashes with the real glass) swung out
+ * on its hinge; closed, nothing extra is visible. People walk out of and into the pane: they start behind the wall, so they come out of the dark.
+ * Reference counted: every `yield* open()` needs a `yield* close()`. Shared by everything that uses the same door.
+ *   .at(lx, lz) street point lx along the facade (right as seen from the street), lz out from the door face · .out the pavement spot in front
+ *   · .inside a spot behind the wall · .heading facing out · .bell { x, z, y } and .bellStand (doors of homes only) · .y0 the sill (windows)
+ *   open() close() passOut(a) passIn(a) press() · windows: pose(a, u) retreat(a) · force() shuts at once.
+ */
+function openable(ctx, h, key) {
+  const win = key === 'window', f = win ? h.sash : h.leaf;
+  if (!f || h.tower) return null;
+  const slot = win ? '_ww' : '_dw';
+  if (h[slot]) return h[slot];
+  const step = !win && !f.shop, w = f.w, yb = win ? f.y : f.y + (step ? 0.12 : 0), hh = win ? f.h : f.h - (step ? 0.12 : 0);
+  const maxA = win ? 1.9 : 1.75;
+  const P = (lx, lz) => ({ x: f.x + lx * f.tx + lz * f.nx, z: f.z + lx * f.tz + lz * f.nz });
+  const d = { h, f, kind: key, users: 0, angle: 0, target: 0, task: null, root: null, pivots: [], heading: Math.atan2(f.nx, f.nz), at: P, y0: f.y, w, openFor: 0 };
+  d.out = P(0, 0.9); d.inside = P(0, -0.6);
+  if (!win && f.bell) {
+    d.bell = { x: f.bell.x, z: f.bell.z, y: f.bell.y };
+    d.bellStand = { x: f.bell.x + f.nx * 0.5, z: f.bell.z + f.nz * 0.5 };
+  }
+  const build = () => {
+    const root = new THREE.Group();
+    root.position.set(f.x, 0, f.z);
+    root.rotation.y = f.psi;
+    root.visible = false;
+    root.add(sculpt((v) => v.box(0, yb, 0.05, w, hh, 0.01, !win && ctx.L.night ? '#2e2216' : DARK)));
+    d.pivots = [];
+    if (!win) {
+      const piv = new THREE.Group();
+      piv.position.set(-w / 2, 0, 0.075);
+      piv.add(piece((v, gl) => {
+        v.box(w / 2, yb, 0, w, hh, 0.05, f.col);
+        if (f.shop) (f.lit ? gl : v).box(w / 2, f.y + 0.9, 0.03, 0.6, 0.75, 0.02, f.glass || '#a9dcf5');
+        else v.box(w / 2 + 0.28, f.y + 0.9, 0.04, 0.08, 0.08, 0.04, '#e9c46a');
+      }));
+      root.add(piv); d.pivots.push([piv, -1]);
+    } else {
+      for (const sd of [-1, 1]) {
+        const piv = new THREE.Group(), cx = -sd * w / 4;
+        piv.position.set(sd * w / 2, 0, 0.075);
+        piv.add(piece((v, gl) => {
+          v.box(cx, yb, 0, w / 2, hh, 0.04, '#f6f3ec');
+          (LIT_GLASS.has(f.glass) ? gl : v).box(cx, yb + 0.07, 0.025, w / 2 - 0.14, hh - 0.14, 0.02, f.glass || '#8fc7e8');
+        }));
+        root.add(piv); d.pivots.push([piv, sd]);
+      }
+    }
+    return root;
+  };
+  const apply = () => {
+    if (!d.root) return;
+    d.root.visible = d.angle > 0.002;
+    for (const [piv, sg] of d.pivots) piv.rotation.y = sg * d.angle;
+  };
+  const teardown = () => { if (d.root) { ctx.world.remove(d.root); d.root = null; d.pivots = []; } };
+  function* anim() {
+    for (;;) {
+      const dt = yield;
+      const dd = d.target - d.angle, sp = (dd > 0 ? 4.2 : 3.6) * dt;
+      d.angle += clamp(dd, -sp, sp);
+      apply();
+      if (d.target === 0 && d.angle <= 0.0005) { d.angle = 0; teardown(); return; }
+    }
+  }
+  const ensure = () => {
+    if (!d.root) { d.root = build(); ctx.world.add(d.root); }
+    if (!d.task || d.task.done) d.task = ctx.run(anim());
+  };
+  d.open = function* () {
+    d.users++; d.target = maxA; ensure();
+    if (d.angle < 0.01) ctx.sfx(win ? 'swish' : 'door');
+    yield* waitUntil(() => d.angle >= maxA * 0.9, 2);
+  };
+  d.close = function* () {
+    d.users = Math.max(0, d.users - 1);
+    if (d.users > 0) return;
+    d.target = 0;
+    yield* waitUntil(() => d.users > 0 || d.angle <= 0.002, 2);
+    if (d.users === 0 && !win) ctx.sfx('door');
+  };
+  d.force = () => { d.users = 0; d.target = 0; d.angle = 0; teardown(); };
+  /** metres out from the door face (negative = inside) */
+  d.lz = (p) => (p.x - f.x) * f.nx + (p.z - f.z) * f.nz;
+  d.lx = (p) => (p.x - f.x) * f.tx + (p.z - f.z) * f.tz;
+  const stepY = (lz) => (step ? 0.12 * clamp((lz + 0.1) / 0.1, 0, 1) * clamp((0.4 - lz) / 0.1, 0, 1) : 0);
+  /** From behind the wall (spawn the actor at .inside) out through the open door to the pavement spot in front of it (or only to `z1` metres out). */
+  d.passOut = function* (a, speed = 1.5, z1 = 0.9) {
+    const p = a.g.position, z0 = d.lz(p), x0 = d.lx(p), dur = Math.max(0.25, (z1 - z0) / speed);
+    a.offstage = true;
+    yield* tween(dur, (u) => {
+      const lz = lerp(z0, z1, u), q = P(lerp(x0, 0, clamp(u * 2, 0, 1)), lz);
+      p.x = q.x; p.z = q.z; p.y = stepY(lz); a.heading = d.heading; a.moving = speed;
+      if (lz > 0.25) a.offstage = false;
+    });
+    p.y = 0; a.offstage = false;
+  };
+  /** From the pavement into the open doorway and on into the dark; the caller removes the actor afterwards (it is hidden by the wall by then). */
+  d.passIn = function* (a, speed = 1.5) {
+    const p = a.g.position, z0 = d.lz(p), x0 = d.lx(p), z1 = -0.65, dur = Math.max(0.25, (z0 - z1) / speed);
+    yield* tween(dur, (u) => {
+      const lz = lerp(z0, z1, u), q = P(lerp(x0, 0, clamp(u * 3, 0, 1)), lz);
+      p.x = q.x; p.z = q.z; p.y = stepY(lz); a.heading = d.heading + Math.PI; a.moving = speed;
+      if (lz < 0.25) a.offstage = true;
+    });
+  };
+  /** A press on the bell: the button lights for a moment. */
+  d.press = function* () {
+    if (!d.bell) return;
+    const g = sculpt((v) => v.box(0, -0.045, 0, 0.09, 0.09, 0.03, '#fff3a0'), MAT.glow);
+    g.position.set(d.bell.x + f.nx * 0.03, d.bell.y, d.bell.z + f.nz * 0.03);
+    g.rotation.y = f.psi;
+    ctx.world.add(g);
+    ctx.sfx('dingdong');
+    yield* wait(0.45);
+    ctx.world.remove(g);
+  };
+  /** A window: stand the person inside (u = 0) or leaning out over the sill (u = 1). They start behind the wall, so only the part that leans out shows. */
+  d.pose = (a, u) => {
+    const sc = a.g.scale.x, hp = 0.95 * sc, th = 0.55 * u, floor = f.y - 0.62, lz0 = lerp(-0.75, -0.04, u);
+    const q = P(0, lz0 - hp * Math.sin(th));
+    a.g.rotation.order = 'YXZ';
+    a.air = true; a.heading = d.heading;
+    a.g.position.set(q.x, floor + hp - hp * Math.cos(th), q.z);
+    a.g.rotation.x = th;
+  };
+  d.retreat = function* (a) { yield* tween(0.6, (u) => d.pose(a, 1 - u), ease.inQuad); a.g.rotation.x = 0; };
+  h[slot] = d;
+  return d;
+}
+/** The door of a house record as a doorway you can open (see openable); null for a tower or a front without a modelled door. `R` makes it close when the script ends. */
+function doorway(ctx, R, h) { const d = h ? openable(ctx, h, 'door') : null; if (d && R) R.guard(d); return d; }
+/** The first-floor window of a house record as a window you can open; null when the front has no first floor. */
+function windowAt(ctx, R, h) { const d = h ? openable(ctx, h, 'window') : null; if (d && R) R.guard(d); return d; }
+/** The nearest house record with a real door within maxD of x along the street (opt: { shop: true | false }), or null. */
+function doorHouse(ctx, x, maxD = 12, opt = {}) {
+  return S.housesNear(ctx, x, maxD, { door: true, tower: false, shop: opt.shop }).find((h) => h.leaf) || null;
 }
 /** The foot of something tall enough to hide a person (a stall, a kiosk, a shelter), on the side away from the camera. */
 function hideBehind(ctx, x, z) {
@@ -183,17 +328,27 @@ function* enterTo(ctx, a, x, z, y, o, spawn) {
   const high = y > 0.05, veh = !!a.vehicle;
   if (!y && !o.exact && !veh) { const q = S.nudge(ctx, x, z, 0.5, { ignore: o.ignore }); x = q.x; z = q.z; }
   if (!watching(ctx) || !seen(ctx, x, z, high ? y + 1 : 1)) { spawn(a, x, z, y); return; }
-  if (high || a.fly) { spawn(a, x, z, y); a.g.scale.setScalar(0.001); yield* popIn(ctx, a); return; }
+  if (a.fly) { // a bird: over the edge of the frame, then on to where it is wanted
+    const side = o.dir ? -Math.sign(o.dir) : ctx.rnd.sign(), hy = Math.max(y, 3), q = outPoint(ctx, x, z, side, 6, hy);
+    spawn(a, q.x, z, hy + 2);
+    a.offstage = true;
+    yield* fly(a, x, y, z, o.speed || 7);
+    a.offstage = false;
+    return;
+  }
+  if (high) { spawn(a, x, z, y); a.g.scale.setScalar(0.001); yield* popIn(ctx, a); return; }
   const doorish = o.from === 'door' || (y > 0 && y <= 0.05);
   const door = !veh && o.from !== 'edge' ? doorNear(ctx, x, z, doorish ? 8 : 1.2) : null;
-  if (door) {
-    const dz = door.z < 0 ? -1 : 1;
-    spawn(a, door.x, door.z + dz * 0.9, 0); // just behind the wall: the facade hides it until it steps out
-    a.offstage = true; a._door = { x: door.x, z: door.z };
-    a.heading = dz < 0 ? 0 : Math.PI;
-    ctx.sfx('door');
-    yield* leg(ctx, a, door.x, door.z, 1.8, 0.05);
-    if (Math.hypot(x - door.x, z - door.z) > 0.35) yield* go(ctx, a, x, z, brisk(a, o) * 0.85, 0.06, { ignore: o.ignore });
+  const dw = door ? openable(ctx, door, 'door') : null;
+  if (dw) {
+    // the door opens on a dark doorway; the person starts behind the wall and steps out of it, over the threshold
+    yield* dw.open();
+    spawn(a, dw.inside.x, dw.inside.z, 0);
+    a.offstage = true; a._doorway = dw;
+    a.heading = dw.heading;
+    yield* dw.passOut(a, 1.5);
+    ctx.run((function* () { yield* wait(0.5); yield* dw.close(); })());
+    if (Math.hypot(x - dw.out.x, z - dw.out.z) > 0.35) yield* go(ctx, a, x, z, brisk(a, o) * 0.85, 0.06, { ignore: o.ignore });
     a.offstage = false;
     return;
   }
@@ -221,11 +376,11 @@ function* enterTo(ctx, a, x, z, y, o, spawn) {
  */
 function entryTime(ctx, a, x, z, o = {}) {
   if (!watching(ctx) || !seen(ctx, x, z, 1)) return 0;
-  if (!a.vehicle && o.from !== 'edge' && doorNear(ctx, x, z, o.from === 'door' ? 8 : 1.2)) return 1.5;
+  if (!a.vehicle && o.from !== 'edge' && !a.fly && doorNear(ctx, x, z, o.from === 'door' ? 8 : 1.2)) return 2.2;
   const veh = !!a.vehicle, sides = o.dir ? [-Math.sign(o.dir)] : [-1, 1];
   let d = 1e9;
   for (const sd of sides) d = Math.min(d, Math.abs(outPoint(ctx, x, z, sd, veh ? 6 : 2.5, veh ? 0.8 : 1).x - x));
-  return d / brisk(a, o);
+  return d / (a.fly ? (o.speed || 7) : brisk(a, o));
 }
 /** Bring someone on without tracking them (the rig's `R.enter` tracks). See enterTo. */
 function* enter(ctx, a, x, z, y, o) {
@@ -248,7 +403,13 @@ function* exitOut(ctx, a, o = {}) {
     gone();
     return;
   }
-  if (a.fly) { yield* popOut(ctx, a); return; }
+  if (a.fly) { // a bird flies on past the edge of the frame, and only then is it gone
+    const hx0 = Math.sin(a.heading ?? 0), dir0 = o.dir || (Math.abs(hx0) > 0.3 ? Math.sign(hx0) : p.x < 0 ? -1 : 1), fy = Math.max(p.y, 5) + 3;
+    const q = outPoint(ctx, p.x, p.z, dir0, 6, fy);
+    yield* fly(a, q.x, fy, p.z, o.speed || 7);
+    gone();
+    return;
+  }
   const hb = (ctx.L.hw || 2.6) + (ctx.L.bw || 0);
   if (!veh && p.y > 0.6 && Math.abs(p.z) > hb + 1) { // up on a balcony: back in through the window
     const z0 = p.z, dz = p.z < 0 ? -1 : 1;
@@ -256,12 +417,15 @@ function* exitOut(ctx, a, o = {}) {
     gone();
     return;
   }
-  if (a._door && !o.edge && Math.hypot(p.x - a._door.x, p.z - a._door.z) < 14) {
-    const d = a._door, dz = d.z < 0 ? -1 : 1;
-    yield* go(ctx, a, d.x, d.z, o.speed || 3.2, 0.06);
-    ctx.sfx('door');
-    yield* leg(ctx, a, d.x, d.z + dz * 0.9, 1.8, 0.05);
+  if (a._doorway && !o.edge && Math.hypot(p.x - a._doorway.out.x, p.z - a._doorway.out.z) < 14) {
+    // back in through the door they came out of: it opens, they step over the threshold into the dark, it shuts
+    const dw = a._doorway;
+    if (dw.lz(p) < -0.2) { gone(); return; } // (still behind the wall: nothing to see)
+    yield* go(ctx, a, dw.out.x, dw.out.z, o.speed || 3.2, 0.06);
+    yield* dw.open();
+    yield* dw.passIn(a, 1.5);
     gone();
+    ctx.run((function* () { yield* wait(0.3); yield* dw.close(); })());
     return;
   }
   const hx = Math.sin(a.heading ?? 0), sp = o.speed || brisk(a, null), pad = veh ? 6 : 3;
@@ -378,7 +542,7 @@ function takePed(ctx, xr = 13, filter = null, cx = 0) {
  */
 function rig(ctx) {
   const { L, rnd } = ctx;
-  const actors = new Set(), objs = new Set(), peds = new Set(), tasks = new Set(), keep = new Set();
+  const actors = new Set(), objs = new Set(), peds = new Set(), tasks = new Set(), keep = new Set(), guards = new Set();
   let closed = false, policeClosed = false, cops = 0;
   const R = {
     spawn(a, x, z, y) { ctx.spawn(a, x, z, y); actors.add(a); return a; },
@@ -395,6 +559,8 @@ function rig(ctx) {
     *away(a, dx, speed = 3.6) { if (!a.alive) return; yield* walkOff(ctx, a, clamp(a.g.position.x + dx, EX0, EX1), speed); yield* R.out(a, { speed }); },
     gone(a) { if (a.alive) ctx.despawn(a); actors.delete(a); },
     add(o) { ctx.world.add(o); objs.add(o); return o; },
+    /** a real door or window (doorway/windowAt) the script opens: shut when the script ends (waits for those still walking through it) or is cancelled */
+    guard(d) { if (d) guards.add(d); return d; },
     rm(o) { if (objs.delete(o)) ctx.world.remove(o); },
     /** survives a normal finish (lasting damage such as a tag); still removed if the script is cancelled */
     stay(o) { keep.add(o); },
@@ -461,6 +627,11 @@ function rig(ctx) {
       tasks.clear();
       for (const o of objs) if (!(done && keep.has(o))) ctx.world.remove(o);
       objs.clear();
+      for (const g of guards) {
+        if (done) ctx.run((function* () { yield* waitUntil(() => g.users === 0, 25); if (g.users > 0) { g.force(); return; } yield* waitUntil(() => g.angle <= 0.002, 3); })());
+        else g.force();
+      }
+      guards.clear();
       // a normal finish never takes anybody off in view: whoever is still standing there walks (drives) off on their own
       for (const a of actors) {
         if (!a.alive) continue;
@@ -507,23 +678,25 @@ const filmIt = (p, tx, tz) => { faceTo(p, tx, tz); p.hold(item.phone()); p.arms 
  * "Somebody notices, and later turns up in person." Variants say what they need at this spot; the first whose needs
  * are met is played, and the surroundings decide the order (houses: the balcony first; shops: the shopkeeper first;
  * park, square, beach...: the bench first). `passerby` needs nothing and is always possible.
- *   balcony   a real house front with a window within 9 m of x      appears on a little balcony, comes out of the door later
- *   shop      a real shop door within 10 m                          the shopkeeper steps out of the door
- *   bench     a free bench within 9 m                               the person sitting there jumps up
+ *   balcony   a real house front with a first-floor window within 9 m   the window opens (dark room), she leans out over the sill; comes out of the door later
+ *   shop      a real shop door within 10 m                          the shop's own door opens and the shopkeeper steps out of it
+ *   bench     a free bench within 9 m                               the person already sitting there (set there out of view, or walked to it) jumps up
  *   door      a real house or shop door within 12 m (no notice)     somebody comes out of the door
  *   passerby  nothing                                               a walker from the crowd (or a new one) stops and shouts
  * Generators: notice(line), calm(line), rush(line, to(), { speed, size }), home(). `owner` is who notices, `second`
  * who rushes in later (the same person for a passer-by). o.at = { x, z } is the thing being looked at, o.allow the variants.
+ * Extra fields: `doorway` (the real door of the house or shop, a doorway() you can open yourself) and `window` (once the window variant has opened).
  */
 const PREF = { balcony: ['houses'], shop: ['shops'], bench: ['park', 'square', 'beach', 'water', 'open'], door: ['houses', 'shops'], passerby: [] };
 function resident(ctx, R, x, look, o = {}) {
   const { rnd } = ctx, allow = o.allow || ['balcony', 'shop', 'bench', 'passerby'];
   const far = S.surroundings(ctx).far;
   const fits = {
-    balcony: () => { const h = S.houseNear(ctx, x, 9, { tower: false }); return h && Math.abs(h.door.x - x) <= 16 ? { h } : null; },
-    shop: () => { const h = S.houseNear(ctx, x, 10, { door: true, shop: true }); return h ? { h } : null; },
+    // a real house front with a first-floor window that opens (and a real door to come down to)
+    balcony: () => { const h = S.housesNear(ctx, x, 9, { tower: false }).find((q) => q.sash && q.leaf && Math.abs(q.door.x - x) <= 16); return h ? { h } : null; },
+    shop: () => { const h = S.housesNear(ctx, x, 10, { door: true, shop: true, tower: false }).find((q) => q.leaf); return h ? { h } : null; },
     bench: () => { const b = S.benchNear(ctx, x, 9); return b ? { b } : null; },
-    door: () => { const h = S.houseNear(ctx, x, 12, { door: true, tower: false }); return h ? { h } : null; },
+    door: () => { const h = S.housesNear(ctx, x, 12, { door: true, tower: false }).find((q) => q.leaf); return h ? { h } : null; },
     passerby: () => ({}),
   };
   const order = allow.slice().sort((p, q) => (PREF[p].includes(far) ? 0 : 1) - (PREF[q].includes(far) ? 0 : 1));
@@ -534,8 +707,28 @@ function resident(ctx, R, x, look, o = {}) {
   const res = { kind, spec, owner: person(kind === 'shop'), second: null, borrowed: false, cleanup() {} };
   res.second = kind === 'passerby' ? res.owner : person(kind === 'shop');
   const door = spec.h ? spec.h.door : null;
-  let balcony = null, acquired = false;
+  let win = null, acquired = false, seated = kind !== 'bench';
   if (kind === 'bench') { spec.b.taken = true; res.cleanup = () => { spec.b.taken = false; }; }
+  /** the door of the house (a shop's own door too): the real one, with its leaf, bell and dark doorway */
+  res.doorway = spec.h ? doorway(ctx, R, spec.h) : null;
+  res.window = null;
+
+  // the person on the bench is sitting there from the start: put there while the bench is out of view, or walked to it from out of the frame
+  if (kind === 'bench') {
+    const a = res.owner, b = spec.b, sit = () => { a.air = true; a.pose = 'sit'; a.heading = 0; a.g.position.set(b.x, 0.32, b.z + 0.12); };
+    if (!watching(ctx) || !seen(ctx, b.x, b.z, 1)) { R.spawn(a, b.x, b.z + 0.12, 0.32); sit(); seated = true; }
+    else {
+      R.run((function* () {
+        yield* R.enter(a, b.x, b.z + 0.9);
+        a.heading = 0;
+        a.pose = 'sit'; a.air = true; // (turns round and lowers itself onto the seat)
+        const p = a.g.position, z0 = p.z;
+        yield* tween(0.5, (u) => { p.z = lerp(z0, b.z + 0.12, u); p.y = 0.32 * u; });
+        sit();
+        seated = true;
+      })());
+    }
+  }
 
   /** passer-by: borrow a walker nearby, or send a new one in along the pavement nearest the thing */
   const acquire = function* () {
@@ -551,26 +744,23 @@ function resident(ctx, R, x, look, o = {}) {
   res.notice = function* (line) {
     yield* wait(0.6);
     if (kind === 'balcony') {
-      const h = spec.h, a = res.owner;
-      // a little balcony to stand on, so nobody hovers in front of their own window
-      balcony = R.add(piece((v) => {
-        const bx = h.win.x, by = h.win.y - 0.42, bz = h.win.z + 0.45;
-        v.box(bx, by, bz, 1.5, 0.12, 0.9, '#d6d0c2');
-        v.box(bx, by + 0.12, bz + 0.42, 1.5, 1.0, 0.07, '#2f3640'); // 1 m railing for a 2 m person
-        v.box(bx - 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
-        v.box(bx + 0.72, by + 0.12, bz, 0.07, 1.0, 0.9, '#2f3640');
-      }));
-      a.air = true;
-      yield* R.enter(a, h.win.x, h.win.z + 0.35, h.win.y - 0.3);
-      a.heading = 0; a.arms = 'fist';
+      // the first-floor window opens on a dark room and she leans out over the sill
+      const a = res.owner;
+      win = res.window = windowAt(ctx, R, spec.h);
+      const q = win.inside;
+      R.spawn(a, q.x, q.z, 0);
+      win.pose(a, 0);
+      a.offstage = true;
+      yield* win.open();
+      a.arms = 'fist';
+      yield* tween(0.7, (u) => win.pose(a, u), ease.outQuad);
+      a.offstage = false;
     } else if (kind === 'shop') {
-      yield* R.enter(res.owner, door.x, door.z, 0.001); // (a hair above the ground: the door is where it is, never nudged)
+      yield* R.enter(res.owner, door.x, door.z, 0.001); // (the shop's own door opens and the shopkeeper steps out of it)
       res.owner.heading = 0; res.owner.arms = 'fist';
     } else if (kind === 'bench') {
       const a = res.owner, b = spec.b;
-      a.air = true; a.pose = 'sit';
-      yield* R.enter(a, b.x, b.z + 0.12, 0.32);
-      a.heading = 0;
+      yield* waitUntil(() => seated, 14);
       yield* wait(0.35);
       a.pose = null; a.air = false; a.g.position.set(b.x, 0, b.z + 0.8);
       a.arms = 'fist';
@@ -590,8 +780,14 @@ function resident(ctx, R, x, look, o = {}) {
     a.arms = 'swing';
     yield* wait(0.5);
     if (kind === 'passerby') return;
+    if (win) { // back in over the sill, and the window shuts
+      yield* win.retreat(a);
+      R.gone(a);
+      yield* win.close();
+      win = null;
+      return;
+    }
     yield* R.out(a);
-    if (balcony) { R.rm(balcony); balcony = null; }
   };
   res.rush = function* (line, to, ro = {}) {
     if (kind === 'passerby') yield* acquire();
@@ -683,9 +879,16 @@ function fatbike(ctx, R, x, z, o = {}) {
   const { rnd } = ctx, mk = () => makePerson(rnd, { kind: rnd.chance(0.65) ? 'niffo' : extraKind(ctx) });
   const rider = mk(), passenger = o.passenger ? (o.passenger === true ? mk() : o.passenger) : null;
   const bike = makeFatbike(rnd, passenger ? [rider, passenger] : [rider]);
-  R.spawn(bike, x, z, 0);
-  bike.face(E);
-  return { bike, rider, passenger };
+  // in view it comes from out of the frame (the nearest edge, or `o.from` = -1 / +1) and rides to (x, z) when you `yield* arrive()`; out of view it simply stands there
+  let sx = x, face = E;
+  if (watching(ctx) && seen(ctx, x, z, 0.8)) {
+    const side = o.from || (x <= 0 ? -1 : 1), q = outPoint(ctx, x, z, side, 6, 0.8);
+    sx = q.x; face = side < 0 ? E : W;
+  }
+  R.spawn(bike, sx, z, 0);
+  bike.face(face);
+  const arrive = function* () { if (Math.abs(sx - x) > 0.3) yield* go(ctx, bike, x, z, o.speed || 7, 0.1); bike.face(face); };
+  return { bike, rider, passenger, arrive };
 }
 /** A thin glowing line between two street-space points: `aim(ax, ay, az, bx, by, bz)`. */
 function lineObj(R, col = '#e8f7ff', w = 0.045) {
@@ -1081,11 +1284,13 @@ function* gullSpawner(ctx) {
     const g = makeBird(rnd, 'gull');
     g.fly = true;
     const dir = rnd.sign(), y = rnd.range(8, 12), z = rnd.range(L.zB, L.zF);
-    ctx.spawn(g, dir > 0 ? X0 - 4 : X1 + 4, z, y);
+    // it comes in over the edge of the frame and leaves over the other one (never appears or vanishes in view)
+    const x0 = outPoint(ctx, 0, z, -dir, 6, y).x, x1 = outPoint(ctx, 0, z, dir, 6, y).x;
+    ctx.spawn(g, x0, z, y);
     g.face(dir > 0 ? E : W);
     if (rnd.chance(0.3)) ctx.sfx('squawk');
     ctx.run((function* () {
-      yield* fly(g, dir > 0 ? X1 + 4 : X0 - 4, y + rnd.range(-2, 2), z + rnd.range(-5, 5), rnd.range(5, 8));
+      yield* fly(g, x1, y + rnd.range(-2, 2), z + rnd.range(-5, 5), rnd.range(5, 8));
       ctx.despawn(g);
     })());
   }
@@ -1095,16 +1300,35 @@ function* pigeons(ctx) {
   const birds = [];
   for (let i = 0; i < 3; i++) {
     const b = makeBird(rnd, 'pigeon'), px = rnd.range(-18, 18), q = spotNear(ctx, px, padZ(ctx, 'walkF0', px) - 0.4 + rnd.range(-0.2, 0.2), 0.3);
-    ctx.spawn(b, q.x, q.z);
-    b.face(rnd.range(0, TAU));
     birds.push(b);
+    if (watching(ctx) && seen(ctx, q.x, q.z, 0.4)) {
+      // in view: they flutter down from over the edge of the frame, one after the other
+      ctx.run((function* () { yield* wait(0.6 + i * 1.1 + rnd.range(0, 0.5)); yield* landBird(ctx, b, q.x, q.z); })());
+    } else {
+      ctx.spawn(b, q.x, q.z);
+      b.face(rnd.range(0, TAU));
+    }
   }
   for (;;) {
     yield* wait(rnd.range(1.5, 4));
     const b = rnd.pick(birds);
+    if (!b.alive || b.fly) continue;
     const nx = clamp(b.g.position.x + rnd.range(-2.5, 2.5), -21, 21), q = S.findSpot(ctx, nx, padZ(ctx, 'walkF0', nx) - 0.4 + rnd.range(-0.25, 0.25), 0.3, 4);
     if (q) yield* go(ctx, b, q.x, q.z, 1.6);
   }
+}
+/** A bird comes in over the edge of the frame at height and lands at (x, z) on the ground (unwatched: it is just there). */
+function* landBird(ctx, b, x, z) {
+  const rnd = ctx.rnd;
+  b.fly = true;
+  if (!watching(ctx) || !seen(ctx, x, z, 0.4)) { ctx.spawn(b, x, z); b.fly = false; b.face(rnd.range(0, TAU)); return; }
+  const side = rnd.sign(), q = outPoint(ctx, x, z, side, 6, 8);
+  ctx.spawn(b, q.x, z + rnd.range(-3, 3), 8 + rnd.range(0, 2));
+  b.face(side < 0 ? E : W);
+  yield* fly(b, x - side * 2.5, 2.2, z, 7.5);
+  yield* fly(b, x, 0, z, 3.2);
+  b.fly = false;
+  b.face(rnd.range(0, TAU));
 }
 function* heli(ctx) {
   const { L, rnd } = ctx;
@@ -1170,7 +1394,7 @@ const T = {
   spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
   extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
   tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake,
-  exhaust, spawnPed, unped, stroll, release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+  exhaust, spawnPed, unped, stroll, release, needPed, panic, closeRoad, openRoad, policeRun, footCop, doorway, windowAt, doorHouse,
 };
 // ---------------------------------------------------------------- the gags
 const G = {};
@@ -1213,20 +1437,22 @@ function* pigeonLadyAt(ctx, b) {
     const ex = rnd.chance(0.5) ? EX0 : EX1;
     yield* enter(ctx, gran, ex, padZ(ctx, 'walkB0', ex));
     yield* go(ctx, gran, b.x, b.z + 0.7);
+    // she turns and lowers herself onto the bench
     gran.air = true; gran.pose = 'sit'; gran.heading = 0;
-    gran.g.position.set(b.x, L.yAt(b.z) + 0.32, b.z + 0.12);
+    {
+      const gp = gran.g.position, z0 = gp.z, y0 = gp.y, y1 = L.yAt(b.z) + 0.32;
+      yield* tween(0.5, (u) => { gp.z = lerp(z0, b.z + 0.12, u); gp.y = lerp(y0, y1, u); });
+    }
     ctx.news('Local oma feeds pigeons. Council "monitoring the situation"');
     ctx.focus(b.x, b.z + 1, 0.6, 5);
     const birds = [];
     for (let i = 0; i < 5; i++) {
       const p = makeBird(rnd, 'pigeon');
-      p.fly = true;
-      ctx.spawn(p, b.x + rnd.range(-9, 9), b.z + 6, 9 + i);
       birds.push(p);
+      // they come down from over the edge of the frame, not out of thin air
       ctx.run((function* () {
-        yield* wait(i * 0.25);
-        yield* fly(p, b.x + rnd.range(-1.8, 1.8), L.yAt(b.z), b.z + rnd.range(1.3, 2.4), 7);
-        p.fly = false;
+        yield* wait(i * 0.4);
+        yield* landBird(ctx, p, b.x + rnd.range(-1.8, 1.8), b.z + rnd.range(1.3, 2.4));
       })());
     }
     for (let i = 0; i < 6; i++) {
@@ -1235,11 +1461,18 @@ function* pigeonLadyAt(ctx, b) {
       yield* wait(1.0);
     }
     for (const p of birds) {
+      if (!p.alive) { ctx.despawn(p); continue; }
       p.fly = true;
-      ctx.run((function* () { yield* fly(p, p.g.position.x + rnd.range(-12, 12), 13, p.g.position.z + 6, 8); ctx.despawn(p); })());
+      p.heading = rnd.pick([E, W]);
+      ctx.run(exitOut(ctx, p, { speed: 8, dir: Math.sign(Math.sin(p.heading)) }));
     }
-    gran.pose = null; gran.air = false; gran.arms = 'swing';
-    gran.g.position.set(b.x, L.yAt(b.z), b.z + 0.8);
+    // she gets up and walks off
+    gran.pose = null; gran.arms = 'swing';
+    {
+      const gp = gran.g.position, z0 = gp.z, y0 = gp.y;
+      yield* tween(0.5, (u) => { gp.z = lerp(z0, b.z + 0.8, u); gp.y = lerp(y0, L.yAt(b.z), u); });
+      gran.air = false;
+    }
     yield* leave(ctx, gran);
   }
 }
@@ -1297,7 +1530,12 @@ G.balloonKid = {
     ctx.news('Balloon escapes custody, last seen heading for Scheveningen');
     ctx.run((function* () {
       const x0 = bal.position.x;
-      yield* tween(5, (t) => { bal.position.y = wp.y + t * 16; bal.position.x = x0 + Math.sin(t * 9) * 0.8 + t * 3; });
+      let t = 0;
+      while (t < 16) { // it keeps rising until it has left the picture
+        t += yield;
+        bal.position.y = wp.y + t * 3.2; bal.position.x = x0 + Math.sin(t * 1.8) * 0.8 + t * 0.6;
+        if (t > 2 && !seen(ctx, bal.position.x, bal.position.z, bal.position.y, 0)) break;
+      }
       ctx.world.remove(bal);
     })());
     for (let i = 0; i < 3; i++) yield* hop(kid, 0.7, 0.35);

@@ -12,57 +12,122 @@ export default function (T) {
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
     seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
   } = T;
 
   /** Speed profile for drive(): hold v0, then ease down to v1 over the last part of the line (the nose dives as it brakes). */
   const braking = (v0, from, v1) => (u) => (u < from ? v0 : lerp(v0, v1, (u - from) / (1 - from)));
 
+  const HALF = 1.03; // half a car body plus a hand: what a driving line must keep clear either side
+  const SPAN = 17;   // the scene plays between -SPAN and +SPAN around the stage centre
+
+  /** A straight run along a line that has been measured clear, at v(u) m/s (u = progress 0..1), the nose diving as it brakes. */
+  function* run1(ctx, car, x1, z1, v, o) {
+    const p = car.g.position, x0 = p.x, z0 = p.z, D = Math.hypot(x1 - x0, z1 - z0);
+    if (D < 0.05) return;
+    car.heading = Math.atan2(x1 - x0, z1 - z0);
+    let s = 0;
+    while (s < D - 0.02) {
+      const dt = yield;
+      const sp = typeof v === 'function' ? v(s / D) : v;
+      s = Math.min(D, s + sp * dt);
+      p.x = x0 + ((x1 - x0) * s) / D; p.z = z0 + ((z1 - z0) * s) / D; p.y = 0;
+      car.moving = sp;
+      if (o && o.each && o.each(dt, s / D) === true) break;
+    }
+    car.moving = 0;
+  }
+  /** `drive` with a way out: when drive finds no line it does not move, so the car takes the measured straight line instead. */
+  function* driveOr(ctx, car, x1, z1, v, o) {
+    const ok = yield* drive(ctx, car, [[x1, z1]], v, o);
+    if (ok === false) yield* run1(ctx, car, x1, z1, v, o);
+  }
+  /** Somebody steps out of a car: they start inside its body (low, so the roof hides them), the door goes, they step out to (tx, tz). */
+  function* emerge(ctx, R, a, car, tx, tz) {
+    const p = car.g.position;
+    a.air = true; a.arms = 'swing';
+    R.spawn(a, p.x, p.z, -0.55);
+    ctx.sfx('door');
+    const y1 = ctx.L.yAt ? ctx.L.yAt(tz) : 0, x0 = p.x, z0 = p.z;
+    a.heading = Math.atan2(tx - x0, tz - z0);
+    yield* tween(0.5, (u) => {
+      const e = ease.outQuad(u);
+      a.g.position.set(lerp(x0, tx, e), lerp(-0.55, y1, ease.inOut(u)), lerp(z0, tz, e));
+    });
+    a.air = false;
+    a.squash(0.15);
+  }
+
+  /** Somebody gets back in: they walk up to the door, sink in behind the bodywork and are gone. */
+  function* sink(ctx, R, a, car, side) {
+    const p = car.g.position;
+    yield* go(ctx, a, p.x, p.z + side * 1.15, 3.4);
+    ctx.sfx('door');
+    a.air = true; a.pose = null;
+    const x0 = a.g.position.x, z0 = a.g.position.z, y0 = a.g.position.y;
+    yield* tween(0.45, (u) => { a.g.position.set(lerp(x0, p.x, u), lerp(y0, -0.55, u), lerp(z0, p.z, u)); });
+    R.gone(a);
+  }
+
   return {
     w: [0, 1.2, 2, 2, 2], crime: 1, lock: 'road',
-    avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2 && S.roadHere(ctx, ctx.L.laneF ?? ctx.L.chaseZ, -22, 22, 0.8) && S.roadHere(ctx, ctx.L.laneB ?? ctx.L.chaseZ, -22, 22, 0.8),
+    avail: (ctx) => ctx.L.kind !== 'ped' && ctx.L.hw >= 2.2 && S.roadHere(ctx, ctx.L.chaseZ, -22, 22, 0.8) && S.laneFor(ctx, 1, -SPAN, SPAN, HALF) != null,
+    stage: { road: { len: 2 * SPAN } },
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'fenderBender'), B = beatsFor(ctx, 'fenderBender'), R = rig(ctx);
+      const ox = ctx.stage ? ctx.stage.x : 0, laneS = ctx.stage ? ctx.stage.lane : null; // read before the first yield
       let done = false;
       try {
         const dir = rnd.sign();
         yield* R.close();
-        const z = L.kind === 'major' ? (dir > 0 ? L.laneF : L.laneB) : L.laneF;
-        const sz = z + (z > 0 ? 1.5 : -1.5);
+        // the line all three cars drive in: the stage's free one, else the nearest free line to the street's own
+        const z = laneS != null && S.laneClear(ctx, laneS, ox - SPAN, ox + SPAN, HALF) ? laneS : S.laneFor(ctx, dir, ox - SPAN, ox + SPAN, HALF);
+        if (z == null) return;
+        // the people's line beside the cars: the side with clear ground along the whole row
+        const sgn = [z > 0 ? -1 : 1, z > 0 ? 1 : -1].find((g) => [-9, -6, -3, 0, 3, 6].every((d) => S.clearSpot(ctx, ox + d, z + g * 1.6, 0.4, { ground: 'open' }))) ?? (z > 0 ? 1 : -1);
+        const sz = z + sgn * 1.6;
         const a = makeCar(rnd, 'car', L.night), b = makeCar(rnd, rnd.chance(0.3) ? 'taxi' : 'car', L.night), c3 = makeCar(rnd, 'car', L.night);
-        const xs = dir * rnd.range(1, 5), x0 = dir > 0 ? X0 + 2.6 : X1 - 2.6, x1 = dir > 0 ? X1 - 2.6 : X0 + 2.6;
+        const xs = ox + dir * rnd.range(1, 5), x0 = clamp(ox - dir * 15, EX0 + 1, EX1 - 1), x1 = clamp(ox + dir * 17, EX0 + 1, EX1 - 1);
         const heading = dir > 0 ? E : W, gap = a.len + 0.2, bx = xs - dir * gap, ix = xs - dir * (gap / 2); // bumper to bumper (cars are 4.4 m long)
-        const clampZ = (q) => clamp(q, -(L.hw - 0.95), L.hw - 0.95);
-        const zIn = clampZ(z + (z > 0 ? -2.05 : 2.05)); // a lane clear of the 1.85 m wide stopped cars
-        const zOut = L.kind === 'major' ? -z : clampZ(z + (z > 0 ? 2.05 : -2.05));
+        // a line for passing police cars: free along the street and at least 2.4 m from the one the stopped cars stand in (null: none comes)
+        const passLine = () => { const lim = Math.max(0, L.hw - 0.95); for (let q = -lim; q <= lim + 1e-6; q += 0.2) if (Math.abs(q - z) >= 2.4 && S.laneClear(ctx, q, ox - SPAN, ox + SPAN, HALF)) return +q.toFixed(2); return null; };
+        const zIn = passLine(), zOut = zIn;
         const spot = pt(xs - dir * 1.5, z);
-        const lookX = pt(xs + dir * 3.2, z);
 
-        // ---- 1. the pigeon: in no hurry, right in the middle of the lane
-        const bird = makeBird(rnd, 'pigeon');
-        const bq = spotNear(ctx, xs + dir * 3.2, L.hw + L.bw + 0.6, 0.3);
-        R.spawn(bird, bq.x, bq.z); // placed at the kerb, then wanders into the lane
-        B('1 the pigeon wanders into the lane', [bird, lookX]);
-        cam.wide(spot, { dist: 30, hold: 1.6 });
-        yield* wait(0.9);
-        cam.ground(bird, { dist: 5.5, az: dir * 0.5, cut: 0.6, hold: 4.6 });
+        // ---- 1. the pigeon: it flies in from beyond the frame and lands in the lane, in no hurry
+        const bkind = rnd.pick(['pigeon', 'gull']), BN = bkind === 'gull' ? 'MEEUW' : 'DUIF', bn = bkind === 'gull' ? 'meeuw' : 'duif';
+        const bird = makeBird(rnd, bkind);
+        const px = xs + dir * 3.9, lq = spotNear(ctx, px - dir * 1.5, z - sgn * 1.4, 0.3), landZ = lq.z;
+        bird.fly = true; bird.air = true;
+        let bsx = clamp(px - dir * 14, EX0 + 1, EX1 - 1);
+        for (let d = 14; d <= 30 && seen(ctx, bsx, landZ, 6, 0.15) && watching(ctx); d += 2) bsx = clamp(px - dir * d, EX0 + 1, EX1 - 1);
+        R.spawn(bird, bsx, landZ, 6);
+        const lookX = pt(px, z);
+        B('1 the ' + bn + ' flies in and lands in the lane', [lookX]);
+        cam.wide(spot, { dist: 30 });
+        yield* fly(bird, lq.x - dir * 1.5, 0.3, landZ, 6);
+        yield* fly(bird, lq.x, 0, landZ, 2.5);
+        bird.fly = false; bird.air = false; bird.g.position.y = 0;
+        bird.face(dir > 0 ? W : E);
+        B('1b the ' + bn + ' wanders into the lane', [bird, lookX]);
+        cam.ground(bird, { dist: 5.5, az: dir * 0.5, cut: 0.6 });
         yield* wait(0.3);
-        yield* go(ctx, bird, xs + dir * 3.2, z, 1.5);
+        yield* go(ctx, bird, px, z, 1.5);
         for (let i = 0; i < 2; i++) { yield* hop(bird, 0.1, 0.16); yield* wait(0.3); } // pecking at nothing
         yield* wait(0.3);
 
         // ---- 2. car A rolls up, its driver on the phone
         B('2 car A rolls up, the driver is on his phone', [a]);
-        yield* R.enter(a, x0, z, 0);
+        yield* R.enter(a, x0, z, 0, { dir });
         a.face(heading);
         cam.chase(a, dir, { dist: 7.5, hold: 3.6 });
         say(ctx, a, '*appje*', { size: 13, color: '#cfe8ff' });
         yield* wait(0.4);
         const dA = Math.abs(xs - a.g.position.x);
         const brakeFrom = clamp(1 - 6.5 / dA, 0.4, 0.85);
-        let seen = false;
-        yield* drive(ctx, a, [[xs, z]], braking(7.5, brakeFrom, 0.7), {
-          each: (dt, u) => { if (!seen && u > brakeFrom) { seen = true; ctx.sfx('skid'); ctx.shake(0.12); say(ctx, a, 'EEN DUIF!', { size: 14, color: '#fff' }); } },
+        let braked = false;
+        yield* driveOr(ctx, a, xs, z, braking(7.5, brakeFrom, 0.7), {
+          each: (dt, u) => { if (!braked && u > brakeFrom) { braked = true; ctx.sfx('skid'); ctx.shake(0.12); say(ctx, a, 'EEN ' + BN + '!', { size: 14, color: '#fff' }); } },
         });
         a.jolt(0.5); // the nose dips as he stops
 
@@ -80,14 +145,14 @@ export default function (T) {
 
         // ---- 4. car B closes in, radio loud, driver singing along
         B('4 car B bears down, radio on', [b]);
-        yield* R.enter(b, x0, z, 0);
+        yield* R.enter(b, x0, z, 0, { dir });
         b.face(heading);
         cam.nose(b, dir, { dist: 8, hold: 3.2 });
         say(ctx, b, '♪ la la la ♪', { size: 12, color: '#cfe8ff' });
         yield* wait(0.4);
         const dB = Math.abs(bx - b.g.position.x);
         let near = false, slowed = false;
-        yield* drive(ctx, b, [[bx, z]], braking(10, 0.55, 5.5), {
+        yield* driveOr(ctx, b, bx, z, braking(10, 0.55, 5.5), {
           each: (dt, u) => {
             const left = dB * (1 - u);
             if (!near && left < 9) {
@@ -109,13 +174,13 @@ export default function (T) {
         ctx.fx.sparks(ix, 0.8, z, 10);
         ctx.incident();
         a.hazard = b.hazard = true;
-        R.run(go(ctx, a, xs + dir * 0.9, z, 4));
+        R.run(go(ctx, a, xs + dir * 0.5, z, 4));
         const bumps = [];
         for (const k of [1, -1]) {
           const bm = R.add(item.bumper());
           bm.position.set(ix, 0.45, z);
           bumps.push(bm);
-          const lx = ix + k * dir * rnd.range(1.5, 3), lz = z + rnd.range(-0.5, 0.5);
+          const lx = ix + k * dir * rnd.range(0.8, 2.0), lz = z + sgn * 1.3; // on the ground beside the cars, on the side the drivers will stand
           R.run((function* () {
             yield* arc(bm, lx, 0.05, lz, 1.7, 0.9, k * 7);
             ctx.sfx('clatter');
@@ -134,10 +199,10 @@ export default function (T) {
         ctx.news(`Fender-bender on ${ctx.st.name}. Both drivers "had right of way"`);
 
         // ---- 7. the culprit: the pigeon, unbothered
-        B('7 the pigeon, the culprit, unbothered', [bird]);
+        B('7 the ' + bn + ', the culprit, unbothered', [bird]);
         bird.face(0);
         cam.hero(bird, { dist: 4.5, hold: 2.6, cut: 0.4 });
-        cam.card('DE DUIF', 'Did nothing. Caused everything.', 1.9);
+        cam.card('DE ' + BN, bkind === 'gull' ? 'Wanted a chip. Caused everything.' : 'Did nothing. Caused everything.', 1.9);
         yield* wait(0.4);
         say(ctx, bird, 'rrrk', { size: 11, color: '#cfe8ff' });
         yield* hop(bird, 0.12, 0.2);
@@ -146,7 +211,7 @@ export default function (T) {
         // ---- 8. the argument: out of the cars, fists up
         const d1 = makePerson(rnd, {}), d2 = makePerson(rnd, {});
         B('8 both drivers jump out and start shouting', [d1, d2]);
-        yield* all(R.enter(d1, a.g.position.x, sz), R.enter(d2, b.g.position.x, sz));
+        yield* all(emerge(ctx, R, d1, a, a.g.position.x, sz), emerge(ctx, R, d2, b, b.g.position.x, sz));
         d1.heading = dir > 0 ? W : E; d2.heading = dir > 0 ? E : W;
         d1.arms = d2.arms = 'fist'; d1.mood = d2.mood = 'angry';
         d1.lookAt = d2; d2.lookAt = d1;
@@ -155,7 +220,7 @@ export default function (T) {
         const crowd = gather(ctx, R, xs, 2, 14);
         for (const g of crowd) filmIt(g, xs - dir * 1.5, sz);
         yield* wait(0.5);
-        const lines = ['KIJK UIT JE DOPPEN!', 'JIJ REMDE ZOMAAR!', 'ER LIEP EEN DUIF!', 'EEN DUIF?!'];
+        const lines = ['KIJK UIT JE DOPPEN!', 'JIJ REMDE ZOMAAR!', 'ER LIEP EEN ' + BN + '!', 'EEN ' + BN + '?!'];
         for (let i = 0; i < 4; i++) {
           const sp = i % 2 ? d1 : d2, other = i % 2 ? d2 : d1;
           if (i % 2) cam.ots(d1, d2, { hold: 1.8, cut: 0.3 }); else cam.ots(d2, d1, { hold: 1.8, cut: 0.3 });
@@ -182,7 +247,8 @@ export default function (T) {
         yell(ctx, d1, 'EN DIE DEUK DAN?!', '#ff6b6b', 13);
         yield* wait(0.5);
 
-        // ---- 10. the duel
+        // ---- 10. the duel (a third car is already on its way, honking; and a cop, whistling, is on his)
+        const c3In = R.run((function* () { yield* wait(1.2); ctx.sfx('honk'); yield* R.enter(c3, x0, z, 0, { dir, speed: 11 }); c3.face(heading); })());
         B('10 the bumper duel', [d1, d2]);
         cam.dutch([d1, d2], { dist: 7.5, fit: true, az: dir * 0.2, hold: 3.2, cut: 0.4 });
         yield* wait(0.3);
@@ -196,10 +262,13 @@ export default function (T) {
         }
 
         // ---- 11. a third car, honking, who also did not see anything
-        B('11 a third car comes honking', [c3]);
+        const cop = lv >= 3 ? makePerson(rnd, { kind: 'cop' }) : null;
+        // the cop is on his way before anybody needs him: a whistle, then he runs in from out of the frame while driver three shouts
+        const copIn = cop ? R.run((function* () { yield* wait(4.0); ctx.sfx('whistle'); yield* R.enter(cop, clamp(xs + dir * 8, EX0, EX1), sz, undefined, { speed: 5.5, dir: -dir }); })()) : null;
+        B('11 a third car comes honking', [pt(xs - dir * 9, z)]);
+        d1.lookAt = d2.lookAt = pt(xs - dir * 9, z);
+        yield* waitUntil(() => c3In.done, 8);
         d1.lookAt = d2.lookAt = c3;
-        yield* R.enter(c3, x0, z, 0);
-        c3.face(heading);
         cam.nose(c3, dir, { dist: 8, hold: 2.6 });
         ctx.sfx('honk'); say(ctx, c3, 'HÉ! DOORRIJDEN!', { size: 13, color: '#ffd166' });
         d1.drop(); d2.drop();
@@ -207,7 +276,7 @@ export default function (T) {
         yield* wait(0.4);
         const tx = b.g.position.x - dir * (b.len + 0.1), dC = Math.abs(tx - c3.g.position.x);
         let nearC = false;
-        yield* drive(ctx, c3, [[tx, z]], braking(11, 0.55, 5), {
+        yield* driveOr(ctx, c3, tx, z, braking(11, 0.55, 5), {
           each: (dt, u) => {
             if (!nearC && dC * (1 - u) < 8) {
               nearC = true;
@@ -222,15 +291,16 @@ export default function (T) {
         ctx.fx.text('TIK!', at(tx + dir * (b.len / 2), 2.4, z), { size: 22, color: '#ffd60a' });
         ctx.fx.sparks(tx + dir * (b.len / 2), 0.8, z, 6);
         R.run(go(ctx, b, b.g.position.x + dir * 0.5, z, 4));
-        R.run((function* () { yield* wait(0.2); ctx.sfx('slam'); a.jolt(0.3); yield* go(ctx, a, a.g.position.x + dir * 0.45, z, 4); })());
+        R.run(go(ctx, a, a.g.position.x + dir * 0.5, z, 4)); // the shove goes down the whole line together: the gaps between them stay as they were
+        R.run((function* () { yield* wait(0.2); ctx.sfx('slam'); a.jolt(0.3); })());
         yield* wait(0.3);
         d1.lookAt = d2.lookAt = null;
         yield* all(doubleTake(ctx, d1, 'NOG EEN?!'), doubleTake(ctx, d2, 'WAT NU?!'));
         d1.mood = d2.mood = 'shock';
         const d3 = makePerson(rnd, { kind: rnd.chance(0.4) ? 'chef' : 'civ' });
-        B('13 driver three storms out', [d3, d1, d2]);
-        cam.close(d3, { dist: 6, hold: 2.4, cut: 0.3 });
-        yield* R.enter(d3, c3.g.position.x, sz);
+        B('13 driver three storms out', [c3, d1, d2]);
+        cam.close(c3, { dist: 6, hold: 2.4, cut: 0.3 });
+        yield* emerge(ctx, R, d3, c3, c3.g.position.x, sz);
         d3.arms = 'fist'; d3.mood = 'angry'; d3.heading = dir > 0 ? E : W;
         yell(ctx, d3, 'JULLIE STONDEN STIL!', '#ffb4a2', 13);
         d1.arms = d2.arms = 'fist';
@@ -238,13 +308,11 @@ export default function (T) {
         R.stop(smoke);
 
         // ---- 14. paperwork
-        const cop = lv >= 3 ? makePerson(rnd, { kind: 'cop' }) : null;
         let clip = null;
-        B('14 the form: somebody brings paper', [cop || d1]);
+        B('14 the form: somebody brings paper', [cop ? pt(xs + dir * 2.6, sz) : d1]);
         if (cop) {
-          yield* R.enter(cop, clamp(xs + dir * 8, EX0, EX1), sz);
-          cam.track(cop, { dist: 9, lead: 1, hold: 2.4 });
-          ctx.sfx('whistle');
+          cam.track(pt(xs + dir * 5, sz), { dist: 9, lead: 1 });
+          yield* waitUntil(() => copIn.done, 10);
           yield* go(ctx, cop, xs + dir * 2.6, sz, 5.5);
           cop.heading = dir > 0 ? W : E;
           cop.mood = 'focus';
@@ -317,14 +385,14 @@ export default function (T) {
         ctx.sfx('squawk');
         d1.lookAt = d2.lookAt = d3.lookAt = bird;
         if (lv >= 4) {
-          if (L.kind !== 'ped') R.run(R.police(-dir, zIn, 10, 0.2));
-          if (lv >= 5) R.run(R.police(dir, zOut, 12, 1.2));
+          if (zIn != null) R.run(R.police(-dir, zIn, 10, 0.2));
+          if (lv >= 5 && zOut != null) R.run(R.police(dir, zOut, 12, 1.2));
         }
         d1.arms = d2.arms = d3.arms = 'swing';
         yield* wait(0.5);
         if (cop) {
           cop.mood = 'smug';
-          say(ctx, cop, 'Dank u. De duif is getuige.', { size: 12, color: '#7db8ff' });
+          say(ctx, cop, 'Dank u. De ' + bn + ' is getuige.', { size: 12, color: '#7db8ff' });
         } else {
           say(ctx, d1, 'sorry', { size: 12, color: '#cfe8ff' });
           say(ctx, d2, 'ook sorry', { size: 12, color: '#cfe8ff' });
@@ -337,17 +405,36 @@ export default function (T) {
         yield* wait(0.9);
         R.stop(pace);
         d1.lookAt = d2.lookAt = d3.lookAt = null;
-        R.run((function* () { bird.fly = true; bird.air = true; yield* fly(bird, xs - dir * 3, 6, sz - 3, 6); R.gone(bird); })());
-        yield* all(R.out(d1), R.out(d2), R.out(d3));
-        if (cop) R.run(R.away(cop, dir * 7, 4));
+        const thief = flip(ctx, 'paperThief', 0.5) && sheets.length > 2 ? sheets[2] : null; // the culprit leaves with a sheet in its beak
+        if (thief) {
+          R.run((function* () { // it picks the sheet off the road and rises with it
+            const q = thief.position;
+            bird.fly = true; bird.air = true;
+            yield* fly(bird, q.x, 0.15, q.z, 3);
+            say(ctx, bird, 'rrrk!', { size: 12, color: '#cfe8ff' });
+            let up = 0;
+            const follow = R.run((function* () { for (;;) { yield; q.set(bird.g.position.x, bird.g.position.y + 0.12, bird.g.position.z); } })());
+            yield* fly(bird, bird.g.position.x + dir * 4, 7, bird.g.position.z, 5);
+            yield* fly(bird, bird.g.position.x + dir * 14, 9, bird.g.position.z, 7);
+            R.stop(follow); R.rm(thief); R.gone(bird);
+          })());
+        } else R.run((function* () { bird.fly = true; bird.air = true; yield* fly(bird, xs - dir * 3, 6, sz - 3, 6); yield* fly(bird, xs - dir * 3 - dir * 14, 9, sz - 3, 7); R.gone(bird); })());
+        if (cop) R.run(R.away(cop, dir * 7, 6));
+        yield* all(sink(ctx, R, d1, a, sgn), sink(ctx, R, d2, b, sgn), sink(ctx, R, d3, c3, sgn)); // everybody gets back in
         ctx.fx.smoke(b.g.position.x, 0.5, z, 5, ['#888', '#666'], 0.4);
         ctx.sfx('honk');
-        const away = (c) => drive(ctx, c, [[x1, z]], (u) => 1.5 + 7.5 * Math.min(1, u * 3)); // squats under power, then out
+        const outOf = function* (c) { // on out of the frame, and removed the moment nobody can see it
+          let n = 0;
+          yield* run1(ctx, c, clamp(ox + dir * 40, EX0 + 1, EX1 - 1), z, 9, { each: () => { if (!watching(ctx) || !seen(ctx, c.g.position.x, c.g.position.z, 1, 0.25)) n += 1; return n > 20; } });
+          R.gone(c);
+        };
+        const away = (c) => driveOr(ctx, c, x1, z, (u) => 1.5 + 7.5 * Math.min(1, u * 3)); // squats under power, then out
         yield* all(
-          (function* () { yield* away(a); yield* R.out(a); })(),
-          (function* () { yield* wait(0.5); yield* away(b); yield* R.out(b); })(),
-          (function* () { yield* wait(1.0); yield* away(c3); yield* R.out(c3); })(),
+          (function* () { yield* away(a); yield* outOf(a); })(),
+          (function* () { yield* wait(0.5); yield* away(b); yield* outOf(b); })(),
+          (function* () { yield* wait(1.0); yield* away(c3); yield* outOf(c3); })(),
         );
+        for (const g of crowd) R.give(g); // the onlookers go back to the street
         yield* R.settle(10);
         yield* wait(0.4);
         done = true;

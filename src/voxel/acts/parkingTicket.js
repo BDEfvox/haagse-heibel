@@ -34,8 +34,8 @@ export default function (T) {
       try {
         const z = L.hw + L.bw + 0.75;
         // who owns the car: somebody from the nearest real door, or (no door in reach) a walker who spots the cop
-        res = resident(ctx, R, car.x, null, { allow: ['door', 'passerby'], at: { x: car.x, z } });
-        const wd = car.x > 0 ? 1 : -1;                       // the way the warden strolls
+        res = resident(ctx, R, car.x, { kind: rnd.pick(['civ', 'granny']) }, { allow: ['door', 'passerby'], at: { x: car.x, z } }); // (the owner is the one who is laughed at: never one of the district's extras)
+        const wd = Math.abs(car.x) < 11 ? (flip(ctx, 'wd', 0.5) ? 1 : -1) : (car.x > 0 ? 1 : -1); // the way the warden strolls (either way when the car is in the middle, else towards the nearer end)
         const tx = car.x + 1.05, screen = { x: tx, y: 0.97, z: car.z }; // the windscreen end of the 4.4 m car
         const carPt = pt(car.x, car.z);
         const toCar = Math.atan2(0, car.z - z);               // heading from the pavement to the car
@@ -43,8 +43,8 @@ export default function (T) {
         // ---- 1. the patrol: pad in hand, peering at windscreens, checking his watch
         B('1 the patrol: the warden strolls along the cars', [cop, carPt]);
         const sx = clamp(car.x - wd * 9, EX0, EX1);
-        cam.wide(carPt, { dist: 17, el: 0.22, az: -wd * 0.3, hold: 1.5 });
-        yield* R.enter(cop, sx, padZ(ctx, 'walkF0', sx));
+        cam.wide(carPt, { dist: 14, el: 0.25, az: -wd * 0.08, hold: 1.5 }); // (across the street: the frame's edges are close, so the warden's walk in is short)
+        yield* R.enter(cop, sx, padZ(ctx, 'walkF0', sx), undefined, { from: 'edge', speed: 3.6 });
         cop.hold(item.pad()); cop.arms = 'write'; cop.gait = 'strut'; cop.mood = 'focus';
         cam.track(cop, { dist: 9, el: 0.1, az: wd * 0.5, lead: 2, cut: 0.9, hold: 7 });
         yield* go(ctx, cop, tx - wd * 3.4, z, 2.2);
@@ -105,13 +105,24 @@ export default function (T) {
         yield* wait(1.0);
 
         // ---- 4. the owner bursts out and skids to a stop
-        B('4 the owner: NEEE! IK STA ER NET!', [res.second]);
-        cam.dolly(carPt, { dist: 12, el: 0.18, az: -wd * 0.4, cut: 0.8, hold: 2 });
+        let owner = res.second; // (a passer-by who is borrowed from the crowd replaces him inside rush)
         const spot = { x: tx + wd * 1.5, z: z + 0.05 };
-        R.run(res.rush('NEEE! IK STA ER NET!', () => spot, { speed: 6.4, size: 14 }));
-        yield* wait(0.7);
-        const owner = res.second;
-        cam.track(owner, { dist: 8, el: 0.1, az: -wd * 0.5, lead: 2, hold: 3 });
+        if (res.doorway) {
+          // the cause is seen: the real door of the house opens and the owner bursts out of the dark, looking for his car
+          const dp = pt(res.doorway.out.x, res.doorway.z);
+          B('4 the owner: the front door flies open', [dp]);
+          cam.shot({ on: dp, y: 1.1, dist: 7.5, el: 0.06, az: -wd * 0.3, fov: 36, cut: 0.9 });
+          R.run(res.rush('NEEE! IK STA ER NET!', () => spot, { speed: 6.4, size: 14 }));
+          yield* wait(1.5);
+        } else {
+          B('4 the owner: NEEE! IK STA ER NET!', [res.second]);
+          cam.dolly(carPt, { dist: 12, el: 0.18, az: -wd * 0.4, cut: 0.8, hold: 2 });
+          R.run(res.rush('NEEE! IK STA ER NET!', () => spot, { speed: 6.4, size: 14 }));
+          yield* wait(0.7);
+        }
+        owner = res.second;
+        B('4b the owner runs for his car', [owner]);
+        cam.track(owner, { dist: 8, el: 0.1, az: -wd * 0.5, lead: 2 });
         yield* R.settle(8);
         owner.heading = Math.atan2(-wd, 0);
         cop.lookAt = owner; cop.arms = 'cross'; cop.mood = 'smug';
@@ -187,11 +198,11 @@ export default function (T) {
 
         // ---- 7. epilogue
         B('7 epilogue: warden strolls off whistling, the owner sits up with both tickets', [cop, owner]);
-        cam.wide(pt(tx + wd * 0.8, z), { dist: 16, el: 0.25, az: wd * 0.25, hold: 6 });
+        cam.wide(pt(tx + wd * 0.8, z), { dist: 13, el: 0.28, az: wd * 0.1, hold: 6 });
         cop.lookAt = null; cop.arms = 'swing'; cop.gait = 'strut'; cop.mood = 'whistle';
         ctx.sfx('whistle');
         say(ctx, cop, '*fluit fluit*', { size: 13, color: '#7db8ff' });
-        R.run(R.away(cop, wd * 9, 2.1));
+        R.run(R.away(cop, wd * 9, 2.6));
         yield* wait(1.4);
         // the owner sits up; the wind brings him the first ticket too
         R.rm(t2);

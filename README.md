@@ -108,14 +108,32 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
 - Roaming onto another street moves the focus there with the camera staying put (`Stage.show` with
   `keep`, `shiftFocus` in `main.js`). Zooming out far enough hands over to the flat map, and zooming
   in on the map by the same amount hands back at the same spot
-- Light follows the real time of day in The Hague (`skyAt` in `stage.js`)
+- Light follows the real time of day in The Hague (`skyAt` in `stage.js`), or is held at day or night with the
+  round light button. Night has its own look: street lamps at realistic spacing (`lampsOf` in `world.js`, real mapped
+  positions where OpenStreetMap has them) with pools of light baked into the ground, lit windows by kind of
+  building and hour, shop signs, head and tail lights, terrace light strings
+- `src/voxel/districts.js` — who lives where: a table of street characters per district (kids on fat-bikes in
+  Schilderswijk and Laak, mullets and jackets around the centre and Duindorp, civil servants, tourists, joggers,
+  surfers, cargo-bike parents...) that the crowd draws from. Types are outfit, vehicle and behaviour only
+- `src/voxel/brands.js` — shop fronts show the real business at that spot under a parody name: chains from a
+  hand-written table (name, colours, a small drawn mark of their own), every other name respelled in Hague dialect
+- `src/voxel/statues/` — the city's statues, monuments and fountains, each drawn from its own recipe
+  (`node scripts/check-statues.mjs` validates them)
+- `src/voxel/places.js` — the places that are lively in reality (Grote Markt, Het Plein, Chinatown, the Haagse
+  Markt, the beach clubs) and what stands there; `DETAIL.md` is the audit of how detailed each kind of place is
 - `src/voxel/geo.js` — paths you can walk along, the ground raster, footprint boxes
 - `src/voxel/street.js` — lanes and pavements fitted between the real fronts, and the 48 m "spots"
   where gags play, with the doors, windows and furniture found there
 - `src/voxel/furnish.js` — street furniture for every street, placed per map tile
 - `src/voxel/gags.js` — background street life, the set-piece toolkit (movement, acting, driving), four
   ambient gags, the crime-mix weighting and the director that picks what plays. Gags are written for a
-  straight street; the stage bends them onto the real one
+  straight street; the stage bends them onto the real one. The opening scene is a weighted draw that
+  remembers what played last, so nothing repeats back to back (`node scripts/scene-rates.mjs` prints each
+  scene's share)
+- `src/voxel/setting.js` — what really stands at a spot (parked cars, lamp posts, furniture, terraces), so a
+  scene only plays where it has free ground, people walk round things, cars keep to the road, and everyone
+  enters from out of frame or through a real door instead of appearing. While a scene plays the crowd keeps
+  out of its circle: passers-by stop at the rim to watch or film, go round, or run
 - `src/voxel/acts/` — the nineteen crime scenes, one file each. Every scene follows a storyboard
   (`storyboards/`, index in [STORYBOARDS.md](STORYBOARDS.md)) beat for beat; [ACTS.md](ACTS.md) explains
   how to write one. On the dev server `__heibel.audit('<scene>')` plays a scene on fast-forward and

@@ -156,6 +156,25 @@ h.door.x, h.door.z, 0.001)` already steps out of the door.
 The raw `popIn(ctx, a)` / `popOut(ctx, a)` stay in the toolkit for magic (smoke clouds, a prop pulled from a pocket); `T.exitOut`,
 `T.enter` (the rig-free version) are there for scenes that do not use `R`.
 
+### Real doors and windows
+
+Nothing door-shaped is ever invented: a scene opens the building's own door. `doorHouse(ctx, x, maxDist, opt)` finds a
+house record with a modelled door near x (or use one from `L.houses` / `L.shops`); `const d = doorway(ctx, R, house)`
+gives that door as something you can open (null for a tower or a front without a modelled door; `R` shuts it when the
+script ends), `windowAt(ctx, R, house)` the first-floor window.
+
+- `yield* d.open()` / `yield* d.close()`: a dark opening where the real door is and a leaf of the real door's colour and
+  size swung out on its hinge; closed, nothing extra shows. `d.force()` for a kicked or jemmied door.
+- `yield* d.passOut(actor, speed, z1)` / `yield* d.passIn(actor, speed)`: the person starts behind the wall, is seen in
+  the dark doorway, and steps over the threshold (or goes back in). `d.out`, `d.inside`, `d.at(lx, lz)`, `d.heading`.
+- `d.bell`, `d.bellStand`, `yield* d.press(actor)`: the real bell plate beside the door and where to stand to ring it.
+- Windows: `d.pose(actor, u)` stands the person inside (u = 0) or leaning out over the sill (u = 1), `yield* d.retreat(actor)`.
+- `R.enter(a, x, z, 0, { from: 'door' })` and `R.out(a)` of someone who came from a door use the same doorway.
+  Careful: a point within 1.2 m of ANY door counts as that door. For someone who must not come out of a neighbour's
+  house (a thief, a cop, a kid) pass `{ from: 'edge' }`.
+- `resident(...)` uses all of this (its return value has `doorway` and `window`); `fatbike()` also returns `arrive`, the
+  ride-in to wait for.
+
 ## 4. Moving people
 
 `yield* go(ctx, a, x, z, speed)` · `yield* goEach(ctx, a, x, z, speed, (dt) => {...})` (return true to stop) ·

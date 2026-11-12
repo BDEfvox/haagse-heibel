@@ -15,7 +15,8 @@
 //                reach (m from a front), style, lane (m between clear lanes), keep [[x, y, r], ...] circles kept free.
 //     garlands   warm strings of lights on poles over the terraces (lit at night, dark but present by day).
 //     lanterns   red lanterns strung across the streets inside (Chinatown); `streets` limits it to named streets.
-//     market     rows of market stalls along the streets inside (`streets` limits it by name). They stand on the
+//     market     (ground: { seed: [x, y] map metres, angle: degrees of the rows in tile axes (x east, z south), halfW, halfL })
+//                fills the open ground round the seed with back-to-back rows; shut at night. Rows of market stalls along the streets inside (`streets` limits it by name). They stand on the
 //                pavements. `inRoad: true` puts them on the carriageway as well, which is only right once the crowd
 //                closes that street to cars (nothing here does that yet, so the cars would drive through the stalls).
 //     stalls     fish / herring / chips stalls and crates along a quay or promenade (harbour).
@@ -59,7 +60,7 @@ export const PLACES = [
   { id: 'chinatown', name: 'Chinatown (Wagenstraat)', x: 960, y: 570, box: [870, 500, 1045, 680],
     recipes: { lanterns: { streets: ['Wagenstraat'] }, terraces: { parasol: 'striped', tables: 'sq4', chairs: 'bistro', heaters: 0.3, lights: 0.6, busy: 1.0, maxRows: 2 } } },
   { id: 'haagse-markt', name: 'Haagse Markt (Herman Costerstraat)', x: -150, y: -560, box: [-260, -760, -60, -390],
-    recipes: { market: { streets: ['Herman Costerstraat'] } } },
+    recipes: { market: { streets: ['Herman Costerstraat'], ground: { seed: [-65, -596], angle: 59, halfW: 36, halfL: 190 } } } },
   // ---- the coast
   { id: 'scheveningen-boulevard', name: 'Scheveningen boulevard and Kurhausplein', x: -1200, y: 4880, box: [-1480, 4640, -950, 5300],
     recipes: { terraces: { parasol: 'brand', tables: 'lounge', chairs: 'wicker', heaters: 0.7, lights: 1, busy: 1.2, maxRows: 3, wind: true }, garlands: { density: 0.8 } } },

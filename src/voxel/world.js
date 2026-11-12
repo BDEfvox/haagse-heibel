@@ -538,6 +538,17 @@ function drawHero(v, gl, u, rnd, night, dry = false) {
   if (u.atm) P.atm(v, gl, -w / 2 + 0.9, depth / 2 + 0.05, 0);
   const out = { u, info, cat: info.cat || null, name: info.name || null, th, side: u.side, w, front: toS(0, depth / 2), door: toS(info.door.x, info.door.z), win: toS(info.win.x, info.win.z), winY: info.win.y };
   if (u.atm) out.atm = toS(-w / 2 + 0.9, depth / 2 + 1.2);
+  // the leaf of the front door, the first-floor window and the bell, as the doorway helper (gags.js) needs them: the middle of the
+  // face each shows, in scene coordinates, plus the way the facade's own x axis (along the front) points
+  if (!u.tower && info.door && info.door.w) {
+    const d = info.door, tv = [c, -s];
+    out.leaf = {
+      p: toS(d.x, d.face), tv, w: d.w, h: d.h, y: d.y, col: d.col, shop: d.shop, glass: d.glass || null, lit: !!d.lit,
+      bell: d.bell ? { p: toS(d.x + d.bell.lx, d.bell.face), y: d.bell.y } : null,
+    };
+    const q = info.win;
+    if (q && q.real) out.sash = { p: toS(q.x, q.face), tv, w: q.w, h: q.h, y: q.y, glass: q.glass };
+  }
   if (info.chimney) { const p = toS(info.chimney.x, info.chimney.z); out.chimney = { x: p[0], y: info.chimney.y, z: p[1] }; }
   if (info.sign) {
     const p = toS(info.sign.position.x, info.sign.position.z);

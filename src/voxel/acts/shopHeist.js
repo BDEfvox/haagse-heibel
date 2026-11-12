@@ -14,6 +14,7 @@ export default function (T) {
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
     release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
   } = T;
+  const { doorway } = T;
 
   const gateProp = () => piece((v, gl) => {
     for (const sx of [-0.8, 0.8]) { v.box(sx, 0, 0, 0.12, 2.1, 0.12, '#cfd8dc'); gl.box(sx, 2.1, 0, 0.18, 0.16, 0.18, '#ff2d2d'); } // 2.1 m: taller than a 2 m person
@@ -32,8 +33,8 @@ export default function (T) {
   const heistShops = (ctx) => once(ctx, 'heist', () => heistShops0(ctx));
   function heistShops0(ctx) {
     const out = [];
-    for (const s of S.housesNear(ctx, 0, 24, { door: true, shop: true })) {
-      if (s.shop === 'BANK') continue;
+    for (const s of S.housesNear(ctx, 0, 24, { door: true, shop: true, tower: false })) {
+      if (s.shop === 'BANK' || !s.leaf) continue; // (a shop unit with a real, modelled door)
       const dzr = s.door.z, cz = Math.min(dzr + 1.3, padZ(ctx, 'walkB1', s.door.x)), want = s.x > 0 ? -1 : 1;
       const a = S.runway(ctx, s.door.x, cz, want, 14, 0.7), b = S.runway(ctx, s.door.x, cz, -want, 14, 0.7);
       const la = Math.abs(a - s.door.x), lb = Math.abs(b - s.door.x);
@@ -46,12 +47,15 @@ export default function (T) {
   return {
     w: [0, 0, 0, 3, 2], crime: 2,
     avail: (ctx) => heistShops(ctx).length > 0,
+    stage: { pave: { side: 'far', len: 10, depth: 2 }, anchor: 'shop', reach: 10 },
     *run(ctx) {
       const { L, rnd } = ctx, lv = ctx.level, cam = camFor(ctx, 'shopHeist'), R = rig(ctx), spots = heistShops(ctx);
       if (!spots.length) return;
-      const pickd = rnd.pick(spots), s = pickd.s;
+      const sx0 = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
+      const pickd = rnd.pick(spots.slice().sort((p, q) => Math.abs(p.s.door.x - sx0) - Math.abs(q.s.door.x - sx0)).slice(0, 2)), s = pickd.s;
       let done = false;
       try {
+        const dw = doorway(ctx, R, s); // the shop's real door: it opens on a dark doorway, the leaf is the door's own colour
         const dir = pickd.dir, hd = dir > 0 ? E : W;
         const dx = s.door.x, dzr = s.door.z, gz = dzr + 0.55, cz = pickd.cz, cx = clamp(dx + dir * 2.0, EX0 + 1, EX1 - 1);
         const door = pt(dx, dzr + 0.6), edge = pickd.edge;
@@ -80,7 +84,7 @@ export default function (T) {
 
         // ---- 1. set-up: the shopkeeper sweeps the pavement, back half turned
         B('1 sweeping: the shopkeeper sweeps in front of his shop', [keeper, door]);
-        cam.wide(door, { dist: 20, el: 0.3, az: -dir * 0.25, hold: 3.6 });
+        cam.wide(door, { dist: 18, el: 0.25, y: 1.7, az: -dir * 0.25, hold: 3.6 }); // (the shop's own sign in the picture: 2.7 m up)
         const sweep = R.run((function* () {
           yield* R.enter(keeper, dx, dzr);
           keeper.hold(item.broom());
@@ -93,7 +97,7 @@ export default function (T) {
         yield* wait(1.2);
         B('1b casing: the customer tiptoes up to the cart', [rob]);
         const rx0 = clamp(dx - dir * 14, EX0, EX1);
-        yield* R.enter(rob, rx0, padZ(ctx, 'walkB1', rx0));
+        yield* R.enter(rob, rx0, padZ(ctx, 'walkB1', rx0), undefined, { from: 'edge', speed: 4.4 });
         cam.track(rob, { dist: 9.5, el: 0.14, az: dir * 0.5, lead: 1.5, cut: 1.0, hold: 6 });
         yield* tiptoe(ctx, rob, cx - dir * 1.4, cz, 3.0);
         rob.heading = 0; rob.mood = 'sly';
@@ -112,16 +116,18 @@ export default function (T) {
         rob.arms = 'swing';
 
         // ---- 3. the spree: each trip into the shop, back with something bigger on the cart
+        // in through the real shop door (it is open for the whole spree), a rummage behind the wall, and out again
         const doorWalk = function* (inside = null) {
           rob.arms = 'swing'; rob.mood = 'sly';
           yield* go(ctx, rob, dx, gz + 0.1, 4);
-          rob.g.visible = false;
-          ctx.sfx('dingdong');
+          yield* go(ctx, rob, dw.out.x, dw.out.z, 3);
+          yield* dw.passIn(rob, 2.2);
           ctx.fx.text('*rommel*', at(dx, 2.3, dzr), { size: 14, color: '#ffe08a', dur: 0.8 }); // he is in there, ransacking: we hear it
           if (inside) yield* inside();
           yield* wait(0.55);
-          rob.g.visible = true;
         };
+        let doorHeld = false;
+        const outAgain = function* () { yield* dw.passOut(rob, 2.0); };
         for (let i = 0; i < 2; i++) {
           if (i === 0) {
             B('3 the spree: first trip into the shop, out with a box', [rob, door, cart]);
@@ -131,10 +137,12 @@ export default function (T) {
             cam.dolly([rob, cart], { dist: 8, el: 0.2, az: dir * 0.35, fit: true, hold: 6 });
           }
           yield* wait(0.3);
+          if (!doorHeld) { doorHeld = true; yield* dw.open(); }
           yield* doorWalk();
           const m = lootBox(i + 1);
           m.scale.setScalar(1.3);
           rob.hold(m, 'front'); rob.arms = 'carry'; rob.mood = 'smug';
+          yield* outAgain();
           yield* go(ctx, rob, cx - dir * 0.8, cz, 4);
           rob.drop();
           ctx.sfx('yoink', 1.2);
@@ -164,6 +172,7 @@ export default function (T) {
         });
         rob.hold(tv, 'front'); rob.arms = 'carry'; rob.mood = 'smug';
         ctx.wanted = rob;
+        yield* outAgain();
         yield* go(ctx, rob, dx, gz + 0.9, 2.2);
         B('4b the beep: frozen in the light of the gate', [rob, gate]);
         cam.crash(rob, { hold: 2.4 });
@@ -278,7 +287,7 @@ export default function (T) {
         B('8 the law arrives: POLITIE, the keeper stands over him', [cop, rob, keeper]);
         cam.wide([rob, keeper], { dist: 14, el: 0.22, az: -dir * 0.2, fit: true, hold: 3 });
         yield* wait(0.3);
-        yield* R.enter(cop, clamp(rp.x - dir * 9, EX0, EX1), cz);
+        yield* R.enter(cop, clamp(rp.x - dir * 9, EX0, EX1), cz, undefined, { from: 'edge' });
         ctx.sfx('whistle');
         cop.arms = 'stop'; cop.mood = 'angry';
         say(ctx, cop, 'POLITIE! BLIJF ZITTEN!', { size: 14, color: '#7db8ff' });
@@ -297,7 +306,7 @@ export default function (T) {
         keeper.arms = 'spray'; keeper.lookAt = null; keeper.mood = 'smug';
         ctx.sfx('whoosh');
         ctx.fx.text('UITVERKOOP!', at(dx, 3.4, dzr), { size: 22, color: '#ffd60a', dur: 2 });
-        for (const [m] of stack) R.run((function* () { yield* wait(rnd.range(0, 0.5)); yield* arc(m, dx, 0.8, dzr + 0.3, 1.2, 0.8, 5); R.rm(m); })());
+        for (const [m] of stack) R.run((function* () { const g1 = dw.at(0, -0.7); yield* wait(rnd.range(0, 0.5)); yield* arc(m, g1.x, 0.8, g1.z, 1.2, 0.9, 5); R.rm(m); })()); // (into the dark doorway: gone behind the wall, not on the doorstep)
         yield* wait(1.1);
 
         B('9b the bill: the keeper presents it', [keeper, rob]);
@@ -327,10 +336,17 @@ export default function (T) {
         yield* wait(0.3);
         R.run(R.away(rob, dir * 6, 3.6));
         R.run(R.out(keeper));
-        R.run(vanish(R, cart, 0.4));
-        cam.wide(door, { dist: 22, hold: 2.4 });
+        // the cart is wheeled back into the shop through its door (it disappears behind the wall, not in thin air)
+        R.run((function* () {
+          const cp = cart.position, c0 = { x: cp.x, z: cp.z }, inn = dw.at(0, -0.9), mid = dw.at(0, 0.7);
+          yield* tween(0.9, (u) => { cp.x = lerp(c0.x, mid.x, u); cp.z = lerp(c0.z, mid.z, u); cart.rotation.y = lerp(cart.rotation.y, dw.heading + Math.PI, u); });
+          yield* tween(0.5, (u) => { cp.x = lerp(mid.x, inn.x, u); cp.z = lerp(mid.z, inn.z, u); });
+          R.rm(cart);
+        })());
+        cam.wide(door, { dist: 14, el: 0.25, az: 0.05, hold: 2.4 });
         R.stop(gblink); gate.children[1].visible = true;
         yield* R.settle(10);
+        if (doorHeld) { doorHeld = false; yield* dw.close(); }
         yield* wait(0.4);
         done = true;
       } finally {

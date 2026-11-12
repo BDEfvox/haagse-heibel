@@ -24,15 +24,41 @@ export default function (T) {
     return j;
   };
 
+  /**
+   * Where the deal happens: along the kerb-side pavement lines, the spot with the most clear room round it AND a clear way to the
+   * road (so a camera can stand and look at it), nearest the stage's centre. Null when nothing has 0.8 m of room.
+   */
+  function dealSpot(ctx, stageX, rnd) {
+    let best = null;
+    for (const nm of ['walkF1', 'walkB1']) {
+      for (let dx = -9; dx <= 9; dx += 1.5) {
+        const x = clamp(stageX + dx + rnd.range(-0.4, 0.4), -14, 14), z = padZ(ctx, nm, x);
+        let r = 0;
+        for (const rr of [3.0, 2.4, 1.8, 1.3, 0.9]) if (S.clearSpot(ctx, x, z, rr)) { r = rr; break; }
+        if (!r) continue;
+        const zr = z + (z > 0 ? -2.4 : 2.4); // the road side of the pavement: nothing parked there, so the camera can stand on it
+        const open = S.clearSpot(ctx, x, zr, 0.8, { ground: 'open' }) ? 4 : 0;
+        const score = r * 3 + open - Math.abs(dx) * 0.25;
+        if (!best || score > best.score) best = { x, z, score };
+      }
+    }
+    return best;
+  }
+
   return {
     w: [0, 0, 1.4, 2, 2], crime: 1,
+    // a clear patch of the camera-side pavement for the deal, and room either side for the customer and the cop to walk up
+    stage: { pave: { side: 'any', len: 8, depth: 2 } },
     avail: (ctx) => !!padSpot(ctx, 'walkF1', 0, 1.0, 14),
     *run(ctx) {
+      const stageX = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
       const { L, rnd } = ctx, cam = camFor(ctx, 'shadyDeal'), B = beatsFor(ctx, 'shadyDeal'), R = rig(ctx);
-      const spot = padSpot(ctx, 'walkF1', rnd.range(-7, 7), 1.0, 14);
+      // (room round the deal: the camera must be able to stand and look, so prefer a spot with 2 m of nothing about it)
+      const spot = dealSpot(ctx, stageX, rnd);
       if (!spot) return;
       const x = spot.x, z = spot.z, side0 = rnd.sign();
       let done = false;
+      const sneezeEnd = flip(ctx, 'sneeze', 0.35); // second ending: the oregano gets the cop instead
       try {
         const dealer = makePerson(rnd, { kind: 'hoodie', shirt: '#4a3b2a' });
         const cop = makePerson(rnd, { kind: 'cop' });
@@ -46,11 +72,11 @@ export default function (T) {
 
         // ---- 1. loitering: he saunters up, leans, and looks up and down the street, far too casual
         B('1 loitering: the dealer looks up and down the street', [dealer]);
-        cam.wide(pt(x, z), { dist: 16, el: 0.3, az: 0.25, hold: 1.4 });
-        yield* R.enter(dealer, clamp(x - side0 * 7, EX0, EX1), z);
+        cam.wide(pt(x - side0 * 3, z), { dist: 11, el: 0.25, az: 0.25, hold: 1.4 });
         dealer.gait = 'sneak'; dealer.mood = 'whistle';
-        cam.dolly(dealer, { dist: 12, az: 0.15, y: 1.3, hold: 4.6 });
-        yield* go(ctx, dealer, x, z, 2.6);
+        yield* R.enter(dealer, x - side0 * 2.5, z, undefined, { dir: side0 < 0 ? 1 : -1, speed: 3.4 });
+        cam.dolly(dealer, { dist: 9, az: 0.15, y: 1.3, hold: 4.6 });
+        yield* go(ctx, dealer, x, z, 2.2);
         dealer.gait = 'walk'; dealer.heading = 0.2; dealer.arms = 'cross'; dealer.mood = 'whistle';
         yield* wait(0.3);
         dealer.lookAt = { x: x - 8, z }; yield* wait(0.7);
@@ -59,16 +85,15 @@ export default function (T) {
         dealer.lookAt = null;
         say(ctx, dealer, 'psst...', { size: 12, color: '#b9fbc0' });
 
-        // the customer is fetched now, so that he does not stand about in the street waiting for us
-        let ped = null, arrived = false, left = side0 < 0;
+        // the customer is on his way now (somebody near, or a new walker from out of the frame): he arrives as the reveal ends
+        let ped = takePed(ctx, 12, null, x), arrived = false, left = side0 < 0;
+        const inventedCust = !ped;
+        if (ped) { R.borrow(ped); left = ped.g.position.x < x; } else { ped = makePerson(rnd, { kind: T.extraKind ? T.extraKind(ctx) : 'civ' }); left = rnd.chance(0.5); }
         const finder = R.run((function* () {
-          const p = yield* needPed(ctx, 12);
-          if (!p) return;
-          R.borrow(p);
-          ped = p;
-          left = p.g.position.x < x;
+          yield* wait(0.6);
           const ps = spotNear(ctx, x + (left ? -1.2 : 1.2), z - 0.2);
-          yield* go(ctx, p, ps.x, ps.z, 2.6);
+          if (inventedCust) yield* R.enter(ped, ps.x, ps.z, undefined, { dir: left ? 1 : -1, speed: 2.8 });
+          else yield* go(ctx, ped, ps.x, ps.z, 2.8);
           arrived = true;
         })());
 
@@ -87,9 +112,9 @@ export default function (T) {
         say(ctx, dealer, rnd.pick(['OREGANO. ECHT WAAR.', '"KRUIDEN"', 'VERS UIT DE... TUIN']), { size: 14, color: '#b9fbc0' });
 
         // ---- 3. the customer: psst, a sniff, HATSJOE, and a wad changes hands
-        B('3 the customer: peers, sniffs a jar, money changes hands', [dealer]);
+        B('3 the customer: peers, sniffs a jar, money changes hands', [dealer, pt(x + (left ? -1.2 : 1.2), z)]);
         yield* waitUntil(() => arrived || finder.done, 14);
-        if (!ped || !arrived) { // nobody came: the dealer shuts his coat and slinks off
+        if (!arrived) { // nobody came: the dealer shuts his coat and slinks off
           coat(false); dealer.mood = 'sad';
           yield* R.leave(dealer, 3, clamp(x + side0 * 12, EX0, EX1));
           done = true;
@@ -120,7 +145,11 @@ export default function (T) {
         yield* hop(ped, 0.3, 0.26);
         ped.mood = 'happy';
         yield* wait(0.5);
-        // the handover, close
+        // the handover, close (meanwhile a cop strolls in from the other side, out of this shot)
+        const cd = -cs, copX = x + cd * 1.35;
+        cop.heading = cd > 0 ? W : E; cop.mood = 'smug'; cop.gait = 'strut';
+        let copIn = false;
+        const copTask = R.run((function* () { yield* R.enter(cop, copX, z, undefined, { dir: cd > 0 ? -1 : 1, speed: 2.3 }); copIn = true; })());
         cam.shot({ on: [ped, dealer], dist: 5.4, el: 0.05, y: 1.15, fov: 30, hold: 2.6 });
         yield* wait(0.35);
         const wad1 = R.add(item.wad());
@@ -139,16 +168,10 @@ export default function (T) {
         yield* wait(0.9);
 
         // ---- 4. the law: a cop strolls up behind; the customer sees him first, the dealer snaps his coat shut
-        B('4 the law: the cop strolls up, the customer points, the dealer whistles', [cop, dealer, ped]);
-        const cd = -cs, cx0 = clamp(x + cd * 11, EX0, EX1), copX = x + cd * 1.35;
-        R.spawn(cop, cx0, padZ(ctx, 'walkF0', cx0));
-        cop.g.scale.setScalar(0.001);
-        R.run(popIn(ctx, cop));
-        cop.heading = cd > 0 ? W : E; cop.mood = 'smug'; cop.gait = 'strut';
-        cam.shot({ on: [ped, dealer, cop], dist: 16, el: 0.2, az: -cd * 0.15, y: 1.2, fov: 34, fit: true, cut: 0.4, hold: 4.2 });
+        B('4 the law: the cop strolls up, the customer points, the dealer whistles', [dealer, ped, pt(x + cd * 6, z)]);
+        cam.shot({ on: [ped, dealer, pt(x + cd * 6, z)], dist: 16, el: 0.2, az: -cd * 0.15, y: 1.2, fov: 34, fit: true, cut: 0.4, hold: 4.2 });
         yield* wait(0.3);
-        const cwalk = R.run(go(ctx, cop, copX, z, 2.6));
-        yield* waitUntil(() => Math.abs(cop.g.position.x - x) < 6, 6);
+        yield* waitUntil(() => (Math.abs(cop.g.position.x - x) < 6 && !cop.offstage) || copTask.done, 40);
         ped.lookAt = cop;
         yield* doubleTake(ctx, ped, 'HÈ!');
         ped.arms = 'point'; ped.mood = 'shock';
@@ -166,27 +189,27 @@ export default function (T) {
         say(ctx, dealer, 'NIKS!', { size: 16, color: '#ffffff', off: 0.6 });
         ctx.wanted = dealer;
         ped.arms = 'swing'; ped.lookAt = null; ped.mood = 'happy';
-        yield* waitUntil(() => cwalk.done, 4);
+        yield* waitUntil(() => copTask.done, 40);
         cop.gait = 'walk'; cop.heading = cd > 0 ? W : E; cop.lookAt = dealer; cop.mood = 'focus';
         yield* wait(0.5);
 
         // ---- 5. the tap: sniff, tap, and the jars fall out one by one, then all at once
-        B('5 the tap: jars clatter onto the pavement', [dealer, cop]);
         const jars = [];
         const fl = -cd; // the way the dealer runs: away from the cop, on the camera side of the customer
-        const jx = x + fl * 2.2, jz = z + 0.9 * (2.2 / 11), slipIdx = 4;
+        const jx = x + fl * 4.2, jz = z + (z > 0 ? 0.35 : -0.35), slipIdx = 4;
+        B('5 the tap: jars clatter onto the pavement', [dealer, cop, pt(jx, jz)]);
         const spots = [[x - 0.6, z + 0.35], [x + 0.5, z + 0.25], [x - 0.15, z + 0.55], [x + 1.0, z + 0.4], [jx, jz], [x + 0.2, z + 0.15]];
         const dropJar = (i) => {
           const c = COLS[i % 4], jo = R.add(mkJar(c)), s = spots[i];
           jo.position.set(x, 1.1, z + 0.3);
           jars[i] = { o: jo, x: s[0], z: s[1], c };
           return R.run((function* () {
-            yield* arc(jo, s[0], 0.02, s[1], 0.35, 0.4, 6 + i);
+            yield* arc(jo, s[0], 0.02, s[1], 0.35, i === 4 ? 0.75 : 0.4, 6 + i);
             ctx.sfx('clatter'); ctx.fx.dust(s[0], 0, s[1], 0, 0, 2);
             yield* arc(jo, s[0] + (i % 2 ? 0.15 : -0.15), 0.02, s[1], 0.15, 0.18, 2);
           })());
         };
-        cam.ground(pt(x, z + 0.3), { dist: 5.4, az: -cd * 0.25, y: 0.5, cut: 0.3, hold: 3.6 });
+        cam.ground([pt(x, z + 0.3), pt(jx, jz)], { dist: 6.5, az: -cd * 0.25, y: 0.5, fit: true, cut: 0.3, hold: 3.6 });
         yield* wait(0.35);
         for (let i = 0; i < 2; i++) { cop.squash(0.1); ctx.sfx('tick'); ctx.fx.text('snif', at(cop.g.position.x, 2.1, cop.g.position.z), { size: 14, color: '#cfe8ff', dur: 0.6 }); yield* wait(0.3); }
         cop.arms = 'point';
@@ -208,8 +231,43 @@ export default function (T) {
         say(ctx, dealer, '...OREGANO?', { size: 14, color: '#ffffff' });
         yield* wait(0.9);
 
+        if (sneezeEnd) {
+          // ---- 6 (second ending). the cop picks up a jar to sniff it properly, and the oregano gets HIM; the dealer strolls off whistling
+          B('6 the sneeze: the cop picks up a jar to smell it and the oregano gets him', [cop, dealer]);
+          const j2 = jars[2];
+          cam.shot({ on: [cop, dealer, pt(j2.x, j2.z)], dist: 8, el: 0.12, az: fl * 0.3, y: 1.0, fov: 34, fit: true, hold: 3 });
+          dealer.arms = 'cross'; dealer.mood = 'whistle'; dealer.lookAt = null;
+          yield* go(ctx, cop, j2.x - cd * 0.5, j2.z - 0.3, 2.4);
+          cop.arms = 'reach'; cop.squash(0.2);
+          yield* wait(0.3);
+          R.rm(j2.o);
+          cop.hold(mkJar(j2.c)); cop.arms = 'hold'; cop.mood = 'focus';
+          ctx.sfx('tick');
+          yield* wait(0.5);
+          for (let i = 0; i < 2; i++) { ctx.sfx('tick'); cop.squash(0.12); ctx.fx.text('snif', at(cop.g.position.x, 2.1, cop.g.position.z), { size: 14, color: '#cfe8ff', dur: 0.6 }); yield* wait(0.35); }
+          cop.mood = 'shock';
+          ctx.sfx('gasp');
+          say(ctx, cop, 'HA... HA... HA...', { size: 14, color: '#cfe8ff' });
+          yield* wait(0.7);
+          B('6b the sneeze: HATSJOE, and the cop sits down in a green cloud', [cop]);
+          cam.close(cop, { dist: 6, cut: 0.4, hold: 2.6 });
+          yield* wait(0.4);
+          say(ctx, cop, 'HATSJOEEE!', { size: 26, color: '#b9fbc0' });
+          ctx.sfx('boing');
+          ctx.fx.smoke(cop.g.position.x, 1.6, cop.g.position.z, 16, ['#7cfc9a', '#5a8f3c', '#3f6f2a'], 0.6);
+          cop.drop();
+          const cq = cop.g.position;
+          R.run(R.away(dealer, fl * 10, 2.4)); // (the dealer strolls off whistling, hands in pockets)
+          yield* tumble(ctx, cop, cq.x + cd * 1.6, cq.z, 0.7, 0.5);
+          R.run(seeStars(ctx, cop, 1.8));
+          ctx.news('Officer sneezes on own evidence; suspect strolls off. "Het was echt oregano," says the suspect');
+          yield* wait(1.6);
+          B('7 epilogue: the dealer is gone, the cop sits in the cloud', [cop]);
+          cam.wide(pt(x, z), { dist: 14, el: 0.25, hold: 3 });
+          yield* wait(0.6);
+        } else {
         // ---- 6. the run: he bolts, skids on his own jar and goes down in a green cloud; the cop sneezes too
-        B('6 the run: the dealer slips on his own jar', [dealer, cop]);
+        B('6 the run: the dealer bolts, the cop after him', [dealer, cop]);
         const fx1 = clamp(x + fl * 11, EX0, EX1);
         dealer.arms = 'swing'; dealer.mood = 'scared';
         ctx.sfx('hey');
@@ -220,12 +278,12 @@ export default function (T) {
         const pchase = R.run((function* () { yield* wait(0.4); cop.mood = 'angry'; yield* chase(ctx, cop, dealer, 5.6, 1.0, 8); })());
         yield* wait(0.3);
         let dutch = false;
-        yield* goEach(ctx, dealer, fx1, z + 0.9, 6.6, () => {
+        yield* goEach(ctx, dealer, fx1, jz, 6.0, () => {
           const d = Math.abs(dealer.g.position.x - jx);
           if (!dutch && d < 2.6) {
             dutch = true;
             B('6b the slip', [dealer, jars[slipIdx].o]);
-            cam.dutch([dealer, cop], { dist: 8, az: fl * 0.3, face: false, fit: true, cut: 0.2, hold: 2.6 });
+            cam.dutch([dealer, jars[slipIdx].o], { dist: 7, az: fl * 0.3, face: false, fit: true, cut: 0.2, hold: 2.6 });
           }
           return d < 0.3;
         });
@@ -237,7 +295,7 @@ export default function (T) {
         ctx.fx.smoke(dp.x, 0.6, dp.z, 16, ['#7cfc9a', '#5a8f3c', '#3f6f2a'], 0.6);
         R.run(arc(jars[slipIdx].o, jx + fl * 3.2, 0.02, jz, 0.5, 0.7, 9));
         R.stop(pchase);
-        yield* tumble(ctx, dealer, dp.x + fl * 2.2, z + 1.0, 0.9, 0.6);
+        yield* tumble(ctx, dealer, dp.x + fl * 2.2, jz + (z > 0 ? 0.5 : -0.5), 0.9, 0.6);
         ctx.fx.smoke(dealer.g.position.x, 0.5, dealer.g.position.z, 14, ['#7cfc9a', '#5a8f3c', '#3f6f2a'], 0.6);
         // the cop arrives at the cloud, and sneezes
         R.run((function* () {
@@ -256,7 +314,7 @@ export default function (T) {
         yield* wait(2.1);
 
         // ---- 7. epilogue: cuffs and stars; the customer pockets one last jar and strolls on
-        B('7 epilogue: the cop leads him off, the customer pockets a jar', [cop, dealer]);
+        B('7 epilogue: the cop leads him off', [cop, dealer]);
         cam.two(cop, dealer, { az: fl * 0.2, hold: 3 });
         yield* go(ctx, cop, dealer.g.position.x - fl * 0.9, dealer.g.position.z, 2.6);
         cop.heading = fl > 0 ? E : W; cop.lookAt = dealer; cop.mood = 'smug'; cop.arms = 'hips';
@@ -265,16 +323,17 @@ export default function (T) {
         R.run(seeStars(ctx, dealer, 1.8));
         ctx.news('Dealer caught after slipping on own stock. Sniffing officer: "I am on antihistamines now"');
         yield* wait(1.2);
+        }
         // the customer: he looks at the jars, and picks the nearest one that is left
         let best = null;
         for (let i = 0; i < jars.length; i++) {
-          if (!jars[i] || i === slipIdx) continue;
+          if (!jars[i] || i === slipIdx || (sneezeEnd && i === 2)) continue;
           const d = Math.abs(jars[i].x - ped.g.position.x);
           if (!best || d < best.d) best = { d, i };
         }
         const jr = jars[best ? best.i : 0];
-        cam.close(ped, { y: 1.3, dist: 6.5, fov: 30, cut: 0.4, hold: 3.4 });
         R.run((function* () {
+          if (sneezeEnd) { yield* getUp(cop, 'sad'); cop.arms = 'swing'; yield* R.away(cop, -fl * 7, 2.4); return; }
           yield* getUp(dealer, 'sad'); dealer.arms = 'swing';
           cop.lookAt = null; cop.arms = 'point';
           R.run(R.away(dealer, fl * 7, 2.4));
@@ -282,6 +341,8 @@ export default function (T) {
           yield* R.away(cop, fl * 7, 2.4);
         })());
         ped.mood = 'happy'; ped.arms = 'swing'; ped.lookAt = null;
+        B('7b the customer pockets one last jar', [ped, pt(jr.x, jr.z)]);
+        cam.shot({ on: [ped, pt(jr.x, jr.z)], y: 0.9, dist: 6.5, fov: 30, fit: true, cut: 0.5, hold: 3.4 });
         yield* go(ctx, ped, jr.x, jr.z - 0.45, 2.0);
         ped.heading = 0;
         ped.arms = 'reach'; ped.squash(0.25); ped.mood = 'focus';
@@ -296,7 +357,7 @@ export default function (T) {
         ped.arms = 'swing'; ped.mood = 'whistle';
         ctx.sfx('gulp');
         cam.wide(pt(x, z), { dist: 18, el: 0.3, az: 0.2, hold: 4 });
-        R.give(ped);
+        if (inventedCust) R.run(R.away(ped, (left ? 1 : -1) * 12, 2.2)); else R.give(ped);
         yield* R.settle(8);
         yield* wait(0.5);
         done = true;

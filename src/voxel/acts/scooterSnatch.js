@@ -13,32 +13,45 @@ export default function (T) {
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
     seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
   } = T;
 
   /** Which sides can host a scooter run: a real bike lane or road to ride on (not a square, park, beach or pedestrian street) and a pavement for the victim. */
   const scooterSides = (ctx) => once(ctx, 'scooter', () => scooterSides0(ctx));
   const scooterSides0 = (ctx) => ({
-    okF: ctx.L.kind !== 'ped' && S.roadHere(ctx, ctx.L.bikeF) && !!padSpot(ctx, 'walkF0', 0, 0.7, 12),
-    okB: ctx.L.kind !== 'ped' && S.roadHere(ctx, ctx.L.bikeB) && !!padSpot(ctx, 'walkB1', 0, 0.7, 12),
+    okF: ctx.L.kind !== 'ped' && S.roadHere(ctx, ctx.L.bikeF) && S.laneClear(ctx, ctx.L.bikeF, -22, 22, 0.5) && !!padSpot(ctx, 'walkF0', 0, 0.7, 12),
+    okB: ctx.L.kind !== 'ped' && S.roadHere(ctx, ctx.L.bikeB) && S.laneClear(ctx, ctx.L.bikeB, -22, 22, 0.5) && !!padSpot(ctx, 'walkB1', 0, 0.7, 12),
   });
 
   /** The handbag, scaled up so the audience can follow it. Hung from the hand rather than standing on it. */
   const mkPurse = () => { const p = item.purse(); p.scale.setScalar(1.5); return p; };
   const grip = (a, o) => { a.hold(o); o.position.y = -0.9; return o; };
   const mkShoe = () => { const s = item.shoe(); s.scale.setScalar(1.8); return s; };
+  const mkLoaf = () => sculpt((v) => { v.box(-0.32, -0.08, -0.08, 0.64, 0.16, 0.16, '#d9a441'); v.box(-0.2, 0.06, -0.06, 0.4, 0.05, 0.12, '#e8bd62'); }); // a baguette
+  const mkTin = () => { const t = item.can(); t.scale.setScalar(1.6); return t; };
 
   return {
     w: [0, 0, 0, 3, 2], crime: 2,
+    stage: { pave: { side: 'any', len: 14, depth: 1.6 } },
     avail: (ctx) => { const q = scooterSides(ctx); return q.okF || q.okB; },
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'scooterSnatch'), B = beatsFor(ctx, 'scooterSnatch'), R = rig(ctx);
       const { okF, okB } = scooterSides(ctx);
       if (!okF && !okB) return;
-      const dir = okF && okB ? rnd.sign() : okF ? 1 : -1, hd = dir > 0 ? E : W;
-      const z = dir > 0 ? L.bikeF : L.bikeB, wz = dir > 0 ? padZ(ctx, 'walkF0', 0) : padZ(ctx, 'walkB1', 0);
-      const toward = Math.sign(wz - z) || 1; // from the lane towards the pavement
-      const gx = rnd.range(-2, 2), zg = wz - toward * 0.85; // where granny stands, and the line the scooter swoops along
+      const st0 = ctx.stage; // (read before the first yield)
+      // the side of the street the stage found room on (near = the camera's side, pavement F), else whichever side works
+      const dir = st0 && st0.side === 'near' && okF ? 1 : st0 && st0.side === 'far' && okB ? -1 : okF && okB ? rnd.sign() : okF ? 1 : -1, hd = dir > 0 ? E : W;
+      const z = dir > 0 ? L.bikeF : L.bikeB;
+      const ox = st0 ? st0.x : 0;
+      // granny's spot: her own pavement line, near the stage centre, with the scooter's whole run (swoop and stop) clear
+      let gx = null, wz = 0, zg = 0, toward = 1;
+      for (const dx of [0, -2, 2, -4, 4, -6, 6]) {
+        const g0 = clamp(ox + dx, -8, 8), w0 = dir > 0 ? padZ(ctx, 'walkF0', g0) : padZ(ctx, 'walkB1', g0), t0 = Math.sign(w0 - z) || 1, zg0 = w0 - t0 * 0.85;
+        const legs = [[g0 - dir * 20, z, g0 - dir * 9, z], [g0 - dir * 9, z, g0 - dir * 3.6, lerp(z, zg0, 0.6)], [g0 - dir * 3.6, lerp(z, zg0, 0.6), g0 - dir * 0.2, zg0], [g0 - dir * 0.2, zg0, g0 + dir * 4, lerp(zg0, z, 0.55)], [g0 + dir * 4, lerp(zg0, z, 0.55), g0 + dir * 10.5, z], [g0 + dir * 10.5, z, g0 + dir * 14, z]];
+        if (!S.clearSpot(ctx, g0, w0, 0.5, { ground: 'open' })) continue;
+        if (legs.every((q) => S.lineClear(ctx, q[0], q[1], q[2], q[3]))) { gx = g0; wz = w0; toward = t0; zg = zg0; break; }
+      }
+      if (gx == null) return; // no clear run for the scooter here
       const stopX = gx + dir * 10.5, crashX = stopX + dir * 3.2, gw = { x: gx + dir * 4.2, z: wz }; // where it parks, where it falls, where granny waits for her bag
       let done = false;
       try {
@@ -46,24 +59,27 @@ export default function (T) {
         const r1 = makePerson(rnd, { kind: 'robber', scale: 1.1 }), r2 = makePerson(rnd, { kind: 'robber', scale: 1.1 });
         const sc = makeScooter(rnd, [r1, r2]);
         const cop = makePerson(rnd, { kind: 'cop' });
+        const missile = rnd.pick(['shoe', 'baguette', 'tin']); // what granny throws
+        const mkMissile = missile === 'shoe' ? mkShoe : missile === 'baguette' ? mkLoaf : mkTin;
 
         // ---- 1. granny: she toddles along with a big handbag on her arm, humming
-        B('1 granny: toddling along with her big handbag', [vic]);
+        B('1 granny: toddling along with her big handbag', [pt(gx + dir * 2, wz)]);
         cam.wide(pt(gx + dir * 2, wz), { dist: 16, el: 0.3, az: dir * 0.3, hold: 1.4 });
-        yield* R.enter(vic, clamp(gx + dir * 9, EX0, EX1), wz);
+        yield* R.enter(vic, clamp(gx + dir * 4, EX0, EX1), wz, undefined, { dir: -dir, speed: 2.8 });
         grip(vic, mkPurse());
         vic.mood = 'happy'; vic.heading = -hd;
         cam.dolly(vic, { dist: 9, az: 0.1, y: 1.1, hold: 5.5 });
         say(ctx, vic, '♪ hm hm hmmm ♪', { size: 13, color: '#ffd6f2' });
-        yield* go(ctx, vic, gx, wz, 1.7);
+        const sx = clamp(gx - dir * 20.5, EX0 + 1, EX1 - 1);
+        const scIn = R.run((function* () { yield* wait(0.8); ctx.sfx('rev'); yield* R.enter(sc, sx, z, 0, { dir, speed: 9 }); })()); // already on its way while she toddles
+        yield* go(ctx, vic, gx, wz, 1.8);
         vic.arms = 'swing';
         const looking = R.run(lookAround(vic));
         say(ctx, vic, '♪ la la la ♪', { size: 13, color: '#ffd6f2' });
 
         // ---- 2. the buzz: the scooter revs at the far end of the lane, then comes at us
-        B('2 the buzz: the scooter and both masked riders', [sc, r1, r2]);
-        const sx = clamp(gx - dir * 20.5, EX0 + 1, EX1 - 1);
-        yield* R.enter(sc, sx, z, 0);
+        B('2 the buzz: the scooter and both masked riders', [pt(sx, z)]);
+        yield* waitUntil(() => scIn.done, 10);
         sc.face(hd);
         ctx.wanted = sc;
         r1.arms = 'drive'; r2.arms = 'drive'; r1.mood = 'sly'; r2.mood = 'sly';
@@ -78,7 +94,7 @@ export default function (T) {
         R.run(laugh(ctx, r1, 0.6, 'he'));
 
         // the swoop: a real curve towards the kerb and out again, so the scooter leans one way and then the other
-        let n1 = null, n2 = null, bag = null;
+        let n1 = null, n2 = null, bag = null, copIn = false;
         let snatched = false, reach = false, wh = 0, whT = 0, whJ = 0, spd = 6;
         const route = [
           [gx - dir * 9, z],
@@ -111,7 +127,7 @@ export default function (T) {
 
         // ---- 3. the snatch: chase cam alongside, slow motion at the grab
         B('3 the snatch: the scooter leans in, the pillion grabs', [sc, r2, vic]);
-        cam.chase(sc, dir, { hold: 3 });
+        cam.chase([sc, vic], dir, { fit: true });
         yield* waitUntil(() => snatched, 3);
         R.stop(looking);
         ctx.slowmo(0.25, 0.7);
@@ -146,14 +162,15 @@ export default function (T) {
         yield* wait(0.9);
 
         // ---- 5. granny's revenge: brows down, a shoe comes off, and it flies
-        B("5 granny's revenge: the shoe comes off", [vic]);
+        B("5 granny's revenge: a shoe comes off, or something else comes out of her coat", [vic]);
         vic.heading = hd; vic.mood = 'angry'; vic.arms = 'fist'; vic.gait = 'walk';
         cam.crash(vic, { hold: 2.6 });
         yield* wait(0.5);
         ctx.sfx('hey');
         say(ctx, vic, 'WAT?!', { size: 20, color: '#ff6b6b' });
         yield* wait(0.5);
-        vic.hold(mkShoe());
+        vic.hold(mkMissile());
+        if (missile !== 'shoe') say(ctx, vic, missile === 'baguette' ? 'MIJN STOKBROOD!' : 'KATTENVOER!', { size: 14, color: '#ffd6f2' });
         yield* hop(vic, 0.2, 0.25);
         vic.arms = 'up'; vic.squash(0.15);
         yield* wait(0.5);
@@ -162,12 +179,17 @@ export default function (T) {
         cam.shot({ on: [vic, sc], dist: 14, el: 0.1, az: -dir * 0.15, y: 1.0, fov: 40, fit: true, cut: 0.3, hold: 3 });
         yield* wait(0.35);
         vic.drop();
-        const shoe = R.add(mkShoe());
+        const shoe = R.add(mkMissile());
         shoe.position.set(vp.x + dir * 0.3, 1.5, vp.z);
         vic.arms = 'push'; ctx.sfx('swish');
         R.run(go(ctx, vic, gw.x, gw.z, 2.6));
         yield* arc(shoe, sc.g.position.x - dir * 0.35, 1.55, sc.g.position.z, 3.2, 1.0, 14);
-        // BONK on the driver's head
+        // BONK on the driver's head (and on the way: a cop comes running in from out of the frame, whistling)
+        R.run((function* () {
+          ctx.sfx('whistle');
+          yield* R.enter(cop, clamp(gw.x - dir * 6, EX0, EX1), wz, undefined, { dir, speed: 6 });
+          copIn = true;
+        })());
         ctx.sfx('bonk'); ctx.shake(0.3);
         ctx.fx.text('BONK!', at(sc.g.position.x - dir * 0.35, 2.7, sc.g.position.z), { size: 30, color: '#ffd60a' });
         ctx.fx.pips(sc.g.position.x - dir * 0.35, 2.2, sc.g.position.z, 8);
@@ -199,7 +221,7 @@ export default function (T) {
           ctx.fx.sparks(sc.g.position.x, 0.12, sc.g.position.z, 1);
           if (!swapped && u > 0.75) {
             swapped = true;
-            // swap the two seated riders for two fresh robbers (the old ones are part of the scooter), thrown clear
+            // the two riders leave the scooter's group and become people of their own, at the seats, and are thrown clear
             const l = sc.g.rotation.z, h = sc.g.rotation.y, sp = sc.g.position;
             const where = (i) => {
               const lx = -0.64 * Math.sin(l), ly = 0.64 * Math.cos(l), lz = -0.35 - i * 0.5;
@@ -207,9 +229,9 @@ export default function (T) {
             };
             const w0 = where(0), w1 = where(1);
             r2.drop();
-            r1.g.visible = false; r2.g.visible = false;
-            n1 = makePerson(rnd, { kind: 'robber', scale: 1.1 }); n2 = makePerson(rnd, { kind: 'robber', scale: 1.1 });
-            R.spawn(n1, w0.x, w0.z, Math.max(0, w0.y - 0.3)); R.spawn(n2, w1.x, w1.z, Math.max(0, w1.y - 0.3));
+            sc.riders.splice(0); // (the scooter no longer animates them)
+            for (const [r, w] of [[r1, w0], [r2, w1]]) { sc.g.remove(r.g); r.pose = null; r.air = false; R.spawn(r, w.x, w.z, Math.max(0, w.y - 0.3)); r.heading = h; r.g.rotation.set(0, h, 0); }
+            n1 = r1; n2 = r2;
             ctx.sfx('crash'); ctx.shake(0.4);
             bag = R.add(mkPurse());
             bag.position.set(w1.x, w1.y + 0.6, w1.z);
@@ -236,11 +258,8 @@ export default function (T) {
         // ---- 7. the law: a cop arrives, the two sit dazed, and granny whacks each once
         B('7 the law: cop, two dazed robbers and granny', [vic, n1, n2, cop]);
         R.run(seeStars(ctx, n1, 6)); R.run(seeStars(ctx, n2, 6));
-        R.spawn(cop, clamp(gw.x - dir * 6, EX0, EX1), wz);
-        cop.g.scale.setScalar(0.001);
-        R.run(popIn(ctx, cop));
-        cam.shot({ on: [vic, n1, n2, cop], dist: 16, el: 0.22, az: -dir * 0.3, y: 1.0, fov: 36, fit: true, cut: 0.5, hold: 6 });
-        ctx.sfx('whistle');
+        yield* waitUntil(() => copIn, 8); // (he has been on his way since the shoe flew)
+        cam.shot({ on: [vic, n1, n2, cop], dist: 16, el: 0.22, az: -dir * 0.3, y: 1.0, fov: 36, fit: true, cut: 0.5 });
         say(ctx, cop, 'POLITIE! WAT IS HIER GEBEURD?', { size: 14, color: '#7db8ff' });
         vic.arms = 'swing'; vic.mood = 'angry';
         const copGo = R.run(go(ctx, cop, n1.g.position.x - dir * 2.4, z + 0.4, 5));
@@ -281,17 +300,28 @@ export default function (T) {
           yield* wait(0.2);
           yield* getUp(n2, 'sad'); n2.arms = 'swing';
           cop.arms = 'point'; cop.mood = 'neutral';
-          R.run(R.away(n1, dir * 6, 2.4));
+          // one of them rights the scooter and pushes it off, the other walks beside him, the cop behind them
+          yield* tween(0.7, (u) => { sc.lean = lerp(side * 1.3, 0, ease.inOut(u)); });
+          sc.lean = 0;
+          const far = clamp(n1.g.position.x + dir * 30, EX0 + 1, EX1 - 1);
+          R.run((function* () {
+            yield* goEach(ctx, n1, far, n1.g.position.z, 3.0, () => {
+              const p = n1.g.position;
+              if (sc.alive) { sc.g.position.set(p.x + dir * 0.2, 0, p.z + (z > p.z ? 0.75 : -0.75)); sc.heading = hd; sc.moving = 2.4; }
+              if (!watching(ctx) || !seen(ctx, p.x, p.z, 1, 0.3)) return true;
+            });
+            if (sc.alive) R.gone(sc);
+            R.gone(n1);
+          })());
           yield* wait(0.3);
-          R.run(R.away(n2, dir * 6, 2.4));
+          R.run(R.away(n2, dir * 6, 3.4));
           yield* wait(0.5);
-          yield* R.away(cop, dir * 6, 2.4);
+          yield* R.away(cop, dir * 6, 3.4);
         })());
         vic.mood = 'happy';
         say(ctx, vic, '♪ hm hm hmmm ♪', { size: 13, color: '#ffd6f2' });
         yield* wait(0.7);
         ctx.sfx('tick');
-        R.run((function* () { yield* wait(1.2); sc.moving = 0; ctx.fx.puff(sc.g.position.x, 0.4, sc.g.position.z); yield* R.out(sc); })());
         R.run((function* () { yield* go(ctx, vic, clamp(gw.x - dir * 8, EX0, EX1), wz, 1.9); yield* R.out(vic); })());
         yield* R.settle(10);
         yield* wait(0.3);

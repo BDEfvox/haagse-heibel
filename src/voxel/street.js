@@ -104,6 +104,18 @@ export function dress(W) {
       s: fp.s, w: h.w, top: h.info.top, z: fp.v, shop: h.info.shop || null, cat: h.info.cat || null, name: h.info.name || null, tower: !!h.info.tower,
       door: { s: dp.s, z: Math.min(dp.v, -hb - 0.4) }, win: { s: wp.s, y: h.winY, z: wp.v },
     };
+    // the real door leaf, window sash and bell, in street space: where each face is, which way the facade's x axis runs there
+    // (psi = the rotation.y that turns a street-space group into the facade's frame), and the sizes and colours to copy
+    const place = (o) => {
+      const p0 = path.project(o.p[0], o.p[1]), p1 = path.project(o.p[0] + o.tv[0], o.p[1] + o.tv[1]);
+      const ds = p1.s - p0.s, dv = p1.v - p0.v, l = Math.hypot(ds, dv) || 1, tx = ds / l, tz = dv / l;
+      return { s: p0.s, z: p0.v, psi: Math.atan2(-tz, tx), tx, tz, nx: -tz, nz: tx };
+    };
+    if (h.leaf) {
+      const f = place(h.leaf), b = h.leaf.bell ? path.project(h.leaf.bell.p[0], h.leaf.bell.p[1]) : null;
+      a.leaf = { ...f, w: h.leaf.w, h: h.leaf.h, y: h.leaf.y, col: h.leaf.col, shop: h.leaf.shop, glass: h.leaf.glass, lit: h.leaf.lit, bell: b ? { s: b.s, z: b.v, y: h.leaf.bell.y } : null };
+      if (h.sash) a.sash = { ...place(h.sash), w: h.sash.w, h: h.sash.h, y: h.sash.y, glass: h.sash.glass };
+    }
     A.houses.push(a);
     if (h.atm) { const p = path.project(h.atm[0], h.atm[1]); A.atms.push({ s: p.s, z: p.v, zH: fp.v }); }
     if (h.chimney && !h.info.tower) A.chimneys.push(h.chimney);
@@ -154,6 +166,8 @@ export function localeL(W, sc, half = 24) {
   L.sc = sc; L.x0 = -half; L.x1 = half;
   L.houses = A.houses.filter((h) => Math.abs(h.s - sc) < half - 1).map((h) => Object.assign(sh(h), {
     door: { x: h.door.s - sc, z: h.door.z }, win: { x: h.win.s - sc, y: h.win.y, z: h.win.z },
+    leaf: h.leaf ? { ...h.leaf, x: h.leaf.s - sc, bell: h.leaf.bell ? { ...h.leaf.bell, x: h.leaf.bell.s - sc } : null } : null,
+    sash: h.sash ? { ...h.sash, x: h.sash.s - sc } : null,
   }));
   L.shops = L.houses.filter((h) => h.shop);
   L.racks = A.racks.filter((a) => inWin(a)).map(sh);

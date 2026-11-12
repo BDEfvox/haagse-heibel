@@ -1,17 +1,17 @@
 # scooterSnatch: Street robbery: the handbag and the scooter
 
-Two men on a scooter snatch a granny's handbag. Granny is not having it.
+**Setup:** granny toddles along the pavement with her handbag, humming. **Trigger:** a scooter with two masked riders buzzes in from out of frame, down the lane beside her. **Payoff:** YOINK, and granny's revenge (a shoe, a baguette or a tin of cat food, `ctx.rnd`) brings the scooter down; the bag sails back to her, and a cop and a few whacks sort out the rest.
 
-- **Cast and props:** granny with a big handbag, two robbers on a scooter, a cop.
-- **Needs at the spot:** A cycle lane or road to ride on and pavement beside it for granny (scooterSides).
+- **Cast and props:** granny with a big handbag, two robbers on a scooter (they are thrown off it when it falls: the same two people, nobody swapped), a cop. Props: the thrown thing.
+- **Needs at the spot:** `stage: { pave: { side: 'any', len: 14, depth: 1.6 } }` and a bike lane or road to ride on beside it; `ctx.stage.side` picks the side and `ctx.stage.x` where granny stands. The scooter's whole run is checked clear (`S.lineClear` along every leg) before it plays.
 
 | Beat | What happens | Must be seen | Shot |
 |---|---|---|---|
-| 1 granny | She toddles along the pavement, big handbag on her arm, humming. | granny + handbag | dolly alongside |
-| 2 the buzz | A scooter with two masked riders comes down the lane straight at us, engine whining. Title card DE TASJESDIEVEN. | scooter and both riders | nose shot, freeze |
-| 3 the snatch | It swoops close, leaning over; the pillion reaches out: YOINK. Granny spins like a top, twice, and wobbles. | scooter + granny at the moment of the grab | chase cam alongside the scooter; slow motion at the grab |
-| 4 the gloat | The pillion holds the handbag up like a trophy; both laugh HA HA HA; the scooter does a wheelie. | both riders + the bag | tracking close, hand-held |
-| 5 granny's revenge | Granny stops spinning. Brows down. She takes off a shoe and throws it (it spins through the air): BONK on the driver's head. | granny's face, then the shoe in flight | crash zoom on granny, then follow the shoe |
-| 6 the fall | The scooter wobbles, slides and tips over; both tumble in a heap. The handbag sails up... and drops into granny's waiting hands. | scooter falling, then the bag landing with granny | ground level at the crash, then on granny |
-| 7 the law | A cop arrives. The two sit dazed, stars circling. Granny whacks them once each with the handbag: SCHOFTEN! The cop winces. | granny + both robbers + cop | two-shot wide, then close on the cop's wince |
-| 8 epilogue | Granny toddles on, humming. The cop leads the two away with the scooter. | granny | wide |
+| 1 granny | She walks in from the edge of the frame, big handbag on her arm, humming. | granny + handbag | wide, then dolly alongside |
+| 2 the buzz | The scooter drives in from out of frame, straight at the lens. Title card DE TASJESDIEVEN. | scooter and both riders | nose shot, freeze |
+| 3 the snatch | It swoops close, leaning over; the pillion reaches out: YOINK. Granny spins like a top, twice. | scooter + granny | chase cam; slow motion at the grab |
+| 4 the gloat | The bag held up; both laugh; the wheelie. | both riders | tracking, hand-held |
+| 5 revenge | Brows down. A shoe comes off (or a baguette, or a tin, out of her coat) and flies; a cop is already running in from out of frame, whistling. BONK on the driver. | granny, then the missile | crash zoom, then follow it |
+| 6 the fall | The scooter wobbles, slides and tips; the two riders leave it and are thrown clear. The bag sails up into granny's hands. | scooter, riders, bag + granny | ground level; then on granny |
+| 7 the law | The cop arrives. The two sit dazed. Granny whacks each once. The cop winces. | granny + both + cop | wide, then close on the cop |
+| 8 epilogue | One robber rights the scooter and pushes it off, out of frame, the other walks beside him, the cop behind; granny toddles on humming. | granny | wide |

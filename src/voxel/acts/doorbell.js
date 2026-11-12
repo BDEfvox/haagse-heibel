@@ -1,5 +1,7 @@
-// Belletje trek: two kids ring a doorbell and run; the second time the resident is waiting with a bucket.
+// Belletje trek: two kids ring a doorbell and run; the second time the resident is waiting behind the door (with a bucket, or a dog).
 // Storyboard: storyboards/doorbell.md. Every B(...) below is one beat of it, with who must be on screen.
+// The door is the building's REAL door: T.doorway(...) (gags.js) opens it (a dark doorway on the real door and a leaf of its colour
+// swung out) and the resident steps out of that doorway and goes back into it. The bell is the real plate beside the door.
 import * as THREE from 'three';
 import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
@@ -15,8 +17,8 @@ export default function (T) {
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
     release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
   } = T;
+  const { doorway } = T;
 
-  const houses = (ctx) => S.housesNear(ctx, 0, 18, { door: true, shop: false, tower: false });
   /** A grey bucket, full to the brim with water when `full`. */
   const bucket = (full) => sculpt((v) => {
     v.box(-0.2, 0, -0.2, 0.4, 0.04, 0.4, '#8d99a6');
@@ -24,49 +26,72 @@ export default function (T) {
     v.box(-0.2, 0.04, -0.16, 0.04, 0.32, 0.32, '#9aa5b1'); v.box(0.16, 0.04, -0.16, 0.04, 0.32, 0.32, '#9aa5b1');
     if (full) v.box(-0.16, 0.04, -0.16, 0.32, 0.28, 0.32, '#4f9bff');
   });
-  /** Where the kids hide: behind a bin 3.5 to 8 m past the door if there is one, otherwise a clear bit of pavement 5 to 7 m on. */
-  const hideSpot = (ctx, h, dir, rnd) => {
-    let best = null, bd = 99;
-    for (const b of ctx.L.bins || []) {
-      const d = (b.x - h.door.x) * dir;
-      if (d >= 3.5 && d <= 8 && d < bd && Number.isFinite(b.z)) { bd = d; best = b; }
+
+  // what a crouching kid can hide behind (the obstacle picture, setting.js): a thing of at least 0.9 m that stands in the way of the doorstep
+  const HIDERS = new Set(['car', 'bin', 'box', 'mailbox', 'bench', 'rack', 'rackpark', 'stall', 'mstall', 'kiosk', 'stop', 'shelter', 'trolleys', 'planter', 'orac', 'charger', 'column', 'statue']);
+  /** Places 3.5 to 9.5 m along from the doorstep where the thing stands exactly between the doorstep and the kid. */
+  const hideSpots = (ctx, dw) => {
+    const pic = S.obstacles(ctx), out = [];
+    for (let i = 0; i < pic.n; i++) {
+      if (!HIDERS.has(pic.K[i]) || pic.H[i] < 0.9 || pic.T[i] !== 0) continue;
+      const ox = pic.X[i], oz = pic.Z[i], vx = ox - dw.out.x, vz = oz - dw.out.z, l = Math.hypot(vx, vz);
+      if (Math.abs(vx) < 3.5 || Math.abs(vx) > 9.5 || l < 1) continue;
+      const r = pic.HX[i] + 0.6, hx = ox + (vx / l) * r, hz = oz + (vz / l) * r;
+      if (Math.abs(hx) > EX1 - 1 || !S.clearSpot(ctx, hx, hz, 0.4, { ground: 'open' })) continue;
+      if (!S.route(ctx, dw.bellStand.x, dw.bellStand.z, hx, hz).ok) continue;
+      out.push({ x: hx, z: hz, ox, oz, kind: pic.K[i], d: Math.abs(vx) });
     }
-    if (best) return { x: best.x, z: best.z + 0.75, bin: true };
-    const hx = clamp(h.door.x + dir * rnd.range(5, 7), EX0 + 1, EX1 - 1), hz = padZ(ctx, 'walkB0', hx);
-    const p = S.findSpot(ctx, hx, hz, 0.5, 10, { ground: 'open' });
-    return { x: p ? p.x : hx, z: p ? p.z : hz, bin: false };
+    // the ones on the house side of the street first (no crossing of the road), then by distance
+    out.sort((p, q) => (Math.sign(p.oz) === Math.sign(dw.z) ? 0 : 1) - (Math.sign(q.oz) === Math.sign(dw.z) ? 0 : 1) || p.d - q.d);
+    return out.slice(0, 6);
   };
+  /** Houses with a real door and bell, a clear doorstep and a hiding place along the way. */
+  const plans = (ctx) => once(ctx, 'doorbell', () => {
+    const out = [];
+    for (const h of S.housesNear(ctx, 0, 20, { door: true, shop: false, tower: false })) {
+      if (!h.leaf || !h.leaf.bell) continue;
+      const dw = doorway(ctx, null, h);
+      if (!dw || !dw.bell) continue;
+      if (!S.clearSpot(ctx, dw.bellStand.x, dw.bellStand.z, 0.3, { ground: 'open' }) || !S.clearSpot(ctx, dw.out.x, dw.out.z, 0.35, { ground: 'open' })) continue;
+      const hides = hideSpots(ctx, dw);
+      if (hides.length) out.push({ h, hides });
+    }
+    return out;
+  });
 
   return {
     w: [0, 3, 2, 1, 0.5], crime: 1,
-    avail: (ctx) => houses(ctx).length > 0, // needs a real front door
+    avail: (ctx) => plans(ctx).length > 0, // needs a real front door with a bell, and somewhere to hide
+    stage: { pave: { side: 'far', len: 12, depth: 2 }, anchor: 'door', reach: 8 },
     *run(ctx) {
       const { L, rnd } = ctx, cam = camFor(ctx, 'doorbell'), B = beatsFor(ctx, 'doorbell'), R = rig(ctx);
-      const h = rnd.pick(houses(ctx));
-      if (!h) return;
-      const dx = h.door.x, dz = h.door.z, dir = dx > 0 ? -1 : 1, doorPt = pt(dx, dz);
+      const sx0 = ctx.stage ? ctx.stage.x : 0; // (read before the first yield)
+      const list = plans(ctx).slice().sort((p, q) => Math.abs(p.h.door.x - sx0) - Math.abs(q.h.door.x - sx0));
+      if (!list.length) return;
+      const plan = rnd.pick(list.slice(0, 2)), h = plan.h, hide = rnd.pick(plan.hides.slice(0, 3));
       let done = false;
       try {
-        const hide = hideSpot(ctx, h, dir, rnd);
-        const hidePt = pt(hide.x, hide.z);
+        const dw = doorway(ctx, R, h), out = dw.out, bell = dw.bell, bs = dw.bellStand;
+        const dir = hide.x > out.x ? 1 : -1, doorPt = pt(out.x, dw.z), bellPt = pt(bell.x, bell.z), hidePt = pt(hide.x, hide.z);
+        const toWall = dw.heading + Math.PI, wall = pt(out.x, dw.z - 1);
+        const dog = flip(ctx, 'dog', 0.4);
         const a = makePerson(rnd, { kind: 'kid' }), b = makePerson(rnd, { kind: 'kid' }); // a is the brave one
         const owner = makePerson(rnd, { kind: rnd.pick(['granny', 'civ']), shirt: '#8e5a9b' });
-        // the bell, and the hall light that shows when the door is open
-        const bellX = dx + 0.5, bellZ = dz + 0.3;
-        R.add(sculpt((v) => v.box(bellX - 0.05, 1.1, dz - 0.25, 0.1, 0.1, 0.05, '#ffd60a'), MAT.glow));
-        const hall = R.add(sculpt((v) => v.box(dx - 0.5, 0, dz - 0.15, 1.0, 2.0, 0.05, '#ffe9a8'), MAT.glow));
-        hall.visible = false;
+        const hound = dog ? makeDog(rnd) : null;
 
         // ---- 1. the dare: creeping along the fronts, a push in the back, giggles
-        B('1 the dare: two kids creep along, one pushes the other', [a, b]);
-        const sx = clamp(dx - dir * 7, EX0, EX1), sz = padZ(ctx, 'walkB0', sx);
-        cam.wide(doorPt, { dist: 18, el: 0.25, az: -dir * 0.3, hold: 1.4 });
-        yield* R.enter(a, sx, sz);
-        yield* R.enter(b, sx - dir * 1.0, sz);
+        B('1 the dare: two kids creep along, one pushes the other', [doorPt]);
+        const px = clamp(out.x - dir * 5.5, EX0, EX1), pz = padZ(ctx, 'walkB0', px);
+        cam.wide(doorPt, { dist: 13, el: 0.22, az: -dir * 0.3, hold: 1.4 });
+        R.run(R.enter(b, clamp(px - dir * 1.1, EX0, EX1), pz, undefined, { from: 'edge', speed: 3.9 }));
+        yield* R.enter(a, px, pz, undefined, { from: 'edge', speed: 3.9 });
+        yield* R.settle(4);
+        B('1b the dare: one pushes the other', [a, b]);
         b.lookAt = a;
-        cam.two(a, b, { dist: 8, el: 0.1, az: dir * 0.55, cut: 0.8, hold: 6 });
-        const bt = R.run(tiptoe(ctx, b, dx - dir * 3.4, padZ(ctx, 'walkB0', dx), 1.9, false));
-        yield* tiptoe(ctx, a, dx - dir * 2.3, padZ(ctx, 'walkB0', dx), 1.9);
+        cam.two(a, b, { dist: 8, el: 0.1, az: dir * 0.55, cut: 0.8 });
+        const stopX = out.x - dir * 2.6, stopZ = padZ(ctx, 'walkB0', stopX);
+        R.run(tiptoe(ctx, b, stopX - dir * 1.1, stopZ, 2.5, false));
+        yield* tiptoe(ctx, a, stopX, stopZ, 2.5, false);
         yield* R.settle(4);
         // b gives a shove, a stumbles forward, both snigger
         b.arms = 'push'; b.mood = 'happy'; a.lookAt = b;
@@ -90,175 +115,227 @@ export default function (T) {
         yield* laugh(ctx, a, 0.9, 'he');
         a.arms = 'swing';
 
-        // ---- 3. the ring: tiptoe, stretch, DING DONG
-        B('3 the ring: on tiptoe, finger on the bell', [a, doorPt]);
-        cam.low(a, { dist: 5, el: 0.04, az: -dir * 0.35, y: 0.9, fov: 38, cut: 0.7, hold: 4.5 });
-        yield* wait(0.3);
-        yield* go(ctx, a, bellX, bellZ, 2.2);
-        a.heading = Math.PI; a.mood = 'focus'; a.arms = 'reach';
+        // ---- 3. the ring: tiptoe to the bell beside the door, stretch, finger on the button, DING DONG
+        B('3 the ring: on tiptoe, finger on the real bell', [a, bellPt]);
+        cam.shot({ on: [a, bellPt], y: 1.15, dist: 3.4, el: 0.02, az: Math.sign(dw.f.tx) * -1.0, fov: 32, fit: true, cut: 0.8 }); // from the side: the finger, the bell and the door behind
+        yield* go(ctx, a, bs.x, bs.z, 2.2);
+        a.heading = toWall; a.mood = 'focus'; a.arms = 'reach';
         a.air = true;
-        yield* tween(0.5, (u) => { a.g.position.y = u * 0.14; });
+        const ap = a.g.position;
+        yield* tween(0.5, (u) => { ap.y = u * 0.14; });
         yield* wait(0.35);
         a.squash(0.1);
-        ctx.sfx('dingdong');
-        ctx.fx.text('DING DONG!', at(dx, 2.4, dz - 0.3), { size: 22, color: '#ffe08a' });
+        R.run(dw.press());
+        ctx.fx.text('DING DONG!', at(bell.x, 2.3, bell.z + 0.3), { size: 22, color: '#ffe08a' });
         ctx.shake(0.1);
         ctx.incident(1);
         ctx.news('Belletje-lellen wave continues; prime suspect is nine');
-        yield* wait(0.45);
-        a.g.position.y = 0; a.air = false;
+        yield* wait(0.5);
+        ap.y = 0; a.air = false;
 
-        // ---- 4. the run: both bolt laughing and crouch out of sight, peeking
+        // ---- 4. the run: both bolt laughing and crouch behind the thing, peeking
         B('4 the run: both kids bolt, laughing, and hide', [a, b]);
-        a.arms = 'swing'; a.mood = 'happy'; a.heading = 0;
-        cam.track([a, b], { dist: 10, el: 0.12, az: dir * 0.5, lead: 2, fov: 34, shake: 0.4, hold: 3 });
+        a.arms = 'swing'; a.mood = 'happy';
+        cam.track([a, b], { dist: 10, el: 0.12, az: dir * 0.5, lead: 2, fov: 34, shake: 0.4 });
         const trailA = R.run(runDust(ctx, a)), trailB = R.run(runDust(ctx, b));
         cackle(ctx, a, 1.5, 'ha'); cackle(ctx, b, 1.5, 'ha');
-        R.run(go(ctx, b, hide.x + dir * 0.8, hide.z, 6.4));
-        yield* go(ctx, a, hide.x, hide.z, 6.6);
+        const hb = S.findSpot(ctx, hide.x + dir * 0.5, hide.z, 0.35, 8, { ground: 'open' }) || { x: hide.x + dir * 0.6, z: hide.z };
+        R.run(go(ctx, b, hb.x, hb.z, 6.4, 0.06, { ignore: [{ x: hide.ox, z: hide.oz }] }));
+        yield* go(ctx, a, hide.x, hide.z, 6.6, 0.06, { ignore: [{ x: hide.ox, z: hide.oz }] });
         yield* R.settle(4);
         R.stop(trailA); R.stop(trailB);
         a.pose = 'crouch'; b.pose = 'crouch';
-        a.heading = faceDir(a, dx, dz); b.heading = faceDir(b, dx, dz);
+        faceTo(a, out.x, dw.z); faceTo(b, out.x, dw.z);
         a.mood = 'sly'; b.mood = 'sly';
-        a.lookAt = { x: dx, z: dz }; b.lookAt = { x: dx, z: dz };
+        a.lookAt = { x: out.x, z: dw.z }; b.lookAt = { x: out.x, z: dw.z };
         a.squash(0.2); b.squash(0.2);
-        cam.ground(hidePt, { dist: 5, el: 0.04, az: dir * 0.3, y: 0.5, hold: 3 });
+        B('4b hiding: crouched behind it, peeking at the door', [a, b]);
+        cam.ground(hidePt, { dist: 5.5, el: 0.04, az: dir * 0.3, y: 0.5 });
         say(ctx, b, 'sst!', { size: 13, color: '#fff' });
         yield* wait(0.9);
 
-        // ---- 5. the door: the resident looks left, right, shrugs, goes back in
-        B('5 the door: the resident looks around', [owner]);
-        cam.close(owner, { dist: 6, el: 0.05, az: -dir * 0.25, y: 1.0, hold: 5 });
-        owner.heading = 0;
-        owner.mood = 'neutral';
-        hall.visible = true;
-        ctx.sfx('door');
-        yield* R.enter(owner, dx, dz, 0.001);
-        owner.heading = 0;
-        yield* wait(0.3);
-        say(ctx, owner, '?!', { size: 20, color: '#fff' });
+        // ---- 5. the door: it opens on a dark doorway; the resident looks left, right, up, shrugs, goes back in
+        B('5 the door: it opens and the resident looks around', [doorPt]);
+        owner.heading = dw.heading; owner.mood = 'neutral';
+        R.spawn(owner, dw.inside.x, dw.inside.z, 0); owner._doorway = dw; // (behind the wall: hidden until she steps out of the dark)
+        cam.shot({ on: doorPt, y: 1.0, dist: 7, el: 0.05, az: -dir * 0.25, fov: 36, cut: 0.9 });
         yield* wait(0.4);
-        owner.heading = E; yield* wait(0.55);
-        owner.heading = W; yield* wait(0.55);
-        owner.heading = 0; owner.lookAt = { x: dx, z: dz + 8 };
+        yield* dw.open();
+        yield* dw.passOut(owner, 1.3, 0.55);
+        B('5b the door: the resident peers out', [owner]);
+        cam.close(owner, { dist: 6, el: 0.05, az: -dir * 0.25, y: 1.0 });
+        say(ctx, owner, '?!', { size: 20, color: '#fff' });
+        yield* wait(0.5);
+        owner.heading = E; yield* wait(0.5);
+        owner.heading = W; yield* wait(0.5);
+        owner.heading = dw.heading; owner.lookAt = { x: out.x, z: dw.z + 8 };
         yield* hop(owner, 0.18, 0.2); // up at the window
         yield* wait(0.3);
         owner.lookAt = null;
         owner.arms = 'shrug';
         say(ctx, owner, 'hm...', { size: 13, color: '#cfe8ff' });
-        yield* wait(0.9);
+        yield* wait(0.8);
         owner.arms = 'swing';
-        ctx.sfx('door');
-        yield* R.out(owner);
-        hall.visible = false;
+        yield* dw.passIn(owner, 1.4); // back in, the door shuts; she waits behind it
+        if (!dog) { owner.hold(bucket(true), 'front'); owner.arms = 'carry'; } // (the bucket is in her hands behind the door)
+        yield* dw.close();
 
-        // ---- 6. again: the kid cannot resist; the resident was waiting with a bucket
-        B('5b the kids confer in their hiding place', [a, b]);
-        cam.two(a, b, { dist: 5.5, el: 0.04, az: dir * 0.2, cut: 0.7, hold: 3 });
+        // ---- 6. again: the kids confer; the brave one creeps back for another go
+        B('6 again: the kids confer, then the brave one creeps back', [a, b]);
+        cam.two(a, b, { dist: 6.5, el: 0.22, az: dir * 0.2, cut: 0.7 });
         yield* wait(0.3);
         a.pose = null; a.lookAt = null; a.mood = 'happy'; a.arms = 'rub';
         b.lookAt = null; b.mood = 'scared';
-        b.shakeT = 1.1; say(ctx, b, 'NEE!', { size: 15, color: '#fff' });
-        yield* wait(0.9);
+        b.shakeT = 1.0; say(ctx, b, 'NEE!', { size: 15, color: '#fff' });
+        yield* wait(0.7);
         a.nodT = 1.0; say(ctx, a, 'nog één keer!', { size: 13, color: '#b9fbc0' });
         ctx.sfx('snigger');
-        yield* wait(1.0);
-
-        B('6 again: the brave one creeps back for another go', [a, doorPt]);
-        cam.shot({ on: [a, doorPt], y: 0.8, dist: 12, el: 0.08, az: dir * 0.4, fov: 36, fit: true, cut: 0.8, hold: 8 });
-        a.arms = 'sneak';
-        const kx = dx + 0.1, kz = dz + 0.95;
-        yield* tiptoe(ctx, a, kx, kz, 2.2);
-        a.heading = Math.PI; a.arms = 'reach'; a.mood = 'sly';
-        yield* wait(0.5);
-        // the door flies open: the resident has been waiting behind it
-        const pail = bucket(true);
-        owner.hold(pail, 'front'); owner.arms = 'carry'; owner.mood = 'smug';
-        hall.visible = true;
-        ctx.sfx('slam'); ctx.shake(0.25);
-        yield* R.enter(owner, dx, dz, 0.001);
-        owner.heading = 0; owner.mood = 'angry';
-        say(ctx, owner, 'HAH! DAAR!', { size: 18, color: '#ff6b6b' });
-        yield* wait(0.3);
-        owner.arms = 'push';
-        owner.drop();
-        // the pail swings out: a wave of water flies across to the kid
-        const wave = R.add(sculpt((v) => v.box(-0.45, 0, -0.3, 0.9, 0.45, 0.6, '#4f9bff')));
-        const pail2 = R.add(bucket(false));
-        pail2.position.set(dx, 1.1, dz + 0.4);
-        const kp = a.g.position, w0 = { x: dx, y: 1.2, z: dz + 0.5 };
-        R.run(arc(pail2, dx + dir * 0.9, 0.0, dz + 1.3, 1.1, 0.75, 6));
-        ctx.sfx('swish');
-        yield* tween(0.32, (u) => {
-          wave.position.set(lerp(w0.x, kp.x, u), lerp(w0.y, 1.0, u) + Math.sin(u * Math.PI) * 0.25, lerp(w0.z, kp.z, u));
-          wave.scale.set(1 + u * 0.6, 1 + u * 0.3, 1 + u);
-        });
-        R.rm(wave);
-        ctx.sfx('splash');
-        ctx.fx.burst(kp.x, 1.1, kp.z, { n: 44, colors: ['#4f9bff', '#9ad0ff', '#ffffff'], speed: 4, up: 3, size: 0.12 });
-        ctx.fx.pips(kp.x, 1.2, kp.z, 10, ['#4f9bff', '#9ad0ff']);
-        ctx.fx.mark(kp.x, 0, kp.z, 0, { w: 1.2, l: 1.2, color: '#4f9bff', life: 6 });
-        ctx.fx.text('SPLASH!', at(kp.x, 2.4, kp.z), { size: 28, color: '#9ad0ff' });
-        ctx.shake(0.3);
-        a.arms = 'up'; a.mood = 'shock'; a.squash(0.35);
-        cam.crash(a, { dist: 4.5, hold: 2.6 });
-        B('6b splash: the kid stands there dripping', [a, owner]);
-        yield* wait(0.5);
-        a.arms = 'swing';
-        const drip = R.run((function* () { for (;;) { ctx.fx.pips(kp.x, 0.9, kp.z, 2, ['#4f9bff', '#9ad0ff'], 0.07); yield* wait(0.35); } })());
-        owner.arms = 'hips'; owner.mood = 'smug';
-        yield* wait(1.3);
-
-        // ---- 7. the last laugh
-        B('7 the last laugh: the resident laughs, shuts the door', [owner]);
-        cam.close(owner, { dist: 5.5, el: 0.05, az: -dir * 0.3, y: 1.0, hold: 3.2 });
-        owner.arms = 'swing';
-        yield* wait(0.3);
-        yield* laugh(ctx, owner, 1.6, 'ha');
-        owner.arms = 'rub'; owner.mood = 'smug';
-        say(ctx, owner, 'zo.', { size: 14, color: '#b9fbc0' });
         yield* wait(0.6);
-        owner.arms = 'swing';
-        ctx.sfx('door');
-        yield* R.out(owner);
-        hall.visible = false;
-        ctx.news('Doorbell prankster, nine, gets a bucket of water in return; "worth it", he says');
+        B('6b the brave one creeps back to the bell', [a, bellPt]);
+        cam.shot({ on: [a, bellPt], y: 1.0, dist: 9, el: 0.08, az: dir * 0.4, fov: 36, fit: true, cut: 0.9 });
+        a.arms = 'sneak';
+        yield* tiptoe(ctx, a, bs.x, bs.z, 3.2, false);
+        a.heading = toWall; a.arms = 'reach'; a.mood = 'sly';
+        yield* wait(0.4);
 
-        B('7b both kids: one laughs, the wet one squelches off', [a, b]);
-        cam.wide(pt((kx + hide.x) / 2, kz), { dist: 15, el: 0.2, az: dir * 0.3, hold: 5 });
-        b.pose = null; b.mood = 'happy'; b.heading = faceDir(b, kx, kz);
-        cackle(ctx, b, 1.8, 'ha');
-        yield* wait(0.2);
-        a.mood = 'sad'; a.heading = dir * Math.PI / 2;
-        say(ctx, a, '*splurp*', { size: 13, color: '#9ad0ff' });
-        ctx.sfx('womp');
-        yield* wait(0.9);
-        R.stop(drip);
-        const wet = R.run(squelch(a));
-        R.run(R.away(a, dir * 6, 1.7));
-        yield* wait(0.5);
-        R.run(R.away(b, dir * 7, 2.6));
-        yield* R.settle(10);
-        R.stop(wet);
+        // ---- the door flies open: the resident has been waiting right behind it
+        const kp = a.g.position;
+        let wet = null;
+        if (!dog) {
+          // 6c bucket
+          owner.mood = 'smug';
+          ctx.sfx('slam'); ctx.shake(0.25);
+          R.run(dw.open());
+          yield* wait(0.25);
+          yield* dw.passOut(owner, 3.0, 0.5);
+          owner.heading = dw.heading; owner.mood = 'angry';
+          B('6c the door flies open: the resident with the bucket', [owner, a]);
+          cam.two(owner, a, { dist: 5.5, el: 0.05, az: -dir * 0.3, cut: 0.6, quick: true });
+          say(ctx, owner, 'HAH! DAAR!', { size: 18, color: '#ff6b6b' });
+          yield* wait(0.5);
+          owner.arms = 'push';
+          owner.drop();
+          // the pail swings out: a wave of water flies across to the kid
+          const wave = R.add(sculpt((v) => v.box(-0.45, 0, -0.3, 0.9, 0.45, 0.6, '#4f9bff')));
+          const pail2 = R.add(bucket(false));
+          const op = owner.g.position;
+          pail2.position.set(op.x, 1.1, op.z + 0.3);
+          const w0 = { x: op.x, y: 1.2, z: op.z + 0.3 };
+          R.run(arc(pail2, op.x + dir * 0.9, 0.0, op.z + 1.3, 1.1, 0.75, 6));
+          ctx.sfx('swish');
+          yield* tween(0.32, (u) => {
+            wave.position.set(lerp(w0.x, kp.x, u), lerp(w0.y, 1.0, u) + Math.sin(u * Math.PI) * 0.25, lerp(w0.z, kp.z, u));
+            wave.scale.set(1 + u * 0.6, 1 + u * 0.3, 1 + u);
+          });
+          R.rm(wave);
+          ctx.sfx('splash');
+          ctx.fx.burst(kp.x, 1.1, kp.z, { n: 44, colors: ['#4f9bff', '#9ad0ff', '#ffffff'], speed: 4, up: 3, size: 0.12 });
+          ctx.fx.pips(kp.x, 1.2, kp.z, 10, ['#4f9bff', '#9ad0ff']);
+          ctx.fx.mark(kp.x, 0, kp.z, 0, { w: 1.2, l: 1.2, color: '#4f9bff', life: 6 });
+          ctx.fx.text('SPLASH!', at(kp.x, 2.4, kp.z), { size: 28, color: '#9ad0ff' });
+          ctx.shake(0.3);
+          a.arms = 'up'; a.mood = 'shock'; a.squash(0.35);
+          B('6d splash: the kid stands there dripping', [a]);
+          cam.crash(a, { dist: 4.5 });
+          yield* wait(0.5);
+          a.arms = 'swing';
+          wet = R.run((function* () { for (;;) { ctx.fx.pips(kp.x, 0.9, kp.z, 2, ['#4f9bff', '#9ad0ff'], 0.07); yield* wait(0.35); } })());
+          owner.arms = 'hips'; owner.mood = 'smug';
+          yield* wait(1.1);
+
+          // ---- 7. the last laugh
+          B('7 the last laugh: the resident laughs and goes in', [owner]);
+          cam.close(owner, { dist: 5.5, el: 0.05, az: -dir * 0.3, y: 1.0 });
+          owner.arms = 'swing';
+          yield* wait(0.3);
+          yield* laugh(ctx, owner, 1.4, 'ha');
+          owner.arms = 'rub'; owner.mood = 'smug';
+          say(ctx, owner, 'zo.', { size: 14, color: '#b9fbc0' });
+          yield* wait(0.5);
+          owner.arms = 'swing';
+          yield* dw.passIn(owner, 1.4);
+          R.gone(owner);
+          yield* dw.close();
+          ctx.news('Doorbell prankster, nine, gets a bucket of water in return; "worth it", he says');
+        } else {
+          // 6c dog
+          hound._doorway = dw;
+          R.spawn(hound, dw.at(0.3, -1.0).x, dw.at(0.3, -1.0).z, 0);
+          hound.heading = dw.heading;
+          owner.mood = 'smug';
+          ctx.sfx('slam'); ctx.shake(0.25);
+          R.run(dw.open());
+          yield* wait(0.25);
+          yield* dw.passOut(owner, 3.0, 0.5);
+          owner.heading = dw.heading; owner.mood = 'angry'; owner.arms = 'point';
+          B('6c the door flies open: the resident and the dog', [owner, a]);
+          cam.two(owner, a, { dist: 5.5, el: 0.05, az: -dir * 0.3, cut: 0.6, quick: true });
+          yell(ctx, owner, 'PAK ZE, BRUNO!', '#ff6b6b', 17);
+          ctx.sfx('bark');
+          yield* wait(0.4);
+          R.run(dw.passOut(hound, 5.5, 1.0)); // out of the dark and over the threshold
+          a.arms = 'up'; a.mood = 'scared'; a.heading = dw.heading;
+          yield* fright(ctx, a, 'AAAH!');
+          // both kids run for it, the dog after them
+          B('6d the chase: the kids run, the dog after them', [a, b]);
+          cam.track([a, hound], { dist: 9, el: 0.1, az: dir * 0.5, lead: 2, fov: 34, shake: 0.3 });
+          const runA = R.away(a, dir * 9, 6.8);
+          R.run(runA);
+          b.pose = null; b.mood = 'scared'; b.arms = 'up';
+          R.run(R.away(b, dir * 9, 6.4));
+          ctx.sfx('bark');
+          yield* wait(0.3);
+          yield* chase(ctx, hound, a, 6.2, 1.0, 2.4, { ignore: [{ x: out.x, z: dw.z }] });
+          say(ctx, hound, 'WOEF!', { size: 16, color: '#fff' });
+          ctx.sfx('bark');
+          yield* wait(0.7);
+          owner.arms = 'hips';
+          cam.close(owner, { dist: 5.5, el: 0.05, az: -dir * 0.3, y: 1.0 });
+          B('7 the last laugh: the resident laughs, the dog trots home', [owner]);
+          yield* laugh(ctx, owner, 1.4, 'ha');
+          owner.arms = 'swing';
+          say(ctx, owner, 'brave hond.', { size: 14, color: '#b9fbc0' });
+          R.run(R.out(hound)); // trots back through the door
+          yield* wait(0.9);
+          yield* dw.passIn(owner, 1.4);
+          R.gone(owner);
+          yield* R.settle(6);
+          yield* dw.close();
+          ctx.news('Doorbell pranksters, both nine, meet the neighbourhood dog; the dog "was not impressed"');
+        }
+
+        // ---- 7b. the kids go: the dry one laughs, the wet one squelches off (the dog ending has them away already)
+        if (!dog) {
+          B('7b both kids: one laughs, the wet one squelches off', [a, b]);
+          cam.wide(pt((kp.x + hide.x) / 2, kp.z), { dist: 11, el: 0.22, az: dir * 0.06 }); // (across the street: the frame's edges are near, the kids are soon out of it)
+          b.pose = null; b.mood = 'happy'; faceTo(b, kp.x, kp.z);
+          cackle(ctx, b, 1.8, 'ha');
+          yield* wait(0.2);
+          a.mood = 'sad'; a.heading = dir * Math.PI / 2;
+          say(ctx, a, '*splurp*', { size: 13, color: '#9ad0ff' });
+          ctx.sfx('womp');
+          yield* wait(0.9);
+          R.stop(wet);
+          const drip = R.run((function* () {
+            for (;;) {
+              yield* wait(0.55);
+              if (!a.alive) return;
+              const q = a.g.position;
+              ctx.fx.pips(q.x, 0.1, q.z, 2, ['#4f9bff'], 0.07);
+              say(ctx, a, '*splurp*', { size: 11, color: '#9ad0ff' });
+            }
+          })());
+          R.run(R.away(a, dir * 6, 2.3));
+          yield* wait(0.5);
+          R.run(R.away(b, dir * 7, 3.0));
+          yield* R.settle(6);
+          R.stop(drip);
+        }
         yield* wait(0.3);
         done = true;
       } finally {
         cam.release();
         R.free(done);
-      }
-
-      /** the heading that faces (x, z) from where a stands */
-      function faceDir(p, x, z) { return Math.atan2(x - p.g.position.x, z - p.g.position.z); }
-      /** squelchy footsteps: a *splurp* now and then and a few drops */
-      function* squelch(p) {
-        for (;;) {
-          yield* wait(0.55);
-          if (!p.alive) return;
-          const q = p.g.position;
-          ctx.fx.pips(q.x, 0.1, q.z, 2, ['#4f9bff'], 0.07);
-          say(ctx, p, '*splurp*', { size: 11, color: '#9ad0ff' });
-        }
       }
     },
   };

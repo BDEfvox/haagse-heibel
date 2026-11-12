@@ -14,7 +14,7 @@ export default function (T) {
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
     seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
     seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
   } = T;
 
   /**
@@ -53,6 +53,39 @@ export default function (T) {
       if (k <= 0) { skid(ctx, car); exhaust(ctx, car, 2); k = 0.07; }
     }
   }
+  const HALF = 1.03;
+  /** Somebody steps out of a vehicle: they start inside its body (low, so it hides them), the door goes, they step out to (tx, tz). */
+  function* emerge(ctx, R, a, car, tx, tz) {
+    const p = car.g.position;
+    a.air = true; a.arms = 'swing';
+    R.spawn(a, p.x, p.z, -0.55);
+    ctx.sfx('door');
+    const y1 = ctx.L.yAt ? ctx.L.yAt(tz) : 0, x0 = p.x, z0 = p.z;
+    a.heading = Math.atan2(tx - x0, tz - z0);
+    yield* tween(0.5, (u) => {
+      const e = ease.outQuad(u);
+      a.g.position.set(lerp(x0, tx, e), lerp(-0.55, y1, ease.inOut(u)), lerp(z0, tz, e));
+    });
+    a.air = false;
+    a.squash(0.15);
+  }
+  /** Somebody gets back in: they walk up to the door, sink in behind the bodywork and are gone. */
+  function* sink(ctx, R, a, car) {
+    const p = car.g.position;
+    yield* go(ctx, a, a.g.position.x, p.z + (a.g.position.z > p.z ? 1.3 : -1.3), 2.6);
+    ctx.sfx('door');
+    a.air = true;
+    const x0 = a.g.position.x, z0 = a.g.position.z, y0 = a.g.position.y;
+    yield* tween(0.45, (u) => { a.g.position.set(lerp(x0, p.x, u), lerp(y0, -0.55, u), lerp(z0, p.z, u)); });
+    R.gone(a);
+  }
+  /** The line the van and the police car use: a free driving line along the whole street, nearest the street's own. */
+  const vanLane = (ctx) => once(ctx, 'plofLane', () => {
+    const L = ctx.L, hw = L.hw, lim = Math.max(0, hw - 0.95);
+    let best = null;
+    for (let z = -lim; z <= lim + 1e-6; z += 0.1) if (S.laneClear(ctx, z, -21, 21, HALF) && (best == null || Math.abs(z - (L.chaseZ ?? 0)) < Math.abs(best - (L.chaseZ ?? 0)))) best = +z.toFixed(2);
+    return best;
+  });
   /** A prop flung through the air, tumbling. */
   function* fling(o, x, y, z, h, dur) {
     const a = o.position.clone();
@@ -71,7 +104,8 @@ export default function (T) {
 
   return {
     w: [0, 0, 0, 0, 4], crime: 5, lock: 'road',
-    avail: (ctx) => ctx.L.atm && !ctx.L.atm.blown,
+    avail: (ctx) => !!ctx.L.atm && !ctx.L.atm.blown && ctx.L.kind !== 'ped' && vanLane(ctx) != null, // (a van needs a real road with a free line)
+    stage: { anchor: 'atm', reach: 4 },
     *run(ctx) {
       const { L, rnd } = ctx, A = L.atm, cam = camFor(ctx, 'plofkraak'), B = beatsFor(ctx, 'plofkraak'), R = rig(ctx);
       let done = false;
@@ -79,9 +113,9 @@ export default function (T) {
         A.blown = true;
         yield* R.close();
         // ---- the street: where the van stops, where its back doors are, where the robbers hide
-        const by = L.yAt(A.z), road = L.kind !== 'ped';
+        const by = L.yAt(A.z), road = true;
         const vdir = A.x > 0 ? 1 : -1, vf = vdir > 0 ? E : W;        // the van comes from the far end, towards the machine
-        const vz = road ? L.chaseZ : padZ(ctx, 'walkB1', A.x) + 1.4;   // (on a pedestrian street it uses the pavement side)
+        const vz = vanLane(ctx);                                         // a driving line that is free along the whole street
         const vx = clamp(A.x + vdir * 2.4, -17, 17), xr = vx - vdir * 2.9;  // xr: the back doors
         const toward = A.z < vz ? -1 : 1;                              // which way across the street the machine is
         const hz = vz - toward * 1.9, hx1 = vx + vdir * 0.3, hx2 = vx - vdir * 1.3; // hiding places: the far side of the van
@@ -91,12 +125,11 @@ export default function (T) {
         ctx.news('Two men in striped shirts "just looking" at ATM');
 
         // ---- 1. the van rolls up, brakes (nose dives), hazards blinking; the back doors swing open
-        B('1 the van: it brakes, hazards blinking, the back doors swing open', [van]);
-        cam.wide(pt(vx, vz), { dist: 26, el: 0.3, az: -vdir * 0.35, hold: 4.6 });
-        yield* R.enter(van, -vdir * 21.4, vz, 0);
+        B('1 the van: it brakes, hazards blinking, the back doors swing open', [pt(vx, vz)]);
+        cam.wide(pt(vx, vz), { dist: 26, el: 0.3, az: -vdir * 0.35 });
+        yield* R.enter(van, -vdir * 17, vz, 0, { dir: vdir, speed: 11 });
         van.face(vf);
         ctx.sfx('rev');
-        yield* wait(0.3);
         yield* dash(ctx, van, vx, vz, 12, { brake: 0.55, skid: true });
         van.hazard = true;
         ctx.sfx('thud');
@@ -105,14 +138,16 @@ export default function (T) {
         ctx.sfx('door');
         yield* wait(0.4);
 
-        B('1b the robbers hop out of the back, one hugging a bomb', [r1, r2]);
-        cam.ground(pt(xr, vz), { dist: 6.5, az: -vdir * 1.0, hold: 2.4 });
+        B('1b the robbers hop out of the back, one hugging a bomb', [pt(xr, vz)]);
+        cam.ground(pt(xr, vz), { dist: 6.5, az: -vdir * 1.0 });
         yield* wait(0.3);
-        r1.heading = r2.heading = 0;
         r1.hold(item.bomb(), 'front'); r1.arms = 'carry'; r2.arms = 'rub';
         r1.mood = r2.mood = 'sly';
-        R.run((function* () { yield* wait(0.25); yield* R.enter(r2, xr - vdir * 2.2, vz); r2.heading = 0; yield* hop(r2, 0.5, 0.3); r2.squash(0.2); })());
-        yield* R.enter(r1, xr - vdir * 1.0, vz);
+        // they were in the back all along: they start inside the cargo area (the van's body hides them) and walk out of the open doors
+        const inside = (a, k) => { R.spawn(a, vx - vdir * (0.9 + k * 0.6), vz, 0); a.heading = vdir > 0 ? W : E; };
+        inside(r1, 0); inside(r2, 1);
+        R.run((function* () { yield* wait(0.25); yield* go(ctx, r2, xr - vdir * 2.2, vz + 0.5, 3.2); r2.heading = 0; yield* hop(r2, 0.5, 0.3); r2.squash(0.2); })());
+        yield* go(ctx, r1, xr - vdir * 1.0, vz - 0.5, 3.2);
         r1.heading = 0;
         yield* hop(r1, 0.5, 0.3);
         r1.squash(0.2);
@@ -122,7 +157,7 @@ export default function (T) {
         B('2 reveal: DE PLOFKRAKERS', [r1, r2]);
         r1.heading = r2.heading = 0;
         r1.lookAt = r2; r2.lookAt = r1; r1.mood = r2.mood = 'smug'; r2.arms = 'rub';
-        cam.hero([r1, r2], { dist: 6.4, hold: 3 });
+        cam.hero([r1, r2], { dist: 6.4 });
         cam.card('DE PLOFKRAKERS', 'Knock, knock. Then boom.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -133,7 +168,7 @@ export default function (T) {
 
         // ---- 3. the charge: one tiptoes to the machine, the other keeps lookout; the fuse sparkles; both dive behind the van
         B('3 the charge: one tiptoes to the machine, the other keeps a lookout', [r1, r2]);
-        cam.track(r1, { dist: 10, el: 0.14, az: 0.9, lead: 1.5, hold: 3.2 });
+        cam.track(r1, { dist: 10, el: 0.14, az: 0.9, lead: 1.5 });
         r2.arms = 'sneak';
         R.run((function* () {
           yield* tiptoe(ctx, r2, A.x + vdir * 1.8, A.z + 0.9, 3.8, false);
@@ -144,15 +179,20 @@ export default function (T) {
         r1.heading = Math.PI;
         yield* wait(0.3);
         const bomb = R.add(r1.drop());
-        bomb.position.set(A.x, by + 0.9, A.z - 0.75);
+        bomb.position.set(r1.g.position.x, by + 0.95, r1.g.position.z - 0.35); // out of his hands...
+        r1.arms = 'reach';
+        yield* tween(0.4, (u) => { // ...and stuck on the machine, where we can see it go
+          bomb.position.set(lerp(r1.g.position.x, A.x, ease.outQuad(u)), lerp(by + 0.95, by + 0.9, u), lerp(r1.g.position.z - 0.35, A.z - 0.75, ease.outQuad(u)));
+        });
         ctx.sfx('thud');
         say(ctx, r1, 'psst... rennen!', { size: 13, color: '#b9fbc0' });
         r1.arms = 'swing'; r1.gait = 'walk'; r1.mood = 'scared';
         r2.gait = 'walk'; r2.arms = 'swing'; r2.mood = 'scared';
 
         B('3b the fuse: 3... 2... 1...', [bp]);
-        cam.shot({ on: bp, y: 0.4, dist: 4.5, el: 0.05, az: 0.3, fov: 34, hold: 1.4 });
+        cam.shot({ on: bp, y: 0.4, dist: 4.5, el: 0.05, az: 0.3, fov: 34 });
         ctx.sfx('fuse');
+        ctx.stageMode && ctx.stageMode('flee'); // the people round the machine have seen the fuse: they run
         const dive = function* (a, x) {
           yield* go(ctx, a, x, hz, 7.5);
           a.pose = 'crouch'; a.arms = 'cover'; a.mood = 'scared';
@@ -164,12 +204,12 @@ export default function (T) {
           if (i === 1) { R.run(dive(r1, hx1)); R.run(dive(r2, hx2)); }
           if (i === 7) {
             B('3c both dive behind the van, fingers in their ears', [r1, r2]);
-            cam.two(r1, r2, { az: -vdir * 0.3, hold: 1.5 });
+            cam.two(r1, r2, { az: -vdir * 0.3 });
           }
           if (i === 13) {
             // ---- 4 begins: the picture goes wide just before the bang
             B('4 KABOOM: flash, fireball, the front panel spins away, banknotes everywhere', [atm]);
-            cam.wide(atm, { dist: 24, el: 0.3, az: -vdir * 0.7, hold: 3.8 });
+            cam.wide(atm, { dist: 24, el: 0.3, az: -vdir * 0.7 });
           }
           yield* wait(0.1);
         }
@@ -199,15 +239,16 @@ export default function (T) {
         ctx.incident(5);
         ctx.news(`PLOFKRAAK on ${ctx.st.name}! ATM explodes, cash rains from the sky`);
         R.panic(A.x, 12, 4);
+        ctx.stageMode && ctx.stageMode('watch');
         const smoke = R.run((function* () { for (let i = 0; i < 40; i++) { ctx.fx.smoke(A.x, by + 1.6, A.z - 0.7, 2, ['#555', '#444', '#666'], 0.6); yield* wait(0.18); } })());
         yield* wait(1.4);
         B('4b the smoking hole', [atm]);
-        cam.shot({ on: atm, y: 0.3, dist: 9, el: 0.12, az: -vdir * 0.3, fov: 30, hold: 1.9 });
+        cam.shot({ on: atm, y: 0.3, dist: 9, el: 0.12, az: -vdir * 0.3, fov: 30 });
         yield* wait(0.5);
 
         // ---- 5. the harvest: banknotes rain down, the robbers run into it with open bags, scooping, jumping, laughing
         B('5 the harvest: scooping notes with open bags, laughing', [r1, r2]);
-        cam.orbit([r1, r2], { dist: 9, hold: 3.6 });
+        cam.orbit([r1, r2], { dist: 9 });
         r1.pose = r2.pose = null;
         r1.gait = r2.gait = 'walk';
         r1.hold(item.moneybag(1.1), 'front'); r2.hold(item.moneybag(1.1), 'front');
@@ -237,7 +278,7 @@ export default function (T) {
         for (let k = 0; k < 3; k++) { R.run(hop(r1, 0.55, 0.3)); yield* hop(r2, 0.55, 0.3); ctx.sfx('coin'); }
         B('5b the laugh', [r1]);
         r1.heading = 0; r1.arms = 'laugh';
-        cam.face(r1, { hold: 2 });
+        cam.face(r1);
         yield* wait(0.3);
         yield* laugh(ctx, r1, 1.2, 'ha');
         R.stop(rain); R.stop(smoke);
@@ -247,14 +288,14 @@ export default function (T) {
         r1.drop(); r2.drop();
         shoulder(r1, item.moneybag(1.1)); shoulder(r2, item.moneybag(1.1));
         r1.mood = r2.mood = 'happy';
-        cam.track([r1, r2], { dist: 11, el: 0.14, az: 0.9, lead: 2, hold: 2.4 });
+        cam.track([r1, r2], { dist: 11, el: 0.14, az: 0.9, lead: 2 });
         yield* wait(0.3);
         const sx = xr - vdir * 1.1;
         R.run(go(ctx, r1, sx, vz + 0.5, 7));
         yield* go(ctx, r2, sx, vz - 0.5, 7);
         r1.heading = r2.heading = vdir > 0 ? E : W;
         B('6b the bags go into the van, the doors slam', [van, r1, r2]);
-        cam.ground(pt(xr - vdir * 0.5, vz), { dist: 6.5, az: -vdir * 0.8, hold: 2.6 });
+        cam.ground(pt(xr - vdir * 0.5, vz), { dist: 6.5, az: -vdir * 0.8 });
         yield* wait(0.3);
         const toss = function* (a, k) {
           a.drop();
@@ -267,7 +308,8 @@ export default function (T) {
           R.rm(bag);
           a.arms = 'swing';
           yield* leap(ctx, a, xr + vdir * 0.5, vz + k * 0.3, 0.8, 0.4);
-          yield* R.out(a);
+          yield* go(ctx, a, vx - vdir * (0.9 + k * 0.3), vz + k * 0.3, 3.5); // into the cargo area: the van's body hides him
+          R.gone(a);
         };
         R.run(toss(r1, 1));
         yield* wait(0.3);
@@ -283,47 +325,63 @@ export default function (T) {
         // ---- 7. the getaway: the van squats, wheels spin, it fishtails away with notes fluttering out of the door
         B('7 the getaway: wheelspin, smoke, fishtail, notes flutter out', [van]);
         van.hazard = false;
-        cam.chase(van, vdir, { hold: 3.6 });
+        cam.chase(van, vdir);
         yield* wait(0.3);
         say(ctx, van, 'GASSEN!', { size: 16, color: '#ffd60a' });
+        if (flip(ctx, 'stall', 0.4)) { // the engine coughs twice before it catches
+          for (let i = 0; i < 2; i++) {
+            ctx.sfx('rev'); ctx.shake(0.1); van.jolt(0.4, 0);
+            ctx.fx.smoke(van.g.position.x - vdir * 2.4, 0.6, van.g.position.z, 4, ['#222', '#444'], 0.4);
+            say(ctx, van, i ? 'HOEST...' : 'rrr-rr-rr', { size: 14, color: '#ffd166' });
+            yield* wait(0.7);
+          }
+          say(ctx, r1, 'DOORTRAPPEN!', { size: 12, color: '#fff' });
+        }
         yield* burn(ctx, van, 0.6);
         ctx.sfx('skid');
         const xe = vdir * 20.5, am = road ? 0.6 : 0.25;
         let drop = 0;
-        yield* drive(ctx, van, [[lerp(vx, xe, 0.3), vz + am], [lerp(vx, xe, 0.62), vz - am], [xe, vz]], (u) => 4 + 10 * Math.min(1, u * 2.2), {
-          drift: 0.9,
-          each: (dt) => {
-            drop -= dt;
-            if (drop < 0) {
-              const p = van.g.position;
-              ctx.fx.cash(p.x - vdir * 2.4, 1.3, p.z, 2, 2.5, 4);
-              exhaust(ctx, van, 1);
-              drop = 0.1;
-            }
-          },
-        });
+        const vspeed = (u) => 4 + 10 * Math.min(1, u * 2.2);
+        const vEach = (dt) => {
+          drop -= dt;
+          if (drop < 0) {
+            const p = van.g.position;
+            ctx.fx.cash(p.x - vdir * 2.4, 1.3, p.z, 2, 2.5, 4);
+            exhaust(ctx, van, 1);
+            drop = 0.1;
+          }
+        };
+        const weave = [[lerp(vx, xe, 0.3), vz + am], [lerp(vx, xe, 0.62), vz - am], [xe, vz]].map((q) => (S.laneClear(ctx, q[1], q[0] - 2, q[0] + 2, HALF) ? q : [q[0], vz])); // the fishtail only where the road is free
+        const gone = yield* drive(ctx, van, weave, vspeed, { drift: 0.9, each: vEach });
+        if (gone === false) yield* dash(ctx, van, xe, vz, 12, { v0: 1, ramp: 1.2, skid: true, burn: 0.8, each: (dt) => { vEach(dt); } }); // no line for the fishtail: the straight one, which was measured
         yield* R.out(van);
         ctx.news('Plofkraak crew flees in a van; "very polite, they waved"');
 
         // ---- 8. the law: a police car slides to a stop at the smoking hole; the cop scratches his head and pockets the last note
         const po = makeCar(rnd, 'police', L.night), cop = makePerson(rnd, { kind: 'cop' });
-        B('8 the law: a police car slides to a stop at the smoking hole', [po, atm]);
+        B('8 the law: a police car slides to a stop at the smoking hole', [pt(clamp(A.x - vdir * 3.2, -16, 16), vz), atm]);
         const pstop = clamp(A.x - vdir * 3.2, -16, 16);
-        cam.dutch(po, { dist: 12, hold: 3.2 });
-        yield* R.enter(po, -vdir * 21.4, vz, 0);
-        po.face(vf); po.siren = true;
-        ctx.sfx('siren', 3);
+        const sweepOk = S.laneClear(ctx, vz, pstop - 4, pstop + 4, 2.35); // can he slide it round broadside here?
+        cam.wide(pt(A.x, vz - toward * 1.2), { dist: 24, el: 0.3, az: -vdir * 0.45 });
+        ctx.sfx('siren', 3); // heard before it is seen
+        po.siren = true;
+        yield* wait(0.8);
+        yield* R.enter(po, -vdir * 17, vz, 0, { dir: vdir, speed: 12 });
+        po.face(vf);
         say(ctx, po, 'WEE-OO!', { color: '#7db8ff', size: 16 });
-        yield* wait(0.3);
-        yield* dash(ctx, po, pstop - vdir * 5, vz, 13, { v0: 5, ramp: 0.6 });
-        yield* handbrake(ctx, po, 5, 1.0, Math.PI / 2, vdir * -toward);
+        if (sweepOk) {
+          yield* dash(ctx, po, pstop - vdir * 5, vz, 13, { v0: 5, ramp: 0.6 });
+          yield* handbrake(ctx, po, 5, 1.0, Math.PI / 2, vdir * -toward);
+        } else {
+          yield* dash(ctx, po, pstop - vdir * 1.5, vz, 13, { v0: 5, ramp: 0.6, brake: 0.5, skid: true });
+        }
         ctx.shake(0.12);
         po.siren = false;
         yield* wait(0.3);
-        yield* R.enter(cop, po.g.position.x - vdir * 0.3, vz - toward * 1.5);
-        ctx.sfx('door');
+        const cx0 = po.g.position.x - vdir * (sweepOk ? 0.3 : 0), cz0 = vz - toward * 1.8;
+        yield* emerge(ctx, R, cop, po, cx0, cz0);
         B('8b the cop looks at the hole, looks down the street, scratches his head', [cop]);
-        cam.close(cop, { hold: 4.2 });
+        cam.close(cop);
         cop.arms = 'hips'; cop.mood = 'neutral';
         R.run(go(ctx, cop, A.x - vdir * 0.5, A.z + 1.7, 2.8));
         yield* wait(0.8);
@@ -351,12 +409,20 @@ export default function (T) {
 
         // ---- 9. epilogue: the hole smokes, the alarm rings on
         B('9 epilogue: the hole smokes, the alarm rings on', [atm]);
-        cam.wide(atm, { dist: 20, el: 0.3, az: -vdir * 0.45, hold: 3.6 });
+        cam.wide(atm, { dist: 20, el: 0.3, az: -vdir * 0.45 });
         const lamp = R.add(sculpt((v) => v.box(A.x, by + 2.9, A.z - 0.7, 0.3, 0.2, 0.2, '#ff2d2d'), MAT.glow));
         const blink = R.run((function* () { let u = 0; for (;;) { u += yield; lamp.visible = Math.floor(u * 6) % 2 === 0; } })());
         const puffs = R.run((function* () { for (;;) { ctx.fx.smoke(A.x, by + 1.6, A.z - 0.7, 1, ['#555', '#444', '#666'], 0.5); yield* wait(0.2); } })());
         ctx.sfx('alarm');
-        R.run((function* () { yield* wait(0.5); yield* R.away(cop, -vdir * 5, 2.4); })());
+        R.run((function* () { // the cop gets back in and the police car drives off to look for them (it came from the far end: it leaves the way the van went)
+          yield* wait(0.5);
+          yield* sink(ctx, R, cop, po);
+          po.siren = true;
+          const xe2 = vdir * 20.5;
+          const ok2 = yield* drive(ctx, po, [[lerp(po.g.position.x, xe2, 0.4), vz], [xe2, vz]], (u) => 2 + 9 * Math.min(1, u * 2));
+          if (ok2 === false) yield* dash(ctx, po, xe2, vz, 10, { v0: 1, ramp: 1.2 });
+          yield* R.out(po);
+        })());
         yield* wait(0.5);
         ctx.fx.text('RING RING RING', at(A.x, 4.2, A.z), { size: 20, color: '#ff6b6b', dur: 1.6 });
         yield* wait(2.4);
