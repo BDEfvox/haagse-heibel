@@ -10,8 +10,12 @@
 // Terraces use the frame of their facade: local +z points out of the building into the street or square.
 //
 // Everything here is a pure function of the tile's data and its key (position-seeded dice), so a tile looks the same
-// every time it is built. `night` only changes which boxes glow (the `gl` builder: never a real light) and how full the
-// seats are; the same lamps, strings and lanterns are there by day, unlit.
+// every time it is built. By night the furniture stands where it stands by day (the same `props`, the same seats taken):
+// the night rolls every die the day rolls and counts every box the day counts against the budget. What only the day shows
+// (the second drink or the vase some tables have, open market stalls, crates, shoppers, the basket on a picnic table) is then counted but not drawn (the `ghost`
+// builder), and what only the night shows (shut stalls, with dice of their own; candles; a boat's riding light) is not
+// counted (`nightOnly`). Otherwise `night` only changes which boxes glow (the `gl` builder: never a real light), and fewer
+// people stay at the picnics; the same lamps, strings and lanterns are there by day, unlit.
 import * as THREE from 'three';
 import * as P from './props.js';
 import { makeRng, hashStr, clamp } from './kit.js';
@@ -282,18 +286,20 @@ const SIDE = { n: [0, -1, 0], s: [0, 1, 2], e: [1, 0, 3], w: [-1, 0, 1] }; // ch
 function cellDraw(S, style, x, z) {
   const { v, gl, night, r } = S;
   const top = S.top, d = S.dishes;
+  // S.dv: the builder of what only the day shows (by night the ghost, which only counts); S.nightOnly: what only the night shows
   if (style === 'bistro' || style === 'bistro2') {
     tableRound(v, x, z, style === 'bistro' ? 0.7 : 0.6, 0.72, top);
     const sides = style === 'bistro2' ? [SIDE.e, SIDE.w] : r() < 0.35 ? [SIDE.s, SIDE.n, SIDE.e] : [SIDE.s, SIDE.n];
     for (const [dx, dz, f] of sides) sit(S, x + dx * 0.62, z + dz * 0.62, f, r() < 0.04);
     if (d) drink(v, gl, night, x - 0.12, z, 0.77, r);
-    if (night) candle(v, gl, night, x + 0.08, z + 0.05, 0.77); else if (d) drink(v, gl, night, x + 0.12, z + 0.05, 0.77, r);
+    if (d) drink(S.dv, gl, night, x + 0.12, z + 0.05, 0.77, r); // by night a candle stands there instead
+    if (night) S.nightOnly(() => candle(v, gl, night, x + 0.08, z + 0.05, 0.77));
   } else if (style === 'sq4') {
     tableSquare(v, x, z, 0.82, 0.74, top);
     for (const [dx, dz, f] of [SIDE.s, SIDE.n, SIDE.e, SIDE.w]) if (r() < 0.88) sit(S, x + dx * 0.66, z + dz * 0.66, f, r() < 0.04);
     if (d) { drink(v, gl, night, x - 0.2, z - 0.1, 0.79, r); drink(v, gl, night, x + 0.2, z + 0.15, 0.79, r); }
-    if (night) candle(v, gl, night, x, z, 0.79);
-    else if (r() < 0.5) v.box(x, 0.79, z, 0.1, 0.18, 0.1, pick(r, ['#ffd166', '#ff70a6', '#8ecae6', '#ffffff'])); // a flower in a vase
+    if (r() < 0.5) S.dv.box(x, 0.79, z, 0.1, 0.18, 0.1, pick(r, ['#ffd166', '#ff70a6', '#8ecae6', '#ffffff'])); // a flower in a vase (a candle by night)
+    if (night) S.nightOnly(() => candle(v, gl, night, x, z, 0.79));
   } else if (style === 'bench') {
     const along = r() < 0.5 ? 0 : 2; // always along x in the terrace's frame: the quarter turn only mirrors it
     tableLong(v, x, z, 2.4, along, top, S.wood);
@@ -301,7 +307,7 @@ function cellDraw(S, style, x, z) {
       if (r() < S.occ) seated(v, person(v, x + a, z + s * 0.6, s > 0 ? 2 : 0), lookOf(r), pick(r, POSES));
       if (d && r() < 0.8) drink(v, gl, night, x + a * 1.1, z + s * 0.2, 0.8, r);
     }
-    if (night) { candle(v, gl, night, x - 0.5, z, 0.8); candle(v, gl, night, x + 0.5, z, 0.8); }
+    if (night) S.nightOnly(() => { candle(v, gl, night, x - 0.5, z, 0.8); candle(v, gl, night, x + 0.5, z, 0.8); });
   } else if (style === 'high') {
     tableRound(v, x, z, 0.62, 1.05, top, '#3b3b3f');
     const n = r() < S.occ + 0.2 ? 2 + (r() < 0.4 ? 1 : 0) : 0;
@@ -311,7 +317,7 @@ function cellDraw(S, style, x, z) {
       if (i < n) standing(v, person(v, x + dx, z + dz, f), lookOf(r), pick(r, STANDS), r() < 0.5 ? '#e8a317' : '#f5f0c8');
     }
     drink(v, gl, night, x - 0.12, z, 1.1, r); drink(v, gl, night, x + 0.1, z + 0.1, 1.1, r);
-    if (night) candle(v, gl, night, x, z - 0.1, 1.1);
+    if (night) S.nightOnly(() => candle(v, gl, night, x, z - 0.1, 1.1));
   } else { // lounge
     v.box(x, 0, z, 0.8, 0.36, 0.8, S.top);
     v.box(x, 0.36, z, 0.7, 0.03, 0.7, '#e9e2d0');
@@ -323,7 +329,7 @@ function cellDraw(S, style, x, z) {
       if (r() < S.occ) seated(v, { ...o, y: 0.1 }, lookOf(r), pick(r, POSES));
     }
     if (d) drink(v, gl, night, x, z, 0.4, r);
-    if (night) candle(v, gl, night, x + 0.15, z, 0.4);
+    if (night) S.nightOnly(() => candle(v, gl, night, x + 0.15, z, 0.4));
   }
 }
 const COLS = {
@@ -457,7 +463,6 @@ function boat(v, gl, night, r, len, vr) {
     (night ? gl : v).box(0, 1.2, 1.12, len * 0.6, 0.6, 0.04, night ? '#ffd98a' : '#9ec5d6');
     for (let i = 0; i < 3; i++) planterBox(v, -len * 0.3 + i * len * 0.3, 1.2, r, 0.8);
   }
-  if (night && vr !== 2) gl.box(len * 0.46, 1.2, 0, 0.12, 0.12, 0.12, '#ff5a4a');
 }
 function goalPosts(v, w = 7.3, h = 2.44) {
   for (const s of [-1, 1]) v.box(s * w / 2, 0, 0, 0.12, h, 0.12, '#f2f2f2');
@@ -540,8 +545,8 @@ function windbreak(v, w, c1, c2) {
   const n = Math.round(w / 0.5);
   for (let i = 0; i < n; i++) v.box(-w / 2 + (i + 0.5) * (w / n), 0.2, 0, w / n, 1.0, 0.03, i % 2 ? c1 : c2);
 }
-function marketStall(v, gl, night, r, vr, w) {
-  if (night) return stallShut(v, r, w);
+/** An open market stall (by night `stallShut` stands in its place). Front towards +z. */
+function marketStall(v, r, vr, w) {
   const A = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff'], ['#1d6fa5', '#ffffff'], ['#7b2d8f', '#f4f1e8']];
   const [a, b] = pick(r, A), d = 1.5;
   v.box(0, 0, 0.1, w, 0.95, d - 0.4, vr === 3 ? '#cfe5ee' : '#cdbfa3'); // counter
@@ -664,7 +669,14 @@ export function furnishTile(o) {
   const props = [];
   const cap = lite ? 120 : 320;
   let bonus = 0; // what a terrace field may hold on top of the tile's allowance (see the fields below)
-  const used = () => v.n + gl.n - bonus;
+  // By night the furniture stands where it stands by day, so every budget gate must see the day's count. What only the day
+  // shows is drawn by night into the ghost, which only counts its boxes (24 vertices each, as Vox); what only the night shows
+  // goes through nightOnly, which keeps its vertices out of the count. By day the ghost stays empty and `lit` 0.
+  const ghost = { n: 0, box() { this.n += 24; return this; }, setT() { return this; } };
+  const dayV = night ? ghost : v; // the builder of what only the day shows
+  let lit = 0;
+  const nightOnly = (draw) => { const n0 = v.n + gl.n; draw(); lit += v.n + gl.n - n0; };
+  const used = () => v.n + gl.n + ghost.n - lit - bonus;
   const LIMIT = lite ? 30000 : 60000; // vertices of furniture a tile may hold in all
   let RESERVE = lite ? 12000 : 26000; // of which terraces and places may take this much before the generic items go in
 
@@ -958,8 +970,8 @@ export function furnishTile(o) {
     const fam = T.parasol || (beach ? 'straw' : pick(r, ['brand', 'brand', 'dark', 'striped', 'cream']));
     const pc = pick(r, COLS[fam] || COLS.brand), chairKind = T.chairs && T.chairs !== 'mix' ? T.chairs : pick(r, ['wicker', 'wood', 'bistro', 'bistro']);
     const S = {
-      v, gl, night, r, chairKind, chairCol: pick(r, CHAIRCOL[chairKind]), wood: pick(r, ['#8d6e4c', '#a9824f', '#6d4a2c']),
-      top: pick(r, TOPS), dishes: cat !== 'ice_cream', occ: clamp((night ? 0.5 : 0.38) * (T.busy || 1) * r.range(0.7, 1.25), 0.08, 0.92),
+      v, gl, night, r, dv: dayV, nightOnly, chairKind, chairCol: pick(r, CHAIRCOL[chairKind]), wood: pick(r, ['#8d6e4c', '#a9824f', '#6d4a2c']),
+      top: pick(r, TOPS), dishes: cat !== 'ice_cream', occ: clamp(0.38 * (T.busy || 1) * r.range(0.7, 1.25), 0.08, 0.92), // (as full by night: the same dice)
     };
     if (style === 'lounge') { S.top = pick(r, ['#6d4a2c', '#4a4e57', '#8d6e4c']); S.chairCol = pick(r, ['#b08a5a', '#8a9a8f', '#c9b79a']); }
     const pkind = T.big ? 'big' : style === 'bistro2' || style === 'high' ? null : pick(r, ['sq', 'sq', 'round', 'stripe', 'sail', 'round'].filter((k) => k !== 'stripe' || fam === 'striped' || r() < 0.3));
@@ -1186,7 +1198,7 @@ export function furnishTile(o) {
     // ---- market stalls in rows along the street. By default only on the pavements (the crowd's cars drive the
     // carriageway); `inRoad: true` puts them on the road itself for a street that is closed for the market.
     if (R.market) {
-      const r = placeSeed(pl, 'market'), names = R.market.streets, inRoad = !!R.market.inRoad;
+      const r = placeSeed(pl, 'market'), names = R.market.streets, inRoad = !!R.market.inRoad, rShut = night ? placeSeed(pl, 'market-shut') : null;
       const MK = set(C.WALK, C.LAND, C.PLAZA, C.PED, C.FOOT, ...(inRoad ? [C.ASPHALT, C.KLINKER, C.CURB, C.MARK, C.SERVICE] : []));
       let nst = 0;
       pieces.forEach((pc, pi) => {
@@ -1214,17 +1226,19 @@ export function furnishTile(o) {
                 if (ok && !crowded('mstall', x, z, w / 2 + 0.2)) {
                   const vr = Math.floor(r() * 4);
                   aim(fr[2], x, z);
-                  marketStall(v, gl, night, r, vr, w);
-                  if (!night && r() < 0.5) { v.setT(fr[2], x, z, yAt(x, z)); crateStack(v, r, 0.5); }
+                  // by night the open stall, its crates and its shoppers are only counted (dayV), and the stall stands shut
+                  marketStall(dayV, r, vr, w);
+                  if (night) nightOnly(() => stallShut(v, rShut, w));
+                  if (r() < 0.5) { dayV.setT(fr[2], x, z, yAt(x, z)); crateStack(dayV, r, 0.5); }
                   stand('mstall', x, z, w / 2 + 0.2); nst++;
                   add('mstall', x, z, f, nx, nz, { w, label: ['groente', 'kleding', 'textiel', 'vis'][vr] });
                   // a shopper or two in front (the crowd walks past them)
-                  if (!night && r() < 0.8) {
+                  if (r() < 0.8) {
                     for (let i = 0, n = 1 + (r() < 0.5 ? 1 : 0); i < n; i++) {
                       const lx = r.range(-w / 2 + 0.3, w / 2 - 0.3), lz = 1.5 + r.range(0, 0.4);
                       const px = x + lx * fr[1] + lz * fr[0], pz = z - lx * fr[0] + lz * fr[1];
                       if (!MK[grid.get(px, pz)] || treeNear(px, pz, 0.6)) continue;
-                      standing(v, person(v, lx, lz, 2, 1), lookOf(r), pick(r, ['bag', 'bag', 'idle', 'phone']), pick(r, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557']));
+                      standing(dayV, person(dayV, lx, lz, 2, 1), lookOf(r), pick(r, ['bag', 'bag', 'idle', 'phone']), pick(r, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557']));
                     }
                   }
                 }
@@ -1268,22 +1282,21 @@ export function furnishTile(o) {
             if (bad(c.x + ux * lx + vx * lz, c.z + uz * lx + vz * lz)) { ok = false; break; }
           }
           if (!ok) continue;
-          const r2 = makeRng(hashStr(key + '|ms|' + c.i + '|' + c.j));
+          const r2 = makeRng(hashStr(key + '|ms|' + c.i + '|' + c.j)), rShut = night ? makeRng(hashStr(key + '|msshut|' + c.i + '|' + c.j)) : null;
           for (const side of [-1, 1]) { // the two stalls of a pair, fronts to opposite aisles
             const px = c.x + vx * side * 0.75, pz = c.z + vz * side * 0.75, kind = Math.floor(r2() * 5);
             aim(side > 0 ? th : th + Math.PI, px, pz);
-            if (night) stallShut(v, r2, w);
-            else {
-              stallCheap(v, r2, kind, w);
-              if (r2() < 0.7) standing(v, person(v, r2.range(-w / 3, w / 3), -0.35, 0), lookOf(r2), pick(r2, ['idle', 'idle', 'phone']), '#ffffff'); // the vendor, behind the counter
-            }
+            // by night the open stall and its vendor are only counted (dayV), and the stall stands shut
+            stallCheap(dayV, r2, kind, w);
+            if (r2() < 0.7) standing(dayV, person(dayV, r2.range(-w / 3, w / 3), -0.35, 0), lookOf(r2), pick(r2, ['idle', 'idle', 'phone']), '#ffffff'); // the vendor, behind the counter
+            if (night) nightOnly(() => stallShut(v, rShut, w));
           }
           stand('mstall', c.x, c.z, 2.0);
           placed.push(c);
           add('mstall', c.x, c.z, { tx: ux, tz: uz }, vx, vz, { w, label: 'markt' });
         }
-        // shoppers in the aisles, some with bags or a trolley (never at night: the market is closed)
-        if (!night) for (const c of placed) {
+        // shoppers in the aisles, some with bags or a trolley (never at night: the market is closed, they are only counted)
+        for (const c of placed) {
           if (used() > capM + (lite ? 1500 : 3500)) break;
           if (rm() > 0.42) continue;
           const side = rm() < 0.5 ? -1 : 1, lx = rm.range(-1.4, 1.4), lz = side * (3.25 + rm.range(-0.8, 0.8));
@@ -1291,7 +1304,7 @@ export function furnishTile(o) {
           if (!MG[grid.get(x, z)] || treeNear(x, z, 0.5)) continue;
           aim(th, x, z);
           const face = Math.floor(rm() * 4);
-          standing(v, person(v, 0, 0, face, rm() < 0.12 ? 0.62 : 1), lookOf(rm), pick(rm, ['bag', 'bag', 'trolley', 'idle', 'phone']), pick(rm, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557', '#8d99ae']));
+          standing(dayV, person(dayV, 0, 0, face, rm() < 0.12 ? 0.62 : 1), lookOf(rm), pick(rm, ['bag', 'bag', 'trolley', 'idle', 'phone']), pick(rm, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557', '#8d99ae']));
         }
         CHEAP = false;
       }
@@ -1331,6 +1344,7 @@ export function furnishTile(o) {
     // ---- picnic and sunbathing on the grass
     if (R.picnic) {
       const r = placeSeed(pl, 'picnic'), RR = R.picnic, per = lite ? Math.ceil((RR.n || 6) / 2) : RR.n || 6, tables = RR.tables !== false;
+      const rStay = night ? placeSeed(pl, 'picnic-night') : null;
       let made = 0;
       for (let t = 0; t < 260 && made < per && used() < LIMIT - 3000; t++) {
         const x = r.range(8, TILE - 8), z = r.range(8, TILE - 8), m = toMap(x, z);
@@ -1341,25 +1355,28 @@ export function furnishTile(o) {
         const kind = tables && r() < 0.45 ? 'table' : r() < 0.7 ? 'blanket' : 'group';
         const fq = Math.floor(r() * 4);
         aim(kind === 'table' ? fq * (Math.PI / 2) : 0, x, z);
-        const home = r() < (night ? 0.35 : 0.9);
+        const home = r() < 0.9;
+        // the people: by night the day's dice still roll, but only about one picnic in three keeps its people (35 in 100
+        // in all); the others are only counted
+        const hv = night && rStay() >= 0.35 / 0.9 ? ghost : v;
         if (kind === 'table') {
           picnic(v, r, Math.floor(r() * 3), r.range(1.6, 2.2));
-          if (home) for (const s2 of [-1, 1]) for (const a of [-0.5, 0.5]) if (r() < 0.65) seated(v, person(v, a, s2 * 0.62, s2 > 0 ? 2 : 0), lookOf(r), pick(r, POSES));
-          if (night) candle(v, gl, night, 0, 0, 0.78);
-          else if (r() < 0.6) v.box(0.2, 0.79, 0, 0.35, 0.2, 0.3, '#c9a066'); // a picnic basket
+          if (home) for (const s2 of [-1, 1]) for (const a of [-0.5, 0.5]) if (r() < 0.65) seated(hv, person(hv, a, s2 * 0.62, s2 > 0 ? 2 : 0), lookOf(r), pick(r, POSES));
+          if (r() < 0.6) dayV.box(0.2, 0.79, 0, 0.35, 0.2, 0.3, '#c9a066'); // a picnic basket (a candle by night)
+          if (night) nightOnly(() => candle(v, gl, night, 0, 0, 0.78));
           add('picnic', x, z, { tx: Math.cos(fq * (Math.PI / 2)), tz: -Math.sin(fq * (Math.PI / 2)) }, 0, 1, {});
           stand('picnic', x, z, 3.0);
         } else if (kind === 'blanket') {
           v.box(0, 0, 0, 2.0, 0.03, 2.0, pick(r, ['#e63946', '#2a9d8f', '#f4a261', '#3a86ff', '#9d4edd', '#ffd166']));
           v.box(0.7, 0.03, 0.6, 0.35, 0.28, 0.35, '#c9a066');
-          if (home) { if (r() < 0.7) lying(v, 0, 0, fq, lookOf(r), pick(r, ['#ffffff', '#ff70a6', '#8ecae6'])); else seated(v, { ...person(v, 0, 0, fq), y: -0.4 }, lookOf(r), pick(r, POSES)); }
-          if (home && r() < 0.5) { v.box(1.5, 0, 1.0, 0.3, 0.3, 0.3, pick(r, ['#ffffff', '#ff4d6d', '#ffd166'])); } // a ball
+          if (home) { if (r() < 0.7) lying(hv, 0, 0, fq, lookOf(r), pick(r, ['#ffffff', '#ff70a6', '#8ecae6'])); else seated(hv, { ...person(hv, 0, 0, fq), y: -0.4 }, lookOf(r), pick(r, POSES)); }
+          if (home && r() < 0.5) { hv.box(1.5, 0, 1.0, 0.3, 0.3, 0.3, pick(r, ['#ffffff', '#ff4d6d', '#ffd166'])); } // a ball
           stand('picnic', x, z, 2.6);
         } else {
           const n = 3 + Math.floor(r() * 3);
           for (let i = 0; i < n && home; i++) {
             const a = (i / n) * TAU + r(), px = Math.cos(a) * 1.0, pz = Math.sin(a) * 1.0;
-            standing(v, person(v, px, pz, Math.floor(((a + Math.PI) / TAU) * 4 + 0.5) & 3, r() < 0.15 ? 0.62 : 1), lookOf(r), pick(r, ['drink', 'idle', 'phone', 'drink']));
+            standing(hv, person(hv, px, pz, Math.floor(((a + Math.PI) / TAU) * 4 + 0.5) & 3, r() < 0.15 ? 0.62 : 1), lookOf(r), pick(r, ['drink', 'idle', 'phone', 'drink']));
           }
           stand('picnic', x, z, 2.2);
         }
@@ -1448,8 +1465,8 @@ export function furnishTile(o) {
       let S = scenes.get(q);
       if (!S) {
         const rr = dig(q.e, 'fieldscene'), ck = T.chairs && T.chairs !== 'mix' ? T.chairs : pick(rr, ['wicker', 'wood', 'bistro']);
-        S = { v, gl, night, r, chairKind: ck, chairCol: pick(rr, CHAIRCOL[ck]), wood: pick(rr, ['#8d6e4c', '#a9824f', '#6d4a2c']), top: pick(rr, TOPS), dishes: false,
-          occ: clamp((night ? 0.38 : 0.3) * (T.busy || 1) * rr.range(0.8, 1.2), 0.1, 0.9), pc: pick(rr, COLS[fam] || COLS.cream), pk: big ? 'big' : pick(rr, ['sq', 'sq', 'round']), ph: rr.range(2.3, 2.6) };
+        S = { v, gl, night, r, dv: dayV, nightOnly, chairKind: ck, chairCol: pick(rr, CHAIRCOL[ck]), wood: pick(rr, ['#8d6e4c', '#a9824f', '#6d4a2c']), top: pick(rr, TOPS), dishes: false,
+          occ: clamp(0.3 * (T.busy || 1) * rr.range(0.8, 1.2), 0.1, 0.9), pc: pick(rr, COLS[fam] || COLS.cream), pk: big ? 'big' : pick(rr, ['sq', 'sq', 'round']), ph: rr.range(2.3, 2.6) };
         scenes.set(q, S);
       }
       return S;
@@ -1869,6 +1886,7 @@ export function furnishTile(o) {
         v.setT(th, cx, cz, y - 0.12); gl.setT(th, cx, cz, y - 0.12);
         const vr = len > 11 ? 2 : r() < 0.5 ? 0 : 1;
         boat(v, gl, night, r, len, vr);
+        if (night && vr !== 2) nightOnly(() => gl.box(len * 0.46, 1.2, 0, 0.12, 0.12, 0.12, '#ff5a4a')); // the riding light
         // a gangway to the quay for the big ones
         if (vr === 2 || r() < 0.3) {
           const lz = Math.sin(th) * -p.nx + Math.cos(th) * -p.nz; // which local side faces the quay

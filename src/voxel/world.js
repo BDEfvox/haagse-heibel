@@ -903,7 +903,7 @@ function frontInfo(u, night) {
   _dry.v.setT(); _dry.gl.setT(); _dry.v.setB(); _dry.gl.setB(); _dry.v.n = 0; _dry.gl.n = 0;
   return hi; // a dry run makes no sign plane (and so no texture)
 }
-export { frontsOf, drawHero, frontInfo, unitRng }; // for the node checks in test/
+export { frontsOf, drawHero, frontInfo, unitRng, buildTile, loadCity }; // for the node checks in test/
 /** Is a tree trunk within r metres of this point (map metres)? Only knows the tiles that are built. */
 function treeNearMap(mx, my, r) {
   const t0x = Math.floor((mx - r) / TILE), t1x = Math.floor((mx + r) / TILE), t0y = Math.floor((my - r) / TILE), t1y = Math.floor((my + r) / TILE);

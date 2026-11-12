@@ -57,8 +57,9 @@ their kind, as noted.
 - Terraces keep a walking strip at the kerb (0.9 to 1.3 m), start 0.5 m from the facade (0.1 m in the narrow version), leave a
   1 m doorway on the first row, share a frontage with neighbouring venues (each takes half the distance to the next) and grow
   outwards in rows only where the ground is open (squares).
-- Night: the same strings, lanterns, heaters, poster frames and windows are there by day, dark; at night the same boxes are
-  drawn with the glow builder. The seats are fuller at night.
+- Night: everything stands where it stands by day. Strings, lanterns, heaters, poster frames and windows are there by day, dark,
+  and glow at night; the market is shut (no crates or shoppers), a candle stands where some tables have a second drink or a vase by day, and most
+  picnickers go home.
 - Budget: the whole tile's furniture stays under about 60,000 vertices. Terraces and curated places go first (up to 26,000),
   the common furniture next, the rarer kinds (ORAC, columns, MUPIs, machines, charging posts, planters, big racks) last, while
   room remains. A dense tile such as Grote Markt therefore has fewer of the rarer kinds than a quiet one.
