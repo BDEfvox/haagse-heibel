@@ -321,10 +321,6 @@ async function boot() {
     if (id !== cand) { cand = id; candN = 0; return; }
     if (++candN >= 3) { cand = -1; shiftFocus(S[id], lngLat); } // the camera has rested on it for most of a second
   };
-  hooks.onSwap = () => {
-    cut.classList.add('swap');
-    setTimeout(() => cut.classList.remove('swap'), 200);
-  };
   // zooming all the way out hands over to the map
   hooks.onExit = () => closeStreet(true);
   hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; skyBtn.classList.toggle('away', !!on); }; // (the light button steps aside for the SKIP button)
