@@ -671,7 +671,8 @@ export function furnishTile(o) {
   let bonus = 0; // what a terrace field may hold on top of the tile's allowance (see the fields below)
   // By night the furniture stands where it stands by day, so every budget gate must see the day's count. What only the day
   // shows is drawn by night into the ghost, which only counts its boxes (24 vertices each, as Vox); what only the night shows
-  // goes through nightOnly, which keeps its vertices out of the count. By day the ghost stays empty and `lit` 0.
+  // goes through nightOnly, which keeps its vertices out of the count. By day `lit` stays 0 and the ghost only counts the
+  // shelters a stop does not get (see the stops).
   const ghost = { n: 0, box() { this.n += 24; return this; }, setT() { return this; } };
   const dayV = night ? ghost : v; // the builder of what only the day shows
   let lit = 0;
@@ -1698,6 +1699,11 @@ export function furnishTile(o) {
   for (const job of later) { if (used() > LIMIT) break; job(); }
 
   // ---- tram and bus shelters (the old kind-9 points of interest)
+  // A stop the map also has as a shelter feature (`f` type 10, drawn by landmarks.js `shelter`) gets no second shelter.
+  // The feature stands on the stop's own point, and the stop is moved from there to the pavement, so both points are
+  // compared with the feature at the same distance: the moved one by `fits` (its room 2.2 m and the feature's 2.4 m),
+  // the stop's own point by `featured`. (A feature in a neighbouring tile is not seen here.)
+  const featured = (x, z) => taken.some((t) => t.kind === 'shelterf' && Math.hypot(t.x - x, t.z - z) < 2.2 + t.r);
   for (const p of pois || []) {
     const kind = p[0], px = p[1] / 10, pz = TILE - p[2] / 10;
     if (kind !== 9) continue;
@@ -1710,6 +1716,12 @@ export function furnishTile(o) {
     if (!sc.ok || sc.w < 1.6) continue;
     const off = sc.e + clamp(sc.w - 0.7, 0.8, 1.9), x = f.x - f.tz * side * off, z = f.z + f.tx * side * off, nx = f.tz * side, nz = -f.tx * side, fr = frameOf(nx, nz);
     if (!fits('stop', x, z, fr, [[-1.7, 0], [0, 0], [1.7, 0], [0, 0.7]], 1.3, 2.2, 30)) continue;
+    if (featured(px, pz)) {
+      // not drawn, but its room and its count stay, so nothing after it moves
+      P.tramStop(ghost, ghost, 0, 0, night, 0);
+      stand('stop', x, z, 2.2);
+      continue;
+    }
     aim(fr[2], x, z);
     P.tramStop(v, gl, 0, 0, night, 0);
     stand('stop', x, z, 2.2);
