@@ -527,7 +527,7 @@ async function boot() {
   setTimeout(() => $('#loading').remove(), 500);
 
   // deep links: #s=<id> or ?q=<street name>
-  const m = location.hash.match(/s=(\d+)/), q = params.get('q');
+  const m = location.hash.match(/^#s=(\d+)$/), q = params.get('q');
   const deep = m ? S[+m[1]] : q ? S.find((p) => p.lname === q.toLowerCase()) : null;
   if (deep) openStreet(deep);
   if (import.meta.env.DEV) {
