@@ -905,31 +905,6 @@ function lineObj(R, col = '#e8f7ff', w = 0.045) {
   };
   return o;
 }
-/** A short chain that trails behind an anchor point and drags along the ground. */
-function chainObj(R, n = 6) {
-  const segs = [];
-  for (let i = 0; i < n; i++) { const s = R.add(sculpt((v) => v.box(0, 0, 0, 0.13, 0.1, 0.13, '#aeb7bd'))); s.position.set(0, 0.4, 0); segs.push(s); }
-  return {
-    segs,
-    tail: segs[n - 1],
-    place(x, y, z) { for (const s of segs) s.position.set(x, y, z); },
-    update(ax, ay, az) {
-      let px = ax, py = ay, pz = az;
-      for (const s of segs) {
-        const q = s.position, dx = q.x - px, dz = q.z - pz, d = Math.hypot(dx, dz);
-        if (d > 0.2) { q.x = px + (dx / d) * 0.2; q.z = pz + (dz / d) * 0.2; }
-        q.y = Math.max(0.07, py - 0.07);
-        px = q.x; py = q.y; pz = q.z;
-      }
-    },
-  };
-}
-/** Shrink a prop to nothing, then remove it. */
-function* vanish(R, o, dur = 0.3) {
-  const s = o.scale.x;
-  yield* tween(dur, (t) => o.scale.setScalar(Math.max(0.001, s * (1 - t))), ease.inQuad);
-  R.rm(o);
-}
 /** Little loot boxes in assorted colours. */
 const lootBox = (i) => sculpt((v) => {
   const c = ['#e63946', '#ffd166', '#06d6a0', '#4cc9f0', '#b5179e', '#f4a261'][i % 6];
@@ -1039,8 +1014,6 @@ function* runDust(ctx, a, every = 0.16) {
 }
 /** A coin flip that decides how a scene ends. Named, so the dev audit can force either ending (stage.force = { name: true }). */
 const flip = (ctx, name, p = 0.5) => (ctx.force && name in ctx.force ? !!ctx.force[name] : ctx.rnd.chance(p));
-/** Set a few faces at once: moods({ angry: [keeper], scared: [rob, mate] }). */
-const moods = (m) => { for (const k in m) for (const a of [].concat(m[k])) if (a) a.mood = k; };
 
 // ---------------------------------------------------------------- driving: lines, slides, smoke
 /** Black tyre marks and smoke under the back wheels. Call it every frame while a car slides (drive() does it by itself). */
@@ -1341,8 +1314,8 @@ const T = {
   X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, exitOut, entryTime, seen, watching, outPoint,
   edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo, yell, padZ, once,
   spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-  extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
-  tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake,
+  extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap,
+  tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake,
   exhaust, spawnPed, unped, stroll, release, needPed, doorway, windowAt, doorHouse,
 };
 // ---------------------------------------------------------------- the gags
