@@ -67,6 +67,7 @@ export class Path {
 const _a = [0, 0], _b = [0, 0], _c = [0, 0], _f = {};
 
 // ---------------------------------------------------------------- class raster
+let _xs = new Float64Array(64); // Grid.fill's scan-line crossings (grown on demand)
 /** A grid of small integers (ground classes) over a rectangle of the scene. */
 export class Grid {
   constructor(x0, z0, w, h, cell) {
@@ -102,21 +103,28 @@ export class Grid {
     }
     if (!R.length) return;
     const j0 = Math.max(0, Math.floor(minJ)), j1 = Math.min(h - 1, Math.ceil(maxJ));
-    const xs = [];
+    // the crossings of a scan line go into one reused buffer, sorted in place (a scan line has a handful): the same order as
+    // the numeric sort of a plain array, without an array and a sort per line (a crossing that is not a finite number, which
+    // finite rings cannot give, falls back to that very sort)
+    let xs = _xs;
     for (let j = j0; j <= j1; j++) {
       const yc = j + 0.5;
-      xs.length = 0;
+      let m = 0, odd = false;
       for (const g of R) {
         const n = g.length >> 1;
         for (let i = 0, k = n - 1; i < n; k = i++) {
           const ya = g[k * 2 + 1], yb = g[i * 2 + 1];
           if ((ya <= yc) === (yb <= yc)) continue;
-          xs.push(g[k * 2] + ((yc - ya) / (yb - ya)) * (g[i * 2] - g[k * 2]));
+          if (m === xs.length) { const b = new Float64Array(xs.length * 2); b.set(xs); xs = _xs = b; }
+          const x = g[k * 2] + ((yc - ya) / (yb - ya)) * (g[i * 2] - g[k * 2]);
+          if (!Number.isFinite(x)) odd = true;
+          xs[m++] = x;
         }
       }
-      if (xs.length < 2) continue;
-      xs.sort((p, q) => p - q);
-      for (let k = 0; k + 1 < xs.length; k += 2) {
+      if (m < 2) continue;
+      if (odd) { const a2 = Array.from(xs.subarray(0, m)).sort((p, q) => p - q); for (let k = 0; k < m; k++) xs[k] = a2[k]; }
+      else for (let k = 1; k < m; k++) { const x = xs[k]; let q = k - 1; while (q >= 0 && xs[q] > x) { xs[q + 1] = xs[q]; q--; } xs[q + 1] = x; }
+      for (let k = 0; k + 1 < m; k += 2) {
         const i0 = Math.max(0, Math.ceil(xs[k] - 0.5)), i1 = Math.min(w - 1, Math.floor(xs[k + 1] - 0.5));
         let o = j * w + i0;
         if (can) for (let i = i0; i <= i1; i++, o++) { if (can[a[o]]) a[o] = val; }

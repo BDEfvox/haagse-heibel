@@ -734,10 +734,27 @@ export function furnishTile(o) {
 
   // ---- what stands where
   const taken = []; // { kind, x, z, r }
+  // `taken` is also kept in 8 m cells (TG), so `crowded` looks only at the cells its reach covers: the answer ("is there
+  // any") is the one the full scan gives. Entries whose place is not a finite number, and reaches past 64 m, use the scan.
+  const TG = new Map(), tOdd = [];
+  let tMaxR = 0;
+  const tIndex = (t) => {
+    if (!Number.isFinite(t.x) || !Number.isFinite(t.z) || !Number.isFinite(t.r)) { tOdd.push(t); return; }
+    if (t.r > tMaxR) tMaxR = t.r;
+    const k = Math.floor(t.x / 8) * 4096 + Math.floor(t.z / 8);
+    let l = TG.get(k);
+    if (!l) TG.set(k, (l = []));
+    l.push(t);
+  };
+  const near1 = (t, kind, x, z, r, same) => { const d = Math.hypot(t.x - x, t.z - z); return d < r + t.r || (same && t.kind === kind && d < same); };
   const crowded = (kind, x, z, r, same = 0) => {
-    for (const t of taken) {
-      const d = Math.hypot(t.x - x, t.z - z);
-      if (d < r + t.r || (same && t.kind === kind && d < same)) return true;
+    const reach = Math.max(r + tMaxR, same || 0) + 1e-6;
+    if (!(reach < 64) || !Number.isFinite(x) || !Number.isFinite(z)) { for (const t of taken) if (near1(t, kind, x, z, r, same)) return true; return false; }
+    for (const t of tOdd) if (near1(t, kind, x, z, r, same)) return true;
+    const i0 = Math.floor((x - reach) / 8), i1 = Math.floor((x + reach) / 8), j0 = Math.floor((z - reach) / 8), j1 = Math.floor((z + reach) / 8);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const l = TG.get(i * 4096 + j);
+      if (l) for (const t of l) if (near1(t, kind, x, z, r, same)) return true;
     }
     return false;
   };
@@ -773,7 +790,7 @@ export function furnishTile(o) {
     }
     return false;
   };
-  const stand = (kind, x, z, r) => { const hid = hideIf(kind, x, z); return taken.push(hid ? { kind, x, z, r, hid } : { kind, x, z, r }); };
+  const stand = (kind, x, z, r) => { const hid = hideIf(kind, x, z), t = hid ? { kind, x, z, r, hid } : { kind, x, z, r }; tIndex(t); return taken.push(t); };
   /** Do the sample points (in the prop's frame, +z towards the road) all lie on open ground, clear of trunks and others? */
   const fits = (kind, x, z, n, pts, treeR, r, same = 0) => {
     if (x < EDGE || z < EDGE || x > TILE - EDGE || z > TILE - EDGE) return false;
