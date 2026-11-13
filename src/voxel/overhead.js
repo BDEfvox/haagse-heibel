@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { makeHeli } from './props.js';
 import { makeBird } from './cast.js';
-import { Vox, sculpt, disposeTree, lerp } from './kit.js';
+import { Vox, sculpt, disposeTree, lerp, SHARED } from './kit.js';
 import { sfx } from '../audio.js';
 
 const ALONG = 17, ACROSS = 9, ALT = 16; // the figure of eight over the spot and the height gags.js heli() has always flown
@@ -52,6 +52,7 @@ function target(Q, t, o) {
   return o;
 }
 
+let _cloudMat = null;
 export class Overhead {
   constructor(stage) {
     this.stage = stage;
@@ -83,7 +84,10 @@ export class Overhead {
   }
   /** The clouds, made once for the whole visit (the stage's rnd, the draws of stage.js _clouds as they always were). */
   makeClouds(rnd, nk, c0) {
-    const mat = this.cloudMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: lerp(0.92, 0.42, nk), fog: false });
+    // one cloud material for the page (in SHARED, so disposeTree keeps it): a real close no longer throws its program away
+    if (!_cloudMat) { _cloudMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 1, fog: false }); SHARED.add(_cloudMat); }
+    const mat = this.cloudMat = _cloudMat;
+    mat.opacity = lerp(0.92, 0.42, nk);
     for (let i = 0; i < 22; i++) {
       const v = new Vox(i + 20), n = rnd.int(4, 7), s = rnd.range(16, 34);
       for (let k = 0; k < n; k++) {
@@ -397,7 +401,7 @@ export class Overhead {
     for (const h of this.helis) h.a.alive = false;
     disposeTree(this.group);
     this.group.parent?.remove(this.group);
-    if (this.cloudMat) this.cloudMat.dispose();
+    // (the cloud material is the page's: kept)
     for (const L of this.left) L.a.alive = false;
     this.helis = []; this.left = []; this.clouds = []; this.extras = []; this.nest = null; this.cloudMat = null; this.due = null;
   }

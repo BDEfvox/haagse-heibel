@@ -4,6 +4,11 @@ import { TAU } from './kit.js';
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _c = new THREE.Color();
 
+// The two materials of the particle pools, made once for the page: a street's Fx comes and goes (every open, every focus
+// shift), and a disposed material takes its compiled program with it, which the next street's first particle would link again.
+let _mats = null;
+const fxMats = () => (_mats ||= { solid: new THREE.MeshLambertMaterial(), glow: new THREE.MeshBasicMaterial({ toneMapped: false }) });
+
 class Pool {
   constructor(scene, cap, mat, owner) {
     this.cap = cap;
@@ -71,7 +76,7 @@ class Pool {
   dispose() {
     this.mesh.parent?.remove(this.mesh);
     this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
+    // (the material is shared by every Fx: kept)
     this.mesh.dispose();
   }
 }
@@ -103,8 +108,8 @@ export class Fx {
     /** Camera distance: comic text shrinks and fades as the camera pulls away. */
     this.zoom = 60;
     this.alpha = 1;
-    this.solid = new Pool(scene, 900, new THREE.MeshLambertMaterial(), this);
-    this.glow = new Pool(scene, 500, new THREE.MeshBasicMaterial({ toneMapped: false }), this);
+    this.solid = new Pool(scene, 900, fxMats().solid, this);
+    this.glow = new Pool(scene, 500, fxMats().glow, this);
     this.texts = [];
     this.shakeAmt = 0;
   }

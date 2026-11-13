@@ -255,6 +255,7 @@ function crowdMat() {
  * The pale patch of road in front of a car that is driving: a flat fan, added to what is behind it (additive, no depth
  * write). It is one more mesh that shares the cars' own matrices and their lights-on flag, so parked cars have none.
  */
+let _beamMat = null;
 function makeBeams(cars) {
   const g = new THREE.BufferGeometry();
   // brightest on the middle line next to the car, fading to nothing at the sides and at the far end: a soft fan, no hard edges
@@ -262,12 +263,13 @@ function makeBeams(cars) {
   g.setAttribute('aI', new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 0.04, 0]), 1));
   g.setAttribute('iOn', cars.c2);
   g.setIndex([0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4]);
-  const mat = new THREE.ShaderMaterial({
+  // one material for the page (its uniform is the shared U.uNight): a crowd's dispose keeps it, so its program is not linked again for the next crowd
+  const mat = (_beamMat ||= new THREE.ShaderMaterial({
     uniforms: { uNight: U.uNight },
     vertexShader: 'attribute vec3 iOn;\nattribute float aI;\nuniform float uNight;\nvarying float vI;\nvoid main() { vI = aI * iOn.x * uNight; gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0); }',
     fragmentShader: 'varying float vI;\nvoid main() { gl_FragColor = vec4(vec3(1.0, 0.93, 0.7) * vI * 0.5, 1.0); }',
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-  });
+  }));
   const m = new THREE.InstancedMesh(g, mat, 1);
   m.instanceMatrix = cars.mesh.instanceMatrix;
   m.count = 0; m.frustumCulled = false; m.renderOrder = 2;
@@ -2508,7 +2510,7 @@ export class Crowd {
     for (const q of this.pools.values()) q.dispose();
     for (const q of this.vpools.values()) q.dispose();
     this.cars.dispose(); for (const p of this.lampPools) p.dispose(); this.trams.dispose();
-    this.beams.geometry.dispose(); this.beams.material.dispose(); // (its instance matrix is the cars': disposed with them)
+    this.beams.geometry.dispose(); // (its instance matrix is the cars': disposed with them; its material is the page's: kept)
     this.owners.clear(); this.agents = []; this.ends.clear();
   }
 }
