@@ -398,6 +398,7 @@ function lanesWithin(o, x, z, r) {
   return false;
 }
 const GOOD_N = 8; // members of a group at most 6, ring checks use 8 points
+const DI8 = [1, -1, 0, 0, 1, 1, -1, -1], DJ8 = [0, 0, 1, -1, 1, -1, 1, -1];
 
 export const PED = 0, BIKE_ = 1, CAR_ = 2, TRAM_ = 4;
 const CELL = 8, GN = 256; // collision grid: 8 m cells, about 2 km across
@@ -555,6 +556,10 @@ export class Crowd {
       close(lastGood);
     };
     const yes = () => 2, walkable = (x, z) => walk[this._cls(x, z)];
+    // A small two-way street with parking (offsets away from the parked side): the car between an oncoming cyclist just inside the parked
+    // cars and a cyclist at the far kerb, with room to pass both, where the street is wide enough (5.55 m); narrower, the kerb cyclist
+    // rides on the car's own line, one queue: the car follows the bike.
+    const smallSt = (w) => { const b2 = -(w / 2 - 0.98) + 1.3, b1 = w / 2 - 0.6, lo = b2 + 1.325, hi = b1 - 1.325; return lo <= hi ? { car: (lo + hi) / 2, kerb: b1 } : { car: Math.max(0.7, w / 2 - 1.25), kerb: Math.max(0.7, w / 2 - 1.25) }; };
     const conv = (src) => { const a = new Float32Array(src.length); for (let i = 0; i + 1 < a.length; i += 2) { const p = toScene(src[i], src[i + 1]); a[i] = p[0]; a[i + 1] = p[1]; } return a; };
     for (const rd of t.roads) {
       const cls = rd.cls, fl = rd.flags;
@@ -570,7 +575,7 @@ export class Crowd {
         // small streets: one car at a time down the middle, parked cars along one kerb
         const rev = !one && h < 0.5, park = cls !== 9 && w >= 5;
         // (with parking on a two-way street the car keeps to the far side, so an oncoming cyclist fits between it and the parked cars)
-        split(laneLine(a, park ? (rev ? -1 : 1) * (one ? 0.7 : Math.max(0.7, w / 2 - 1.25)) : 0, rev), CAR_, cls, yes);
+        split(laneLine(a, park ? (rev ? -1 : 1) * (one ? 0.7 : smallSt(w).car) : 0, rev), CAR_, cls, yes);
         if (park) {
           const line = laneLine(a, (rev ? 1 : -1) * (w / 2 - 0.98), !rev), n = line.length >> 1;
           for (let i = 1; i + 1 < n; i += 2) {
@@ -586,8 +591,9 @@ export class Crowd {
       } else if (cls >= 3 && cls <= 7) {
         const park = (cls === 6 || cls === 7) && w >= 5, rev = !one && h < 0.5;
         // on a small street with parking the kerb on that side is taken: ride just inside the parked cars instead (whichever side they are)
-        split(laneLine(a, park && rev ? w / 2 - 0.98 - 1.3 : w / 2 - 0.6, false), BIKE_, cls, yes);
-        if (!one) split(laneLine(a, park && !rev ? -(w / 2 - 0.98) + 1.3 : -(w / 2 - 0.6), true), BIKE_, cls, yes);
+        const L2 = park && !one ? smallSt(w) : null; // (the kerb cyclist of a two-way street with parking: see smallSt)
+        split(laneLine(a, park && rev ? w / 2 - 0.98 - 1.3 : L2 ? L2.kerb : w / 2 - 0.6, false), BIKE_, cls, yes);
+        if (!one) split(laneLine(a, park && !rev ? -(w / 2 - 0.98) + 1.3 : L2 ? -L2.kerb : -(w / 2 - 0.6), true), BIKE_, cls, yes);
       }
       if (cls >= 2 && cls <= 7) {
         // pavements on both sides; walkers can cross from one to the other, at the zebras by preference
@@ -627,7 +633,8 @@ export class Crowd {
     for (let i = 0; i + 3 < P.length; i += 4) {
       const fx = Math.sin(P[i + 2]), fz = Math.cos(P[i + 2]);
       // where it was put, else a little along its kerb, or in a free place of its kerb further on (the line has one every 6 m and the
-      // coin left about half empty), else not at all
+      // coin left about half empty), else where it was after all (a car against a post is a smaller fault than a missing car: counted)
+      let placed = false;
       for (const sh of [0, 1.5, -1.5, 3, -3, 6, -6, 4.5, -4.5, 9, -9, 12, -12]) {
         const x = P[i] + fx * sh, z = P[i + 1] + fz * sh;
         if (sh && this._walkT()[this._cls(x, z)] !== 1) continue; // (moved: still on the road)
@@ -635,8 +642,9 @@ export class Crowd {
         for (let k = 0; k < keep.length && !near; k += 4) near = (keep[k] - x) ** 2 + (keep[k + 1] - z) ** 2 < 4.6 * 4.6;
         for (let k = i + 4; sh && k + 3 < P.length && !near; k += 4) near = (P[k] - x) ** 2 + (P[k + 1] - z) ** 2 < 4.6 * 4.6; // (nor onto the next one's place)
         if (near) continue;
-        if (!this._parkHit(o, x, z, fx, fz)) { keep.push(x, z, P[i + 2], P[i + 3]); break; }
+        if (!this._parkHit(o, x, z, fx, fz)) { keep.push(x, z, P[i + 2], P[i + 3]); placed = true; if (sh) this.parkMoved = (this.parkMoved || 0) + 1; break; }
       }
+      if (!placed) { keep.push(P[i], P[i + 1], P[i + 2], P[i + 3]); this.parkStuck = (this.parkStuck || 0) + 1; }
     }
     o.parked = keep;
   }
@@ -689,15 +697,16 @@ export class Crowd {
    * metre of the lane, the sideways offset (to the right of the way the lane is drawn, at most 1.5 m, on pavement) that clears a person,
    * ramped in and out (0.4 m sideways per metre), and the points where no offset clears. null when the lane is clear all along.
    */
-  _profile(lane) {
+  *_profile(lane) {
     // most lanes are clear: a quick look every metre first (a person's width and a little more), the full answer only where it is not
     const G = this.W.ground, WT = this._walkT();
     let hit = false;
-    for (let s0 = 0; s0 <= lane.len && !hit; s0 += 1) { this._lp(lane, s0); const h = G.at(this._px, this._pz, 0.4); if (h !== h || WT[G.cls] === 0) hit = true; }
+    for (let s0 = 0; s0 <= lane.len && !hit; s0 += 1) { this._lp(lane, s0); const h = G.at(this._px, this._pz, 0.4); if (h !== h || WT[G.cls] === 0) hit = true; if ((s0 & 127) === 127) yield; }
     if (!hit) return null;
     const ns = Math.floor(lane.len * 2) + 1, raw = new Float32Array(ns), blk = new Uint8Array(ns);
     let prev = 0, nb = 0, any = false;
     for (let q = 0; q < ns; q++) {
+      if ((q & 31) === 31) yield; // (resumable: lane clearing keeps to a time budget per frame)
       this._lp(lane, q * 0.5);
       const x = this._px, z = this._pz, nx = -this._uz, nz = this._ux, road = WT[this.W.clsAt(x, z)] === 1;
       let best = NaN;
@@ -734,12 +743,14 @@ export class Crowd {
     return { off, blk: nb ? blk : null, nb };
   }
   /**
-   * A walk round what blocks a lane, over W.ground's cells (A* on half-metre cells in a window round both ends): points [x, z, ...]
-   * from (x0, z0) to (x1, z1), or null when there is none that is not much longer than the straight way.
+   * A walk round what blocks a lane, over W.ground's cells (A* on half-metre cells in a window of 10 m round both ends, at most 60 m a
+   * side and 8000 cells looked at): points [x, z, ...] from (x0, z0) to (x1, z1), or null when there is none in the window that is not
+   * much longer than the straight way (the lane is cut there then). Resumable (yields every 200 cells).
    */
-  _detour(x0, z0, x1, z1) {
-    const pad = 12, X0 = Math.min(x0, x1) - pad, Z0 = Math.min(z0, z1) - pad, nx = Math.min(160, Math.ceil((Math.max(x0, x1) + pad - X0) / 0.5)), nz = Math.min(160, Math.ceil((Math.max(z0, z1) + pad - Z0) / 0.5));
-    const N = nx * nz, st = new Uint8Array(N), g = new Float32Array(N).fill(Infinity), par = new Int32Array(N).fill(-1), WT = this._walkT();
+  *_detour(x0, z0, x1, z1) {
+    const pad = 10, X0 = Math.min(x0, x1) - pad, Z0 = Math.min(z0, z1) - pad, nx = Math.ceil((Math.max(x0, x1) + pad - X0) / 0.5), nz = Math.ceil((Math.max(z0, z1) + pad - Z0) / 0.5);
+    if (nx > 120 || nz > 120) return null; // (a long blocked stretch: no way round worth the walk, the lane is cut)
+    const N = nx * nz, st = new Uint8Array(N), g = new Float32Array(N).fill(Infinity), par = new Int32Array(N).fill(-1);
     const cellOf = (x, z) => { const i = Math.floor((x - X0) / 0.5), j = Math.floor((z - Z0) / 0.5); return i < 0 || j < 0 || i >= nx || j >= nz ? -1 : j * nx + i; };
     const free = (c) => { if (st[c] === 0) { const i = c % nx, j = (c - i) / nx; st[c] = this._roomWalk(X0 + (i + 0.5) * 0.5, Z0 + (j + 0.5) * 0.5, false) ? 1 : 2; } return st[c] === 1; };
     const s0 = cellOf(x0, z0), s1 = cellOf(x1, z1);
@@ -750,12 +761,13 @@ export class Crowd {
     const pop = () => { const c = hc[0], lf = hf.pop(), lc = hc.pop(), n = hf.length; if (n) { let k = 0; for (;;) { let m = 2 * k + 1; if (m >= n) break; if (m + 1 < n && hf[m + 1] < hf[m]) m++; if (hf[m] >= lf) break; hf[k] = hf[m]; hc[k] = hc[m]; k = m; } hf[k] = lf; hc[k] = lc; } return c; };
     g[s0] = 0; push(H(s0), s0); st[s0] = 1; st[s1] = 1;
     let found = false, guard = 0;
-    while (hf.length && guard++ < 30000) {
+    while (hf.length && guard++ < 8000) {
+      if (guard % 200 === 0) yield;
       const c = pop();
       if (c === s1) { found = true; break; }
       const ci = c % nx, cj = (c - ci) / nx;
       for (let k = 0; k < 8; k++) {
-        const di = [1, -1, 0, 0, 1, 1, -1, -1][k], dj = [0, 0, 1, -1, 1, -1, 1, -1][k], ni = ci + di, nj = cj + dj;
+        const di = DI8[k], dj = DJ8[k], ni = ci + di, nj = cj + dj;
         if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) continue;
         const nc = nj * nx + ni;
         if (!free(nc) || (di && dj && (!free(cj * nx + ni) || !free(nj * nx + ci)))) continue;
@@ -768,10 +780,10 @@ export class Crowd {
     const cells = [];
     for (let c = s1; c >= 0; c = par[c]) { const i = c % nx; cells.push(X0 + (i + 0.5) * 0.5, Z0 + ((c - i) / nx + 0.5) * 0.5); if (c === s0) break; }
     const pts = [x0, z0];
-    // pull the string tight: from each point to the furthest one it can see
+    // pull the string tight, looking at most 12 cells on from each point (linear in the path's length)
     let a = cells.length - 2;
     while (a > 0) {
-      let b = 0;
+      let b = Math.max(0, a - 24);
       while (b < a - 2 && !this._lineFree(cells[a], cells[a + 1], cells[b], cells[b + 1], 0.3)) b += 2;
       pts.push(cells[b], cells[b + 1]);
       a = b;
@@ -807,19 +819,20 @@ export class Crowd {
    * somebody is on keeps its line and gets the offsets (blended in as they walk) and its blocked points (a dead end for now: it is built
    * again later, once nobody is on it). Nothing that is shown moves.
    */
-  _clearLanes(o) {
+  *_clearLanes(o, dirtyOnly = false) {
     const G = this.W.ground;
     if (!G || !G.ready(o.cx, o.cz)) return;
-    o.clean = 0;
-    const used = new Set();
-    for (const a of this.agents) if (!a.dead) { used.add(a.lane); if (a.cross) used.add(a.cross.lane); if (a.fall && a.fall.to) used.add(a.fall.to.lane); }
+    const usedNow = (l) => { for (const a of this.agents) if (!a.dead && (a.lane === l || (a.cross && a.cross.lane === l) || (a.fall && a.fall.to && a.fall.to.lane === l))) return true; return false; };
     let dirty = false, changed = false, len0 = 0, len1 = 0;
     for (const l of o.lanes) if (l.kind === PED) len0 += l.len;
     for (const lane of o.lanes.slice()) {
       if (lane.kind !== PED || lane.dead) continue;
-      const pr = this._profile(lane);
+      if (dirtyOnly && !lane.blk) continue; // (a retry looks only at lanes that are still blocked)
+      if (dirtyOnly && usedNow(lane)) { dirty = true; continue; } // (still somebody on it: no new answer to work out, try again later)
+      yield;
+      const pr = yield* this._profile(lane);
       if (!pr) { lane.off = null; lane.blk = null; continue; }
-      if (!pr.nb || used.has(lane)) { lane.off = pr.off; lane.blk = pr.blk; if (pr.nb) dirty = true; continue; }
+      if (!pr.nb || usedNow(lane)) { lane.off = pr.off; lane.blk = pr.blk; if (pr.nb) dirty = true; continue; }
       // nobody is on it: build it again with the offsets in its points, round (or cut at) what blocks it
       const ns = pr.off.length, pieces = [];
       let cur = [];
@@ -827,29 +840,32 @@ export class Crowd {
       for (let q = 0; q < ns; q++) {
         if (!pr.blk[q]) { const p = at(q); cur.push(p[0], p[1]); continue; }
         let q1 = q; while (q1 + 1 < ns && pr.blk[q1 + 1]) q1++;
-        const d = cur.length >= 2 && q1 + 1 < ns ? (() => { const b = at(q1 + 1); return this._detour(cur[cur.length - 2], cur[cur.length - 1], b[0], b[1]); })() : null;
+        let d = null;
+        if (cur.length >= 2 && q1 + 1 < ns) { const b = at(q1 + 1); d = yield* this._detour(cur[cur.length - 2], cur[cur.length - 1], b[0], b[1]); }
         if (d) for (let k = 2; k < d.length - 2; k += 2) cur.push(d[k], d[k + 1]);
         else { if (cur.length >= 4) pieces.push(cur); cur = []; }
         q = q1;
       }
       if (cur.length >= 4) pieces.push(cur);
+      if (lane.dead || usedNow(lane)) { lane.off = pr.off; lane.blk = pr.blk; dirty = true; continue; } // (somebody stepped on it meanwhile)
       lane.dead = true; this._end(lane, 0, false); this._end(lane, 1, false);
       o.lanes.splice(o.lanes.indexOf(lane), 1);
       changed = true;
       for (const P0 of pieces) {
         const nl0 = this._newLane(o, P0, lane);
         if (!nl0) continue;
-        const p0 = this._profile(nl0);
+        yield;
+        const p0 = yield* this._profile(nl0);
         // (still blocked here and there, where the new points cut a corner: cut it there as well, so no lane has a dead end inside it)
         let parts = [[nl0, p0]];
         if (p0 && p0.nb) {
           parts = [];
           let cur = [];
           for (let q = 0; q < p0.off.length; q++) {
-            if (p0.blk[q]) { if (cur.length >= 4) { const l2 = this._newLane(o, cur, lane); if (l2) parts.push([l2, this._profile(l2)]); } cur = []; continue; }
+            if (p0.blk[q]) { if (cur.length >= 4) { const l2 = this._newLane(o, cur, lane); if (l2) parts.push([l2, yield* this._profile(l2)]); } cur = []; continue; }
             this._lp(nl0, Math.min(nl0.len, q * 0.5)); cur.push(this._px - this._uz * p0.off[q], this._pz + this._ux * p0.off[q]);
           }
-          if (cur.length >= 4) { const l2 = this._newLane(o, cur, lane); if (l2) parts.push([l2, this._profile(l2)]); }
+          if (cur.length >= 4) { const l2 = this._newLane(o, cur, lane); if (l2) parts.push([l2, yield* this._profile(l2)]); }
         }
         for (const [nl, p2] of parts) {
           nl.off = p2 ? p2.off : null; nl.blk = p2 ? p2.blk : null;
@@ -863,6 +879,30 @@ export class Crowd {
       // a lane cut where nothing gets past is shorter: the owner's walkers are spread over what is left, so the street keeps its people
       for (const l of o.lanes) if (l.kind === PED) len1 += l.len;
       o.pedK = (o.pedK || 1) * (len1 > 1 ? Math.min(2, len0 / len1) : 1);
+    }
+  }
+  /**
+   * Lane clearing, a little every frame (at most `ms` milliseconds): the job of one owner at a time, the nearest waiting one first. An owner
+   * waits for it once (o.clean 1: its tile reached the finest level) before it is filled; a blocked lane somebody was on is looked at again
+   * now and then (o.dirty), and only while nobody is on it.
+   */
+  _clearStep(x, z, ms) {
+    const t0 = performance.now();
+    for (;;) {
+      if (!this.cj) {
+        let best = null, bd = Infinity;
+        for (const o of this.owners.values()) {
+          if (!(o.clean === 1 || o.retry)) continue;
+          if (!this.W.ground || !this.W.ground.ready(o.cx, o.cz)) continue;
+          const d = Math.hypot(o.cx - x, o.cz - z);
+          if (d < bd) { bd = d; best = o; }
+        }
+        if (!best) return;
+        this.cj = this._clearLanes(best, best.clean !== 1); this.cjo = best; best.clean = 0; best.retry = false;
+      }
+      if (!this.owners.has(this.cjo.id)) this.cj = null; // (its tile left)
+      else if (this.cj.next().done) this.cj = null;
+      if (performance.now() - t0 > ms) return;
     }
   }
   _end(lane, e, add) {
@@ -1010,9 +1050,14 @@ export class Crowd {
       [CAR_]: { 1: 2.0, 2: 1.9, 3: 1.6, 4: 1.2, 5: 0.7, 6: 0.3, 7: 0.14, 9: 0.04, 13: 0.2 },
       [TRAM_]: { 1: 0.14 },
     };
+    // (the owner's share of each kind carried from lane to lane, not drawn per lane: a lane cut in pieces gives the street the same
+    // number, and the street holds what its lanes mean, not that give or take a few)
+    const acc = { [PED]: 0.5, [BIKE_]: 0.5, [CAR_]: 0.5, [TRAM_]: 0.5 };
     for (const lane of o.lanes) {
       const want = ((DENS[lane.kind][lane.cls] || 0) * lane.len * this._info(lane).mult * (lane.kind === PED ? o.pedK || 1 : 1)) / 100;
-      let n = Math.floor(want) + (this.rnd() < want % 1 ? 1 : 0);
+      acc[lane.kind] += want;
+      let n = Math.floor(acc[lane.kind]);
+      acc[lane.kind] -= n;
       while (n-- > 0 && this.count[lane.kind] < this.max[lane.kind]) this._spawn(lane, this.rnd() * lane.len);
     }
     this._groups(o);
@@ -1214,7 +1259,7 @@ export class Crowd {
     for (const b of g.bikes) { b.vp = this._vpool(A.bike); b.slot = b.vp.take(); if (b.slot < 0) ok = false; }
     if (!ok) { this._gGive(g); g.retry = this.t + 3; return; }
     this.count[PED] += n; this.count.parked += nb;
-    g.shown = true;
+    g.shown = true; this.pkDirty = true; // (its bikes: parkedAt)
     this._gPut(g);
   }
   _gGive(g) {
@@ -1224,7 +1269,7 @@ export class Crowd {
   _gHide(g) {
     this._gGive(g);
     this.count[PED] -= g.members.length; this.count.parked -= g.bikes.length;
-    g.shown = false;
+    g.shown = false; this.pkDirty = true;
   }
   /** Stand everybody where the plan says (also after the street frame changed). */
   _gPut(g) {
@@ -1259,7 +1304,7 @@ export class Crowd {
   _onward(a) {
     const lane = a.lane, e = a.dir > 0 ? 1 : 0, i = e ? lane.n - 1 : 0, x = lane.pts[i * 2], z = lane.pts[i * 2 + 1];
     const j = e ? lane.n - 2 : 1, dx = x - lane.pts[j * 2], dz = z - lane.pts[j * 2 + 1], dl = Math.hypot(dx, dz) || 1;
-    const reach = a.kind === PED || a.pave ? 5.5 : a.kind === TRAM_ ? 4 : 7.5, cx = Math.floor(x / 6), cz = Math.floor(z / 6);
+    const reach = a.kind === PED || a.pave ? 5.5 : a.kind === TRAM_ ? 5 : 7.5, cx = Math.floor(x / 6), cz = Math.floor(z / 6);
     let best = null, bw = 0;
     for (let ax = -2; ax <= 2; ax++) for (let az = -2; az <= 2; az++) {
       const bin = this.ends.get((cx + ax) * 65536 + cz + az);
@@ -1270,6 +1315,8 @@ export class Crowd {
         if (a.kind !== PED && !a.pave && e2 !== 0) continue; // vehicles only join a lane at its start
         const i2 = e2 ? l2.n - 1 : 0, j2 = e2 ? l2.n - 2 : 1, d = Math.hypot(l2.pts[i2 * 2] - x, l2.pts[i2 * 2 + 1] - z);
         if (d > reach) continue;
+        // (a vehicle does not jump back: a lane that starts behind this end, along a lane lying on the same way, would loop it round)
+        if (a.kind !== PED && !a.pave && ((l2.pts[i2 * 2] - x) * dx + (l2.pts[i2 * 2 + 1] - z) * dz) / dl < -1.5) continue;
         const ex = l2.pts[j2 * 2] - l2.pts[i2 * 2], ez = l2.pts[j2 * 2 + 1] - l2.pts[i2 * 2 + 1], cos = (ex * dx + ez * dz) / ((Math.hypot(ex, ez) || 1) * dl);
         if (cos < (a.kind === TRAM_ ? 0.5 : -0.35)) continue; // not back the way it came (and a tram does not turn sharply)
         const w = (0.4 + Math.max(0, cos) * 2) * (0.5 + this.rnd());
@@ -1288,21 +1335,25 @@ export class Crowd {
   parkedAt(x, z) {
     if (this.pkDirty) {
       this.pkDirty = false; this.pkIx.clear();
-      for (const o of this.owners.values()) for (let i = 0; i + 3 < o.parked.length; i += 4) {
-        const px = o.parked[i], pz = o.parked[i + 1], sx = Math.sin(o.parked[i + 2]), sz = Math.cos(o.parked[i + 2]);
-        for (let ci = Math.floor((px - 2.5) / 4); ci <= Math.floor((px + 2.5) / 4); ci++) for (let cj = Math.floor((pz - 2.5) / 4); cj <= Math.floor((pz + 2.5) / 4); cj++) {
+      const put = (px, pz, hd, hl, hw) => {
+        const sx = Math.sin(hd), sz = Math.cos(hd);
+        for (let ci = Math.floor((px - hl - 0.3) / 4); ci <= Math.floor((px + hl + 0.3) / 4); ci++) for (let cj = Math.floor((pz - hl - 0.3) / 4); cj <= Math.floor((pz + hl + 0.3) / 4); cj++) {
           const k = ci * 65536 + cj;
           let b = this.pkIx.get(k);
           if (!b) this.pkIx.set(k, (b = []));
-          b.push(px, pz, sx, sz);
+          b.push(px, pz, sx, sz, hl, hw);
         }
+      };
+      for (const o of this.owners.values()) {
+        for (let i = 0; i + 3 < o.parked.length; i += 4) put(o.parked[i], o.parked[i + 1], o.parked[i + 2], 2.3, 1.0);
+        for (const g of o.groups) if (g.shown) for (const bk of g.bikes) put(bk.x, bk.z, bk.hd, 0.95, 0.35); // (a group's parked bikes)
       }
     }
     const b = this.pkIx.get(Math.floor(x / 4) * 65536 + Math.floor(z / 4));
     if (!b) return false;
-    for (let k = 0; k < b.length; k += 4) {
+    for (let k = 0; k < b.length; k += 6) {
       const dx = x - b[k], dz = z - b[k + 1], u = dx * b[k + 2] + dz * b[k + 3], v = dx * b[k + 3] - dz * b[k + 2];
-      if (u < 2.3 && u > -2.3 && v < 1.0 && v > -1.0) return true;
+      if (u < b[k + 4] && u > -b[k + 4] && v < b[k + 5] && v > -b[k + 5]) return true;
     }
     return false;
   }
@@ -1396,8 +1447,9 @@ export class Crowd {
     if (!a) return false;
     const j = Math.min(best.n - 2, bi), ex = best.pts[j * 2 + 2] - best.pts[j * 2], ez = best.pts[j * 2 + 3] - best.pts[j * 2 + 1];
     a.dir = ex * Math.sin(hd) + ez * Math.cos(hd) >= 0 ? 1 : -1;
-    // start exactly where they stand and drift onto the lane
-    a.ox = x - best.pts[bi * 2]; a.oz = z - best.pts[bi * 2 + 1];
+    // start exactly where they stand and drift onto the lane (from the lane point they were given: _spawn may have moved them along it,
+    // off a point the lane is blocked at)
+    this._lp(best, a.s); a.ox = x - this._px; a.oz = z - this._pz; a.lo = 0;
     a.pop = 1; a.hd = hd; a.first = false;
     a.vis = true; a.x = x; a.z = z; // (they were on screen a moment ago as an actor: no waiting to be shown)
     return true;
@@ -1571,8 +1623,36 @@ export class Crowd {
     return !this._scanIn(l, i * l.step, sign, S, 6);
   }
   /** A cyclist turns round onto the lane that runs the other way. False if there is none close by. */
-  _uturn(a, hx, hz) {
-    let best = null, bd = 6.25, bi = 0; // (a lane within 2.5 m: no swing across the road)
+  /**
+   * A tram held at the end of its track in sight (a terminus) goes back on the other track, if one starts within 6 m the other way: its last
+   * section becomes the first (nothing jumps), and the tram glides over onto the other track as it pulls away (as `ut`, a cyclist's swing).
+   */
+  _tramBack(a, hx, hz) {
+    const len = (TRAM_N - 1) * TRAM_SEG;
+    let best = null, bd = 36;
+    for (const o of this.owners.values()) {
+      if (!o.on) continue;
+      for (const l of o.lanes) {
+        if (l.kind !== TRAM_ || l === a.lane || l.dead || l.len < len + 2) continue;
+        const d2 = (l.pts[0] - a.x) ** 2 + (l.pts[1] - a.z) ** 2, ex = l.pts[2] - l.pts[0], ez = l.pts[3] - l.pts[1];
+        if (d2 < bd && ex * hx + ez * hz < -0.5 * Math.hypot(ex, ez)) { bd = d2; best = l; }
+      }
+    }
+    if (!best) return false;
+    // where the last section stands now (it leads from here on)
+    const L = a.lane, sq = a.s - a.dir * len, f = clamp(sq, 0, L.len);
+    this._lp(L, f);
+    const over = sq < 0 ? sq : sq > L.len ? sq - L.len : 0, tx = this._px + this._ux * over + a.ox, tz = this._pz + this._uz * over + a.oz;
+    this._lp(best, len);
+    a.tail.reverse();
+    for (let q = 0; q < TRAM_N; q++) this.trams.c2.array[a.tail[q].slot * 3] = q === 0 ? 1 : 0;
+    this.trams.c2.needsUpdate = true;
+    L.owner.agents.delete(a); best.owner.agents.add(a);
+    a.lane = best; a.dir = 1; a.s = len; a.ox = tx - this._px; a.oz = tz - this._pz; a.ut = 1; a.held = false; a.ht = 0; a.v = 0;
+    return true;
+  }
+  _uturn(a, hx, hz, bd = 6.25) {
+    let best = null, bi = 0; // (bd: the square of how far the lane may be; 2.5 m: no swing across the road)
     for (const o of this.owners.values()) {
       if (!o.on || (o.cx - a.x) ** 2 + (o.cz - a.z) ** 2 > (o.r + 25) ** 2) continue;
       for (const l of o.lanes) {
@@ -1837,6 +1917,7 @@ export class Crowd {
     for (const b of g.bikes) { b.x = b.sx + ddx * f; b.z = b.sz + ddz * f; b.vp.put(b.slot, b.x, this._wheels(null, b.x, b.z, b.hd, 0.6, 0), b.z, b.hd, 1); }
     if (f < 1) return;
     g.sm = g.home ? 0 : 2;
+    this.pkDirty = true; // (its bikes stand somewhere else now)
     if (g.home) { g.x = g.hx; g.z = g.hz; for (const m of g.members) { m.x = m.hx; m.z = m.hz; } for (const b of g.bikes) { b.x = b.hx; b.z = b.hz; } }
     else { this._gWt(g, true); for (const m of g.members) { m.want = Math.atan2(S.x - m.x, S.z - m.z) + (this.rnd() - 0.5) * 0.5; m.turn = 2 + this.rnd() * 4; } }
   }
@@ -1912,21 +1993,19 @@ export class Crowd {
     this.far2 = Math.min(360, 0.88 * R) ** 2;
     // streets come into range and drop out of it as the camera moves
     if ((this.tick++ & 15) === 0) {
-      let clean = this.warm ? 2 : 1; // (lanes cleared per pass, nearest owners first in practice: a few milliseconds each)
       const G = this.W.ground;
       for (const o of this.owners.values()) {
         const near = Math.hypot(o.cx - x, o.cz - z) < R + o.r;
-        if (o.clean === 1 && G && (near || o.on) && G.ready(o.cx, o.cz)) {
-          if (clean <= 0) { if (near && !o.on) continue; } // (it fills once its lanes are clear, a pass or two later; while the street is first shown everything may still appear)
-          else { this._clearLanes(o); clean--; }
-        }
+        // (an owner whose tile has its raster fills once its lanes are clear: _clearStep, a frame or two later)
+        if (near && !o.on && (o.clean === 1 || this.cjo === o && this.cj) && G && G.ready(o.cx, o.cz)) continue;
         if (near && !o.on) this._fill(o);
         else if (!near && o.on) this._empty(o);
         else if (o.on && o.pend.length) this._reveal(o);
-        if (o.dirty && (this.tick & 127) === 1 && clean > 0) { this._clearLanes(o); clean--; } // (lanes blocked while somebody was on them: built again once nobody is)
+        if (o.dirty && (this.tick & 127) === 1) o.retry = true; // (lanes blocked while somebody was on them: built again once nobody is)
       }
       if (this.agents.length > 64 && (this.tick & 255) === 1) this.agents = this.agents.filter((a) => !a.dead);
     }
+    this._clearStep(x, z, 2); // (lane clearing: at most 2 ms a frame, resumable)
     // who is where: a grid for looking ahead
     const head = this.head, A = this.agents, n = A.length, gx0 = x - (GN * CELL) / 2, gz0 = z - (GN * CELL) / 2, rs = this.riders;
     // (after the agents, the grid also holds the members and parked bikes of the groups on show, as entries n + k: their place is in
@@ -1966,6 +2045,31 @@ export class Crowd {
         const cc = ci + di, cr = cj + dj;
         if (cc < 0 || cr < 0 || cc >= GN || cr >= GN) continue;
         for (let q = head[cr * GN + cc]; q >= 0; q = next[q]) { if (q === self || q >= n) continue; const b = A[q]; if (b.kind !== PED && !b.dead && b.lane !== own && (b.x - px) ** 2 + (b.z - pz) ** 2 < r * r) return false; }
+      }
+      return true;
+    };
+    /**
+     * May vehicle `self` (agent a) enter lane l2 at its end e2? Only what is ON l2 near that end, or heading along l2 there (a vehicle on
+     * a lane that leads into it, or merges), within the gap the asker needs, keeps it out; traffic the other way or across does not.
+     * Two that wait for each other to enter: the one earlier in the list goes (the later one, waiting itself, is let by).
+     */
+    const joinFree = (a, self, l2, e2, gap) => {
+      const i2 = e2 ? l2.n - 1 : 0, j2 = e2 ? l2.n - 2 : 1, px = l2.pts[i2 * 2], pz = l2.pts[i2 * 2 + 1];
+      const ux0 = l2.pts[j2 * 2] - px, uz0 = l2.pts[j2 * 2 + 1] - pz, ul = Math.hypot(ux0, uz0) || 1, ux = ux0 / ul, uz = uz0 / ul;
+      const ci = Math.floor((px - gx0) / CELL), cj = Math.floor((pz - gz0) / CELL);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const cc = ci + di, cr = cj + dj;
+        if (cc < 0 || cr < 0 || cc >= GN || cr >= GN) continue;
+        for (let q = head[cr * GN + cc]; q >= 0; q = next[q]) {
+          if (q === self || q >= n) continue;
+          const b = A[q];
+          if (b.kind === PED || b.dead || b.lane === a.lane) continue;
+          if (b.lane === l2) { const ds = e2 ? l2.len - b.s : b.s; if (ds < gap && ds > -gap) return false; continue; }
+          const dx = b.x - px, dz = b.z - pz;
+          if (dx * dx + dz * dz > gap * gap || Math.sin(b.hd) * ux + Math.cos(b.hd) * uz < 0.5) continue; // (far, or not going this way)
+          if (q > self && b.jw > 0) continue; // (waiting to enter as well, later in the list: it lets this one go first)
+          return false;
+        }
       }
       return true;
     };
@@ -2077,7 +2181,7 @@ export class Crowd {
           }
         }
         // ---- the lane is blocked a step ahead (furniture arrived while somebody was on it): a dead end for now, turn round
-        if (lane.blk && !a.sm) { const B_ = lane.blk, q0 = Math.round(a.s * 2), q1 = Math.round((a.s + a.dir * 1.2) * 2); if (q1 >= 0 && q1 < B_.length && B_[q1] && !B_[q0 < 0 ? 0 : q0 >= B_.length ? B_.length - 1 : q0] && this.t - (a.tf ?? -9) > 0.5) { this._flip(a); hx = -hx; hz = -hz; this._fp = false; } }
+        if (lane.blk && !a.sm) { const B_ = lane.blk, q0 = Math.round(a.s * 2), q1 = Math.round((a.s + a.dir * 1.2) * 2); if (q1 >= 0 && q1 < B_.length && B_[q1] && !B_[q0 < 0 ? 0 : q0 >= B_.length ? B_.length - 1 : q0] && this.t - (a.tf ?? -9) > 2) { this._flip(a); hx = -hx; hz = -hz; this._fp = false; } } // (the same 2 s between turns as the avoidance: no back and forth)
         // ---- the scene's stage: watch it, go round, run away
         if (a.sm !== 0 || nearS) { if (this._wStage(a, dt, hx, hz, lx, lz)) continue; if (this._fp) { hx = -hx; hz = -hz; this._fp = false; } }
         // ---- people on stage are in the way: step round them, or wait
@@ -2148,7 +2252,9 @@ export class Crowd {
           let h = G.at(bx - hz * want, bz + hx * want, 0.25);
           if (h !== h) { want *= 0.5; h = G.at(bx - hz * want, bz + hx * want, 0.25); if (h !== h) { want = a.lat > 0 === want > 0 && Math.abs(a.lat) < Math.abs(want) ? a.lat : 0; fol = Math.min(fol, onc >= 0 ? 0 : 0.8); } }
         }
+        const lat0 = a.lat;
         a.lat += clamp(want - a.lat, -1.6 * dt, 1.6 * dt);
+        a.lv = dt > 0 ? Math.abs(a.lat - lat0) / dt : 0; // (a side step: the legs walk it, see below)
         a.v += clamp(Math.min(a.v0 * slow * a.sp, fol) - a.v, -6 * dt, (a.sm ? 6 : 3) * dt);
       } else {
         // ---- vehicles look ahead and brake for whatever is in their way
@@ -2177,6 +2283,16 @@ export class Crowd {
                 if ((q > i || tram) && b.kind !== TRAM_ && bf > 0.4 && Math.abs(bx * bhz - bz * bhx) < 1.75 && hx * bhx + hz * bhz < 0.5) continue;
               }
               if (fw < block) { block = fw; who = b; bv = b.kind === PED ? 0 : Math.max(0, b.v * (hx * Math.sin(b.hd) + hz * Math.cos(b.hd))); }
+            }
+          }
+          // the end of the lane ahead: the lane it goes on along is picked now, and if that lane's start is not free the vehicle brakes to
+          // stop at the end (instead of stopping dead there)
+          if (!a.pave) {
+            const rem = a.dir > 0 ? lane.len - a.s : a.s;
+            if (rem < reach + 4) {
+              if (a.nxL !== lane) { a.nx = this._onward(a); a.nxL = lane; }
+              const gap = tram ? 7 : car ? 7.2 : 2.8;
+              if (a.nx && !joinFree(a, i, a.nx[0], a.nx[1], tram ? 8 : car ? 6 : 2.5) && rem + gap < block) { block = Math.max(0.1, rem + gap - 0.3); bv = 0; who = null; }
             }
           }
           // actors on stage, and the edge of a stretch a gag has closed
@@ -2225,10 +2341,15 @@ export class Crowd {
           if (a.v < 0.3 && target < 0.3) {
             if (hasS && (a.x - S.x) * (a.x - S.x) + (a.z - S.z) * (a.z - S.z) < S.far2) a.wait = 0; // (near a scene a queue waits)
             else a.wait += dt;
-            if (a.wait > 6 && this.t - lane.heldAt > 0.5 && !tram) {
-              const si = a.dir > 0 ? 0 : lane.n - 1, sx0 = lane.pts[si * 2], sz0 = lane.pts[si * 2 + 1];
-              if ((this.warm || (!this._seen(a.x, a.z) && !this._seen(sx0, sz0))) && vFree(sx0, sz0, i, car ? 6.5 : 2.5)) { a.s = a.dir > 0 ? 0 : lane.len; a.pop = 0; a.ox = a.oz = 0; a.first = true; a.wait = 0; a.v = 0; continue; }
-              if (a.wait > 20 && this._uturn(a, hx, hz)) { a.wait = 0; continue; }
+            // (a car standing in a tram's way is told so, and moves on from where nobody sees it after 2 s instead of 6)
+            if (tram && who && who.kind === CAR_ && a.wait > 3) who.trw = this.t;
+            if ((a.wait > 6 || (car && a.wait > 2 && this.t - (a.trw ?? -9) < 1)) && this.t - lane.heldAt > 0.5) {
+              const si = a.dir > 0 ? 0 : lane.n - 1, sx0 = lane.pts[si * 2], sz0 = lane.pts[si * 2 + 1], g0 = tram ? 30 : car ? 6.5 : 2.5;
+              if ((this.warm || (!this._seen(a.x, a.z) && !this._seen(sx0, sz0))) && vFree(sx0, sz0, i, g0)) { a.s = a.dir > 0 ? 0 : lane.len; a.pop = 0; a.ox = a.oz = 0; a.first = true; a.wait = 0; a.v = 0; continue; }
+              // or further on along its lane, past what holds it, where nobody sees it go or come (a tram's last way out: it cannot turn)
+              const s2 = a.s + a.dir * (tram ? 45 : 25);
+              if (s2 > 5 && s2 < lane.len - 5 && !this.warm) { this._lp(lane, s2); const x2 = this._px, z2 = this._pz; if (!this._seen(a.x, a.z) && !this._seen(x2, z2) && vFree(x2, z2, i, g0)) { a.s = s2; a.pop = 0; a.ox = a.oz = 0; a.first = true; a.wait = 0; a.v = 0; continue; } }
+              if (a.wait > 20 && !tram && this._uturn(a, hx, hz)) { a.wait = 0; continue; }
             }
           } else a.wait = 0;
           if (a.ghost > 0) a.ghost -= dt;
@@ -2251,15 +2372,17 @@ export class Crowd {
       // ---- move on
       a.s += a.sm === 3 || a.sm === 9 ? 0 : a.dir * a.v * dt;
       if (a.s > lane.len || a.s < 0) {
-        let on = this._onward(a);
-        if (on && a.kind !== PED && !a.pave) { const l2 = on[0], i2 = on[1] ? l2.n - 1 : 0; if (!vFree(l2.pts[i2 * 2], l2.pts[i2 * 2 + 1], i, a.kind === CAR_ ? 6 : a.kind === TRAM_ ? 8 : 2.5, lane)) {
-          // a vehicle joins a lane only when its start is free: it waits at the end (and, waiting long where nobody sees, starts its lane again)
-          a.s = clamp(a.s, 0, lane.len); a.v = 0; a.jw = (a.jw || 0) + dt;
+        const on = a.kind !== PED && !a.pave && a.nxL === lane ? a.nx : this._onward(a);
+        if (on && a.kind !== PED && !a.pave && !joinFree(a, i, on[0], on[1], a.kind === CAR_ ? 6 : a.kind === TRAM_ ? 8 : 2.5)) {
+          // a vehicle joins a lane only when its start is free: it waits at the end, having braked for it (and, waiting long where nobody
+          // sees, starts its lane again)
+          a.s = clamp(a.s, 0, lane.len); a.v = Math.min(a.v, 0.2); a.jw = (a.jw || 0) + dt;
           const si = a.dir > 0 ? 0 : lane.n - 1;
           if (a.jw > 6 && (this.warm || (!this._seen(lx, lz) && !this._seen(p[si * 2], p[si * 2 + 1]))) && vFree(p[si * 2], p[si * 2 + 1], i, a.kind === CAR_ ? 6 : 2.5)) { a.s = a.dir > 0 ? 0 : lane.len; a.pop = 0; a.ox = a.oz = 0; a.first = true; a.jw = 0; }
           else if (a.jw > 20 && a.kind !== TRAM_ && this._uturn(a, hx, hz)) a.jw = 0; // (in sight for long: into the lane the other way, if one is beside it)
           continue;
-        } }
+        }
+        a.nxL = null; a.nx = null;
         if (on) {
           const [l2, e2] = on;
           // carry the small jump between the two lanes as an offset that melts away
@@ -2271,8 +2394,21 @@ export class Crowd {
         else {
           // nowhere to go: start the lane again, but only if nobody sees it leave and come back; otherwise wait at the end
           const si = a.dir > 0 ? 0 : lane.n - 1;
-          if ((this.warm || (!this._seen(lx, lz) && !this._seen(p[si * 2], p[si * 2 + 1]))) && vFree(p[si * 2], p[si * 2 + 1], i, a.kind === CAR_ ? 6 : a.kind === TRAM_ ? 8 : 2.5)) { a.s = a.dir > 0 ? 0 : lane.len; a.pop = 0; a.ox = a.oz = 0; a.first = true; a.held = false; }
-          else { a.s = a.dir > 0 ? lane.len : 0; a.v = 0; a.held = true; lane.heldAt = this.t; }
+          if ((this.warm || (!this._seen(lx, lz) && !this._seen(p[si * 2], p[si * 2 + 1]))) && vFree(p[si * 2], p[si * 2 + 1], i, a.kind === CAR_ ? 6 : a.kind === TRAM_ ? 8 : 2.5)) { a.s = a.dir > 0 ? 0 : lane.len; a.pop = 0; a.ox = a.oz = 0; a.first = true; a.held = false; a.ht = 0; }
+          else {
+            a.s = a.dir > 0 ? lane.len : 0; a.v = 0; a.held = true; lane.heldAt = this.t; a.ht = (a.ht || 0) + dt;
+            // in sight at the end of its lane: a tram, after a stop as at a terminus, drives back the way it came (the same five sections,
+            // from its last one on: nothing moves); a car or a cyclist turns into a lane the other way within 6 m (a smooth swing round)
+            if (a.kind === TRAM_ && a.ht > 8) this._tramBack(a, hx, hz);
+            else if (a.kind !== TRAM_ && a.ht > 3 && this._uturn(a, hx, hz, 36)) { a.held = false; a.ht = 0; }
+            else if (a.kind !== TRAM_ && a.ht > 6) {
+              // a dead end with no lane the other way (a small street has one car line): it turns round on its own lane, when nobody else is
+              // on that lane (no queue to meet head-on); a queue waits until nobody sees its front go
+              let alone = true;
+              for (const b of lane.owner.agents) if (b !== a && b.lane === lane && !b.dead && b.kind !== PED) { alone = false; break; }
+              if (alone) { a.dir = -a.dir; a.held = false; a.ht = 0; a.s = clamp(a.s, 0.1, lane.len - 0.1); }
+            }
+          }
         }
         continue;
       }
@@ -2298,12 +2434,13 @@ export class Crowd {
       // standing height: walkers on the highest ground under their feet, vehicles under their wheels (W.ground); trams on the track
       const y = a.kind === PED ? this._feet(a, a.x, a.z, a.sc, a.first ? 0 : dt, d2 < 22500) : a.kind === CAR_ ? this._wheels(a, a.x, a.z, a.hd, 1.27, 0.79, dt) : a.kind === BIKE_ ? this._wheels(a, a.x, a.z, a.hd, 0.6, 0, dt) : 0, s = Math.max(0, a.pop) * (2 - Math.max(0, a.pop));
       if (a.kind === PED) {
-        const P = a.pp, anim = P.anim.array, o = a.slot * 4, still = a.v < 0.15 && ((100 >> a.sm) & 1) === 1;
-        a.ph += dt * (still ? 1.6 : 3.2 + a.v * 1.9);
+        // (the speed the feet move at: along the way, or sideways when stepping aside while standing in front of someone)
+        const ve = Math.max(a.v, a.lv || 0), P = a.pp, anim = P.anim.array, o = a.slot * 4, still = ve < 0.15 && ((100 >> a.sm) & 1) === 1;
+        a.ph += dt * (still ? 1.6 : 3.2 + ve * 1.9);
         P.put(a.slot, a.x, y, a.z, a.hd, a.sc * s);
         if (a.sm === 4) { anim[o] = a.ph; anim[o + 1] = Math.min(1.25, (0.45 + a.v * 0.11) * 1.5); anim[o + 2] = 5; anim[o + 3] = 0.14; } // running away, arms up
         else if (still) { anim[o] = a.ph; anim[o + 1] = 1; anim[o + 2] = a.pose; anim[o + 3] = a.sm === 2 ? a.tl : 0; } // standing and watching
-        else { anim[o] = a.ph; anim[o + 1] = a.v > 0.1 ? (0.45 + a.v * 0.11) * a.gait : 0; anim[o + 2] = 0; anim[o + 3] = a.v > 0.1 ? a.lean : 0; }
+        else { anim[o] = a.ph; anim[o + 1] = ve > 0.1 ? (0.45 + ve * 0.11) * a.gait : 0; anim[o + 2] = 0; anim[o + 3] = a.v > 0.1 ? a.lean : 0; }
       } else if (a.kind === BIKE_) {
         const P = a.pp, anim = P.anim.array, rd = a.rd;
         const wait = a.sb && a.v < 0.3; // waiting at the rim of a scene: stopped, a foot down, leaning a little

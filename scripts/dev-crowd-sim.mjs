@@ -6,8 +6,14 @@
 // wheels, a wheel on a rail bar left out and counted in `rail`), vehicles inside each other (`vv`), and `inside` (a walker in any of
 // building / furniture / barrier / water). Plus how many walkers, cyclists and cars the crowd holds, and what Crowd.update costs.
 // It loads a COPY of the source (the snapshot tool's patches), so any src directory can be compared, e.g. an older worktree's.
-//   node scripts/dev-crowd-sim.mjs [--src src] [--streets "Grote Markt;Bierkade"] [--secs 70] [--json out.json]
-// Streets known by name: the four of dev-count (their spot, from the counter's own records); others with --at mx,my,dx,dy.
+//   node scripts/dev-crowd-sim.mjs [--src src] [--streets "Grote Markt;Bierkade"] [--secs 70] [--json out.json] [--cam] [--det] [--seed n]
+// --cam: a camera as the stage's (30 degrees, 1.6 wide, 70 m from the spot, 0.7 rad up): the crowd's _seen then holds for what it
+//   frames, so nothing may appear, vanish or restart there; `still20` counts vehicles standing still for more than 20 s in view
+//   (per minute) and `stillMax` the longest such wait (s). Crowd.update is timed with a real clock (the stubs freeze performance).
+// --det: lane clearing's time budget counted in looks at the clock, not milliseconds: the same work every frame and every run (for
+//   comparing counts between trees; the times it prints are then not what a browser would see).
+// Streets known by name: the four of dev-count (their spot, from the counter's own records), Plein, Weimarstraat and Strandweg (the
+// centre and bearing of streets.geojson); others with --at mx,my,dx,dy.
 // Rates are per minute of crowd time over the samples (one every 5 frames of 1/30 s, after 10 s to settle), within 80 m of the spot.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,8 +25,8 @@ import { installStubs } from './snapshot/lib/stubs.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url)), REPO = path.resolve(HERE, '..');
 const argv = process.argv.slice(2), opt = {};
 for (let i = 0; i < argv.length; i++) if (argv[i].startsWith('--')) opt[argv[i].slice(2)] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
-const SPOTS = { 'Grote Marktstraat': [1019.385, 822.164, -0.87, -0.493], 'Grote Markt': [594.309, 678.797, 0.699, -0.715], Torenstraat: [325.512, 923.654, -0.615, 0.788], Bierkade: [1244.498, 501.945, 0.814, 0.581] };
-const streets = (typeof opt.streets === 'string' ? opt.streets : Object.keys(SPOTS).join(';')).split(';').map((s) => s.trim()).filter(Boolean);
+const SPOTS = { Plein: [1052.5, 1112.7, -0.515, 0.857], Weimarstraat: [-1504.1, 465.1, 0.743, 0.669], Strandweg: [-1874.3, 4228.1, 0.906, 0.423], 'Grote Marktstraat': [1019.385, 822.164, -0.87, -0.493], 'Grote Markt': [594.309, 678.797, 0.699, -0.715], Torenstraat: [325.512, 923.654, -0.615, 0.788], Bierkade: [1244.498, 501.945, 0.814, 0.581] };
+const streets = (typeof opt.streets === 'string' ? opt.streets : 'Grote Marktstraat;Grote Markt;Torenstraat;Bierkade').split(';').map((s) => s.trim()).filter(Boolean);
 const SECS = +(opt.secs || 70), R = 80, DT = 1 / 30;
 const srcDir = path.resolve(typeof opt.src === 'string' ? opt.src : path.join(REPO, 'src'));
 
@@ -98,8 +104,15 @@ for (const street of streets) {
   if (groundM) W.ground = groundM.makeGround({ frame, city, tileAt, C, WET: world.__s_WET });
   stubs.rnd.reset();
   const crowd = new crowdM.Crowd(W, {});
+  if (opt.seed) crowd.seed = (1234567 + 7919 * +opt.seed) >>> 0; // (--seed: another draw of the crowd, for counts averaged over several)
+  if (opt.cam) {
+    const THREE = await import('three'), cam = new THREE.PerspectiveCamera(30, 1.6, 1, 9000), y0 = W.hAt(0, 0) + 1.5, az = 0.4, el = 0.7, dist = 70;
+    cam.position.set(Math.sin(az) * Math.cos(el) * dist, y0 + Math.sin(el) * dist, Math.cos(az) * Math.cos(el) * dist);
+    cam.lookAt(0, y0, 0); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+    crowd.cam = cam;
+  }
   const clr = [];
-  if (crowd._clearLanes) { const f0 = crowd._clearLanes.bind(crowd); crowd._clearLanes = (o) => { const t1 = process.hrtime.bigint(); f0(o); clr.push(Number(process.hrtime.bigint() - t1) / 1e6); }; }
+  if (crowd._clearLanes && !crowd._clearStep) { const f0 = crowd._clearLanes.bind(crowd); crowd._clearLanes = (o) => { const t1 = process.hrtime.bigint(); f0(o); clr.push(Number(process.hrtime.bigint() - t1) / 1e6); }; } // (older trees: the job ran in one go)
   const ta = process.hrtime.bigint();
   for (const k of keys) { const c = built.get(k); if (c) crowd.addTile(c); }
   const addMs = Number(process.hrtime.bigint() - ta) / 1e6 / keys.length;
@@ -131,11 +144,21 @@ for (const street of streets) {
   let last = new Set();
   const hist = new Map();
   const order = new Map();
+  globalThis.performance.now = () => Number(process.hrtime.bigint()) / 1e6; // (a real clock for the run: lane clearing keeps to a time budget)
+  if (opt.det) { let vt = 0; globalThis.performance.now = () => (vt += 0.05); } // (--det: a clock that ticks per look, so lane clearing does the same work every frame and every run: for comparing counts, not times)
+  const stillT = new Map();
+  let fr20 = 0, frN = 0;
   for (let step = 0; step * DT < SECS; step++) {
     const t0 = process.hrtime.bigint();
     crowd.update(DT, 0, 0, 60);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     T.msMax = Math.max(T.msMax || 0, ms); // (every frame, the first ones too: the street is filled then)
+    frN++; if (ms > 20) fr20++;
+    for (const a of crowd.agents) {
+      if (a.dead || !a.vis || a.kind === 0 || a.fixed) continue;
+      if (a.v < 0.3 && crowd._seen(a.x, a.z)) { const t2 = (stillT.get(a) || 0) + DT; stillT.set(a, t2); if (t2 > 20 && t2 - DT <= 20) { T.still20 = (T.still20 || 0) + 1; if (process.env.STILLDBG) { const rem = a.dir > 0 ? a.lane.len - a.s : a.s; console.log('STILL', street, 'kind', a.kind, 'held', a.held, 'jw', (a.jw || 0).toFixed(1), 'wait', (a.wait || 0).toFixed(1), 'rem', rem.toFixed(1), 'lanelen', a.lane.len.toFixed(0), 'nx', !!a.nx, 'sb', a.sb, 'hold', a.hold, 'xz', a.x.toFixed(1), a.z.toFixed(1), 'cls', a.lane.cls); const hx = Math.sin(a.hd), hz = Math.cos(a.hd); let best = null, bd = 30; for (const b of crowd.agents) { if (b === a || b.dead || !b.vis) continue; const dx = b.x - a.x, dz = b.z - a.z, fw = dx * hx + dz * hz, lt = Math.abs(dx * hz - dz * hx); if (fw > 0.3 && fw < bd && lt < 2.5) { bd = fw; best = b; } } if (best) console.log('   ahead', bd.toFixed(1), 'kind', best.kind, 'v', best.v.toFixed(2), 'held', best.held, 'wait', (best.wait || 0).toFixed(1), 'jw', (best.jw || 0).toFixed(1), 'cross', !!best.cross, 'sm', best.sm, 'samelane', best.lane === a.lane, 'hdDot', (Math.sin(best.hd) * hx + Math.cos(best.hd) * hz).toFixed(2)); } } T.stillMax = Math.max(T.stillMax || 0, t2); if (a.kind === 4) T.tramMax = Math.max(T.tramMax || 0, t2); }
+      else stillT.delete(a);
+    }
     const now = step * DT;
     for (const a of crowd.agents) {
       if (a.dead || a.kind !== 0) continue;
@@ -244,13 +267,23 @@ for (const street of streets) {
   row.alive = Object.fromEntries(['aWalk', 'aBike', 'aCar', 'aTram'].map((k) => [k.slice(1).toLowerCase(), +((T.held[k] || 0) / T.samples).toFixed(0)]));
   row.held = { walk: +(T.held.walk / T.samples).toFixed(0), bike: +(T.held.bike / T.samples).toFixed(0), car: +(T.held.car / T.samples).toFixed(0), tram: +(T.held.tram / T.samples).toFixed(0) };
   row.addTileMs = +addMs.toFixed(1);
-  row.msMax = +(T.msMax || 0).toFixed(1); row.turns = +((T.turns || 0) * 60 / (SECS - 10)).toFixed(1); row.pingPong = +((T.pingPong || 0) * 60 / (SECS - 10)).toFixed(1);
+  { // the walkers the crowd means to hold: the sum over its walking lanes of density x length x the district's share (x pedK), owners on
+    const DP = { 2: 1.5, 3: 1.5, 4: 1.3, 5: 0.9, 6: 0.85, 7: 0.7, 8: 4.2, 11: 0.5 };
+    let w = 0; for (const o of crowd.owners.values()) if (o.on) for (const l of o.lanes) if (l.kind === 0 && !l.dead) w += ((DP[l.cls] || 0) * l.len * crowd._info(l).mult * (o.pedK || 1)) / 100;
+    row.walkersMeant = +w.toFixed(1);
+  }
+  { // the same for the vehicles (bike, car, tram), with _fill's densities
+    const DV = { 1: { 3: 0.5, 4: 0.5, 5: 0.35, 6: 0.25, 7: 0.2, 10: 1.0 }, 2: { 1: 2.0, 2: 1.9, 3: 1.6, 4: 1.2, 5: 0.7, 6: 0.3, 7: 0.14, 9: 0.04, 13: 0.2 }, 4: { 1: 0.14 } }, m = { 1: 0, 2: 0, 4: 0 };
+    for (const o of crowd.owners.values()) if (o.on) for (const l of o.lanes) if (DV[l.kind] && !l.dead) m[l.kind] += ((DV[l.kind][l.cls] || 0) * l.len * crowd._info(l).mult) / 100;
+    row.vehiclesMeant = { bike: +m[1].toFixed(1), car: +m[2].toFixed(1), tram: +m[4].toFixed(1) };
+  }
+  row.msMax = +(T.msMax || 0).toFixed(1); row.frames20 = fr20; row.still20 = +((T.still20 || 0) * 60 / SECS).toFixed(1); row.stillMax = +(T.stillMax || 0).toFixed(0); row.tramMax = +(T.tramMax || 0).toFixed(0); row.turns = +((T.turns || 0) * 60 / (SECS - 10)).toFixed(1); row.pingPong = +((T.pingPong || 0) * 60 / (SECS - 10)).toFixed(1);
   { let L = 0; for (const o of crowd.owners.values()) for (const l of o.lanes) if (l.kind === 0) L += l.len * (o.pedK || 1); row.pedLaneDensityM = +L.toFixed(0); } // (walking lane metres the crowd fills, cut lanes' share included)
   row.clearLanesMs = clr.length ? { n: clr.length, mean: +(clr.reduce((p, q) => p + q, 0) / clr.length).toFixed(1), max: +Math.max(...clr).toFixed(1) } : null;
   row.ms = { mean: +(ms.reduce((a, b) => a + b, 0) / ms.length).toFixed(3), p50: +ms[ms.length >> 1].toFixed(3), p99: +ms[Math.floor(ms.length * 0.99)].toFixed(3) };
   row.why = Object.fromEntries(Object.entries(T.why).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, v]) => [k, +(v * per).toFixed(1)]));
   out.streets.push(row);
-  console.log(`${street.padEnd(18)} n ${String(row.n).padStart(5)}  pair ${row.pairs} pEv ${row.pairEv} bld ${row.bld} core ${row.core} bar ${row.barrier} wet ${row.wet} sink ${row.sink} float ${row.float} rail ${row.rail} vv ${row.vv} in! ${row.inside} | vvAll ${row.vvAll} parked ${row.parkedUp} | alive ${JSON.stringify(row.alive)} visible ${JSON.stringify(row.held)} | update ms ${JSON.stringify(row.ms)} | addTile ${row.addTileMs} ms | lane clearing ${JSON.stringify(row.clearLanesMs)} | worst update ${row.msMax} ms | turns/min ${row.turns} ping-pong ${row.pingPong} | PED lane m ${row.pedLaneDensityM}`);
+  console.log(`${street.padEnd(18)} n ${String(row.n).padStart(5)}  pair ${row.pairs} pEv ${row.pairEv} bld ${row.bld} core ${row.core} bar ${row.barrier} wet ${row.wet} sink ${row.sink} float ${row.float} rail ${row.rail} vv ${row.vv} in! ${row.inside} | vvAll ${row.vvAll} parked ${row.parkedUp} | alive ${JSON.stringify(row.alive)} visible ${JSON.stringify(row.held)} | update ms ${JSON.stringify(row.ms)} | addTile ${row.addTileMs} ms | lane clearing ${JSON.stringify(row.clearLanesMs)} | worst update ${row.msMax} ms (${row.frames20} frames > 20 ms) | still>20s in view ${row.still20}/min, longest ${row.stillMax} s (tram ${row.tramMax} s) | turns/min ${row.turns} ping-pong ${row.pingPong} | PED lane m ${row.pedLaneDensityM} | walkers meant ${row.walkersMeant} vehicles meant ${JSON.stringify(row.vehiclesMeant)}`);
   console.log('   ' + JSON.stringify(row.why));
 }
 if (typeof opt.json === 'string') fs.writeFileSync(opt.json, JSON.stringify(out, null, 1));

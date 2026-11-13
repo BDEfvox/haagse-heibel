@@ -14,7 +14,7 @@
 // Besides ground, buildings and trees, a spot has an OBSTACLE PICTURE (`obstacles(ctx)`): everything that stands there. The
 // placement helpers, the walking route, the lane finder and the stage scan (`findStage`) all read it.
 
-import { PERSON as G_PERSON, STANDING as G_STANDING } from './ground.js';
+import { PERSON as G_PERSON, STANDING as G_STANDING, WATER as G_WATER } from './ground.js';
 
 const X0 = -23.5, X1 = 23.5;
 
@@ -69,8 +69,13 @@ export function builtAt(ctx, x, z) {
 export function groundFree(ctx, x, z) {
   const W = world(ctx);
   if (!W || !W.ground) return true;
-  const p = scene(ctx, W, x, z), h = W.ground.at(p[0], p[1], 0, G_PERSON, G_STANDING);
-  return h === h;
+  const G = W.ground, p = scene(ctx, W, x, z), h = G.at(p[0], p[1], 0, G_PERSON, G_STANDING);
+  if (h === h) return true;
+  if (G.bits & G_WATER) return false;
+  // standing AT a wall or a fence (a doorstep, a bench against a front): the raster's half-metre cells reach up to 0.35 m past the drawn
+  // face, so a point within 0.4 m of open ground counts as open; only a point deeper inside a drawn wall or fence is refused
+  for (let k = 0; k < 4; k++) { const v = G.at(p[0] + (k === 0 ? 0.4 : k === 1 ? -0.4 : 0), p[1] + (k === 2 ? 0.4 : k === 3 ? -0.4 : 0), 0, G_PERSON, G_STANDING); if (v === v) return true; }
+  return false;
 }
 /** True when something is known to be there to stand in: a trunk within r metres. */
 export function treeAt(ctx, x, z, r = 0.8) {
