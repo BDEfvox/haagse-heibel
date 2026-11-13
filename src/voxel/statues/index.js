@@ -7,7 +7,6 @@ import r3 from './recipes-3.js';
 
 /** All recipes by OpenStreetMap id. Famous overrides the others. */
 export const RECIPES = Object.assign({}, r1, r2, r3, famous);
-export const IDS = ids;
 
 /** index1 = the 1-based position in ids.json carried by the tile feature (0 or missing = no recipe). */
 export function recipeFor(index1) {

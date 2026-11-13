@@ -15,13 +15,13 @@ __heibel.sheet(1)                          // next page of the contact sheet; __
 __heibel.stage.force = { busted: true }    // force one of a scene's endings (the names are the flip() calls in the script)
 ```
 
-The audit returns one line per beat and lays the beats out as a contact sheet (one picture per beat, taken 0.7 s in):
+The audit returns one line per beat and lays the beats out as a contact sheet (one picture per beat, taken 0.7 s in). The "Pass" marks in the tables below are a reading aid; nothing in the code checks them, and the audit only reports the numbers.
 
 | Column | Meaning | Pass |
 |---|---|---|
-| `seen` | share of the beat's frames in which every subject was inside the picture and not behind a standing building | 85% or more |
-| `size` | how tall the first subject is, as a share of the picture's height (median over the beat) | a person 12% or more; a face shot 40% or more |
-| `cam` | share of frames in which the scene itself directed the camera | 100% while it holds the camera |
+| `seen` | share of the beat's frames in which every subject that has arrived was inside the picture (within 97% of its width and height) and not behind a standing building. Each subject is tested at one point, 60% of its height up, and the line to it is checked against buildings only (as tall as the cutaway leaves them), not against parked cars, furniture or other people | 85% or more |
+| `size` | how tall the first subject that is in the picture is (an estimated height: about 1.9 m for a person, `hgt` for a vehicle, 0.8 m or 0.6 m for other things), as a share of the picture's height (median over the beat) | a person 12% or more; a face shot 40% or more |
+| `cam` | share of frames in which a shot the scene itself directed was running | 100% while it holds the camera |
 | `offFrame`, `hidden` | why `seen` was not 100% | |
 
 The audit also returns the director's own numbers (it logs every shot the stage really showed in `shotLog`):

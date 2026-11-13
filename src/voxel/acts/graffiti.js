@@ -5,14 +5,51 @@ import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
 
+/**
+ * A finished tag stays on the wall (lasting damage), so it is baked into ONE mesh: the same boxes, colours and places as the
+ * pixel meshes it was sprayed with (each pixel's final transform applied to its vertices), one geometry and one draw call
+ * instead of one per pixel. Pixels that are not visible are left out (none are, once the scene is done).
+ */
+const _v = new THREE.Vector3(), _nm = new THREE.Matrix3();
+function bakeTag(tg) {
+  const ms = tg.children.filter((m) => m.isMesh && m.visible && m.geometry && m.geometry.index);
+  if (ms.length < 2) return;
+  let nv = 0, ni = 0;
+  for (const m of ms) { nv += m.geometry.attributes.position.count; ni += m.geometry.index.count; }
+  const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3), idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let o = 0, k = 0;
+  for (const m of ms) {
+    m.updateMatrix();
+    _nm.getNormalMatrix(m.matrix);
+    const g = m.geometry, P = g.attributes.position, N = g.attributes.normal, Cl = g.attributes.color, I = g.index;
+    for (let i = 0; i < P.count; i++) {
+      const q = (o + i) * 3;
+      _v.fromBufferAttribute(P, i).applyMatrix4(m.matrix); pos[q] = _v.x; pos[q + 1] = _v.y; pos[q + 2] = _v.z;
+      _v.fromBufferAttribute(N, i).applyMatrix3(_nm).normalize(); nor[q] = _v.x; nor[q + 1] = _v.y; nor[q + 2] = _v.z;
+      col[q] = Cl.getX(i); col[q + 1] = Cl.getY(i); col[q + 2] = Cl.getZ(i);
+    }
+    for (let i = 0; i < I.count; i++) idx[k++] = I.getX(i) + o;
+    o += P.count;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  const baked = new THREE.Mesh(geo, ms[0].material); // MAT.glow, shared: never disposed with the tag
+  baked.castShadow = ms[0].castShadow; baked.receiveShadow = ms[0].receiveShadow;
+  for (const m of [...tg.children]) { tg.remove(m); if (m.geometry) m.geometry.dispose(); }
+  tg.add(baked);
+}
+
 /** `T` is the set-piece toolkit of gags.js (see ACTS.md). */
 export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
 
   const TAG = ['111 111 111', '1 1   1 1 1', '1 1  1  1 1', '1 1 1   1 1', '111 1   111']; // "070"
@@ -85,7 +122,7 @@ export default function (T) {
         B('2 reveal: the tagger shakes his can at us', [kid]);
         kid.gait = 'walk'; kid.heading = 0; kid.mood = 'smug';
         kid.hold(item.spray());
-        cam.hero(kid, { dist: 6, hold: 3 });
+        cam.hero(kid, { dist: 6 });
         cam.card('DE SPUITER', 'Self-taught. Self-appointed.', 1.9);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -98,7 +135,7 @@ export default function (T) {
 
         // ---- 3. the tag, stroke by stroke, with the camera creeping in
         B('3 the tag: stroke by stroke, the paint sparks', [kid, tagPt]);
-        cam.shot({ on: [kid, tagPt], y: by + 1.1, dist: 8, el: 0.22, az: 0.3 * dir, fit: true, hold: 5, drift: { dist: -0.35 } });
+        cam.shot({ on: [kid, tagPt], y: by + 1.1, dist: 8, el: 0.22, az: 0.3 * dir, fit: true, drift: { dist: -0.35 } });
         yield* wait(0.3);
         let kx = kid.g.position.x;
         for (let c = 0; c < 11; c++) {
@@ -140,7 +177,7 @@ export default function (T) {
           crHere = true;
         })());
         B('3b the puddle: he steps back, straight through the wet paint', [kid, pud]);
-        cam.ground([kid, pud], { dist: 6.5, el: 0.08, az: -0.4 * dir, fit: true, hold: 3.2 });
+        cam.ground([kid, pud], { dist: 6.5, el: 0.08, az: -0.4 * dir, fit: true });
         yield* wait(0.3);
         yield* laugh(ctx, kid, 0.9, 'he');
         const prints = [];
@@ -163,7 +200,7 @@ export default function (T) {
 
         // ---- 4. the critic's verdict
         B('4 the verdict: the critic frowns at the tag', [cr, kid]);
-        cam.ots(kid, cr, { hold: 3 });
+        cam.ots(kid, cr);
         cr.heading = Math.PI; cr.arms = 'hold'; cr.mood = 'focus';
         kid.lookAt = cr; kid.mood = 'smug';
         yield* wait(0.3);
@@ -175,7 +212,7 @@ export default function (T) {
         cr.mood = 'smug';
         yield* wait(0.9);
         B('4b WAT?!: the artist takes it personally', [kid]);
-        cam.crash(kid, { hold: 1.6 });
+        cam.crash(kid);
         yield* wait(0.3);
         kid.arms = 'fist'; kid.mood = 'angry';
         yell(ctx, kid, 'WAT?!', col, 16);
@@ -191,7 +228,7 @@ export default function (T) {
         let copIn = false;
         const copTask = R.run((function* () { yield* wait(0.8); yield* R.enter(cop, cx1, padZ(ctx, walk, cx1), undefined, { speed: 3 }); copIn = true; })());
         B('4c the improvement: the critic adds a gold underline', [cr, tagPt]);
-        cam.dolly([cr, tagPt], { y: by + 1.1, dist: 7, el: 0.22, az: -0.3 * dir, fit: true, hold: 3.4 });
+        cam.dolly([cr, tagPt], { y: by + 1.1, dist: 7, el: 0.22, az: -0.3 * dir, fit: true });
         yield* go(ctx, cr, bx.x + 0.1, sz, 3.2);
         cr.heading = Math.PI;
         yield* wait(0.3);
@@ -209,11 +246,11 @@ export default function (T) {
         ctx.sfx('boing');
         yield* all(hop(kid, 0.5, 0.35), wait(0.5));
         // (in the second ending the critic is left holding the can: that is what the cop finds)
-        if (critEnd) { cr.arms = 'hold'; cr.mood = 'smug'; } else { cr.drop(); cr.arms = 'swing'; }
+        if (critEnd) { cr.arms = 'hold'; cr.mood = 'smug'; } else { R.discard(cr); cr.arms = 'swing'; }
 
         // ---- 5. the law arrives, and the lookout was looking the wrong way (he watches the street end, the cop comes from behind the wall)
         B('5 the law arrives: FWEEET, and the lookout was looking the wrong way', [pt(cx1, padZ(ctx, walk, cx1)), kid, lookout]);
-        cam.wide([pt(cx1, padZ(ctx, walk, cx1)), kid, lookout], { dist: 16, el: 0.25, az: dir * 0.2, fit: true, hold: 2.6 });
+        cam.wide([pt(cx1, padZ(ctx, walk, cx1)), kid, lookout], { dist: 16, el: 0.25, az: dir * 0.2, fit: true });
         yield* waitUntil(() => copTask.done, 40);
         yield* wait(0.9);
         ctx.sfx('whistle');
@@ -230,7 +267,7 @@ export default function (T) {
         R.run(R.leave(lookout, 7.4, kidOut));
         // from above: the paint trail zig-zags away
         B('5b the flight: wet footprints zig-zag away', [kid]);
-        cam.high(kid, { dist: 14, az: -dir * 0.3, hold: 1.8 });
+        cam.high(kid, { dist: 14, az: -dir * 0.3 });
         const flee = R.run((function* () {
           yield* goEach(ctx, kid, S.runway(ctx, kid.g.position.x, kid.g.position.z, kidOut > 0 ? 1 : -1, 24), padZ(ctx, walk, kidOut), 7.4, (dt) => {
             const q = kid.g.position;
@@ -249,7 +286,7 @@ export default function (T) {
         if (!critEnd) {
           // the cop follows the footprints to the tag and the puddle, and walks right into it
           B('6 the slip: the cop finds the puddle', [cop, pud]);
-          cam.ground([cop, pud], { dist: 7, el: 0.1, az: -dir * 0.4, fit: true, hold: 3 });
+          cam.ground([cop, pud], { dist: 7, el: 0.1, az: -dir * 0.4, fit: true });
           yield* go(ctx, cop, pud.position.x - dir * 1.2, pud.position.z, 4.6);
           cop.heading = dir > 0 ? E : W; cop.lookAt = pud.position;
           yield* lookAround(cop, 0.8, 0.28);
@@ -267,7 +304,7 @@ export default function (T) {
           cop.heading = 0;
           say(ctx, cop, '★ ★', { size: 15, color: '#ffe066', dur: 1 });
           B('6b stars: the cop sits in the paint', [cop]);
-          cam.close(cop, { dist: 4.5, hold: 1.8 });
+          cam.close(cop, { dist: 4.5 });
           if (lv >= 4) R.run(R.cop(kid, 7, 0.3, 'POLITIE!'));
           if (lv >= 5 && L.kind !== 'ped') R.run(R.police(-dir, L.chaseZ, 11, 0.5));
           yield* wait(0.3);
@@ -275,7 +312,7 @@ export default function (T) {
           yield* wait(1.1);
           // ---- 7. punchline: blue-booted cop, smug critic, a gold underline on the tag
           B('7 punchline: Zie je wel. Kunst. The tag, the critic, the cop in the paint', [cr, cop, tagPt]);
-          cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true, hold: 3.6 });
+          cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true });
           yield* wait(0.3);
           yield* getUp(cop, 'sad');
           cop.arms = 'swing';
@@ -293,13 +330,13 @@ export default function (T) {
         } else {
           // the cop skips the footprints: the man holding the spray can next to a fresh tag is the one in front of him
           B('6 the arrest: the cop finds the critic holding the can', [cop, cr]);
-          cam.two(cop, cr, { az: -dir * 0.25, hold: 3.4 });
+          cam.two(cop, cr, { az: -dir * 0.25 });
           yield* go(ctx, cop, cr.g.position.x - dir * 1.1, cr.g.position.z, 4.2);
           faceTo(cop, cr.g.position.x, cr.g.position.z); cop.arms = 'point'; cop.mood = 'smug'; cop.lookAt = cr;
           cr.lookAt = cop; cr.mood = 'shock'; cr.arms = 'up';
           say(ctx, cop, 'IK ZIE HET. DE SPUITBUS.', { size: 13, color: '#7db8ff' });
           yield* wait(0.9);
-          cr.drop();
+          R.discard(cr);
           say(ctx, cr, 'MAAR... HET IS KUNST!', { size: 15, color: '#fff' });
           ctx.sfx('cuff'); ctx.shake(0.2);
           cop.arms = 'hips';
@@ -307,7 +344,7 @@ export default function (T) {
           ctx.news('Art critic arrested at scene of "improved" tag. "Het mist diepgang," he repeats');
           cr.mood = 'sad'; cr.arms = 'swing';
           B('7 punchline: the critic is led away past his own gold underline', [cr, cop, tagPt]);
-          cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true, hold: 3.2 });
+          cam.wide([cr, cop, tagPt], { dist: 14, el: 0.22, az: 0.2 * dir, fit: true });
           yield* wait(0.3);
           R.run(R.away(cop, -dir * 8, 2.8));
           R.run((function* () { yield* wait(0.3); yield* R.away(cr, -dir * 8, 2.8); })());
@@ -320,6 +357,7 @@ export default function (T) {
         for (const f of prints) R.rm(f);
         R.rm(pud);
         R.stay(tg);
+        bakeTag(tg); // it stays: one mesh from here on
         yield* wait(1.4);
         done = true;
       } finally {

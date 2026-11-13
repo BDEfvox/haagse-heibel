@@ -1,5 +1,5 @@
 // The part types of a recipe (see kit.js for the schema) and the interpreter that draws a list of parts.
-import { S, C, bx, B, BG, shade, limb, cylinder, frame, inFrame, clamp, warn, PLINTH_STYLES, ANIMALS, MATS } from './core.js';
+import { S, C, bx, B, shade, limb, cylinder, inFrame, clamp, warn, PLINTH_STYLES, MATS } from './core.js';
 import { figure, bust, head, horse, animal } from './figures.js';
 
 // argument spec per part type: n number, c colour, s string, p point list, o object; '?' optional.
@@ -361,5 +361,3 @@ export function runParts(parts) {
     try { f(a); } catch (e) { warn('part ' + a[0] + ' failed: ' + (e && e.message)); }
   }
 }
-export { DRAW };
-void BG; void frame; void head; void horse; void bust; void ANIMALS;

@@ -16,6 +16,6 @@ A man in a long coat sells 'oregano' from inside it, until the law sniffs the ai
 | 5 the tap | The cop sniffs, taps the coat. A jar drops out. Then another. Then all of them, clattering; one rolls away along the dealer's escape line. | the jars on the pavement (including the one that will trip him), dealer's face | ground level, then face |
 | 6 the run | (default ending) The dealer bolts away from the cop with the cop after him. | dealer + cop | tracking |
 | 6b the slip | He skids on his own jar and goes down in a green cloud; the cop arrives and sneezes too. | dealer + the jar | dutch |
-| 6 the sneeze | (second ending, `flip` `sneeze`) The cop picks up a jar to smell it properly, sniffs, HA... HA... HATSJOE: he sits down in a green cloud while the dealer strolls off whistling. | cop + dealer + jar | two-shot, then close |
+| 6 the sneeze, 6b | (second ending, `flip` `sneeze`) The cop picks up a jar to smell it properly, sniffs, HA... HA... HATSJOE: he sits down in a green cloud while the dealer strolls off whistling. | cop + dealer + jar | two-shot, then close |
 | 7 epilogue | Cop leads him off (sneeze ending: the cop sits in the cloud, the dealer is gone) ("Kom maar mee, meester Kruid"). | cop + dealer | two-shot |
 | 7b the customer | The customer picks up one last jar, shrugs, pockets it ("voor de zekerheid") and walks on. | customer + the jar | medium, then wide |

@@ -3,20 +3,26 @@
 // has (see DETAIL.md for the list and the level of detail of each kind of place), drawn into a tile's own builders.
 // Every street has them, placed by the same rules from the tile's own data, so the city looks the same whichever street
 // is in focus. The open street only looks up what stands along it (the `props` list returned here) to hand anchors to
-// the cutscene scripts.
+// the cutscene scripts and to draw its obstacle picture (setting.js `obstacles`); the end of the list holds what only
+// stands in the way (statues, fountains, shelters, planters), added after all placing is done.
 //
 // Frame of every prop: local +z points from the prop towards the centre line of its road (so a bench's back is to the
 // houses, a shelter's glass is at the back), local x runs along the street. Tile coordinates: x east, z south, metres.
 // Terraces use the frame of their facade: local +z points out of the building into the street or square.
 //
 // Everything here is a pure function of the tile's data and its key (position-seeded dice), so a tile looks the same
-// every time it is built. `night` only changes which boxes glow (the `gl` builder: never a real light) and how full the
-// seats are; the same lamps, strings and lanterns are there by day, unlit.
+// every time it is built. By night the furniture stands where it stands by day (the same `props`, the same seats taken):
+// the night rolls every die the day rolls and counts every box the day counts against the budget. What only the day shows
+// (the second drink or the vase some tables have, open market stalls, crates, shoppers, the basket on a picnic table) is then counted but not drawn (the `ghost`
+// builder), and what only the night shows (shut stalls, with dice of their own; candles; a boat's riding light) is not
+// counted (`nightOnly`). Otherwise `night` only changes which boxes glow (the `gl` builder: never a real light), and fewer
+// people stay at the picnics; the same lamps, strings and lanterns are there by day, unlit.
 import * as THREE from 'three';
 import * as P from './props.js';
 import { makeRng, hashStr, clamp } from './kit.js';
 import { POI_CATS, POI_FLAG } from './poicats.js';
 import { placesFor, placeHas } from './places.js';
+import { SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 
 const STALLS = { HARING: ['#21468b', '#ffffff'], FRIET: ['#e63946', '#ffd166'], BLOEM: ['#ff70a6', '#ffffff'], VIS: ['#1d6fa5', '#ffffff'] };
 const TILE = 256, EDGE = 2;
@@ -27,12 +33,7 @@ const EAT = new Set(['restaurant', 'cafe', 'pub', 'ice_cream', 'terrace', 'snack
 const FORCE = new Set(['restaurant', 'cafe', 'pub', 'ice_cream', 'terrace', 'bakery', 'coffeeshop']);
 const TAU = Math.PI * 2;
 
-// the crowd's own palettes (crowd.js; copied, since crowd.js imports the world): seated people match the walkers
-const SKINS = ['#f2c9a0', '#e8b48a', '#c98e62', '#9a6642', '#f7d7b5', '#7a4f33'];
-const SHIRTS = ['#e84a5f', '#2a9d8f', '#f4a261', '#457b9d', '#e9c46a', '#9d4edd', '#ff7aa2', '#3a86ff', '#ffffff', '#52b788', '#fb8500'];
-const PANTS = ['#2b3a55', '#3d405b', '#6b705c', '#1d3557', '#5c4033', '#22223b', '#4a4e69'];
-const HAIRS = ['#2b1d14', '#5a3825', '#c58b3c', '#e6c36a', '#111111', '#a33b20', '#cfcfcf'];
-const BIKECOL = ['#e63946', '#1d3557', '#2a9d8f', '#f4a261', '#111', '#ff70a6', '#8ecae6'];
+// (the people palettes come from cast.js, the same ones the crowd uses: seated people match the walkers)
 const WARM = ['#ffd98a', '#ffe9a8', '#ffc45e', '#fff1c1'];
 
 // ---------------------------------------------------------------- polylines
@@ -286,18 +287,20 @@ const SIDE = { n: [0, -1, 0], s: [0, 1, 2], e: [1, 0, 3], w: [-1, 0, 1] }; // ch
 function cellDraw(S, style, x, z) {
   const { v, gl, night, r } = S;
   const top = S.top, d = S.dishes;
+  // S.dv: the builder of what only the day shows (by night the ghost, which only counts); S.nightOnly: what only the night shows
   if (style === 'bistro' || style === 'bistro2') {
     tableRound(v, x, z, style === 'bistro' ? 0.7 : 0.6, 0.72, top);
     const sides = style === 'bistro2' ? [SIDE.e, SIDE.w] : r() < 0.35 ? [SIDE.s, SIDE.n, SIDE.e] : [SIDE.s, SIDE.n];
     for (const [dx, dz, f] of sides) sit(S, x + dx * 0.62, z + dz * 0.62, f, r() < 0.04);
     if (d) drink(v, gl, night, x - 0.12, z, 0.77, r);
-    if (night) candle(v, gl, night, x + 0.08, z + 0.05, 0.77); else if (d) drink(v, gl, night, x + 0.12, z + 0.05, 0.77, r);
+    if (d) drink(S.dv, gl, night, x + 0.12, z + 0.05, 0.77, r); // by night a candle stands there instead
+    if (night) S.nightOnly(() => candle(v, gl, night, x + 0.08, z + 0.05, 0.77));
   } else if (style === 'sq4') {
     tableSquare(v, x, z, 0.82, 0.74, top);
     for (const [dx, dz, f] of [SIDE.s, SIDE.n, SIDE.e, SIDE.w]) if (r() < 0.88) sit(S, x + dx * 0.66, z + dz * 0.66, f, r() < 0.04);
     if (d) { drink(v, gl, night, x - 0.2, z - 0.1, 0.79, r); drink(v, gl, night, x + 0.2, z + 0.15, 0.79, r); }
-    if (night) candle(v, gl, night, x, z, 0.79);
-    else if (r() < 0.5) v.box(x, 0.79, z, 0.1, 0.18, 0.1, pick(r, ['#ffd166', '#ff70a6', '#8ecae6', '#ffffff'])); // a flower in a vase
+    if (r() < 0.5) S.dv.box(x, 0.79, z, 0.1, 0.18, 0.1, pick(r, ['#ffd166', '#ff70a6', '#8ecae6', '#ffffff'])); // a flower in a vase (a candle by night)
+    if (night) S.nightOnly(() => candle(v, gl, night, x, z, 0.79));
   } else if (style === 'bench') {
     const along = r() < 0.5 ? 0 : 2; // always along x in the terrace's frame: the quarter turn only mirrors it
     tableLong(v, x, z, 2.4, along, top, S.wood);
@@ -305,7 +308,7 @@ function cellDraw(S, style, x, z) {
       if (r() < S.occ) seated(v, person(v, x + a, z + s * 0.6, s > 0 ? 2 : 0), lookOf(r), pick(r, POSES));
       if (d && r() < 0.8) drink(v, gl, night, x + a * 1.1, z + s * 0.2, 0.8, r);
     }
-    if (night) { candle(v, gl, night, x - 0.5, z, 0.8); candle(v, gl, night, x + 0.5, z, 0.8); }
+    if (night) S.nightOnly(() => { candle(v, gl, night, x - 0.5, z, 0.8); candle(v, gl, night, x + 0.5, z, 0.8); });
   } else if (style === 'high') {
     tableRound(v, x, z, 0.62, 1.05, top, '#3b3b3f');
     const n = r() < S.occ + 0.2 ? 2 + (r() < 0.4 ? 1 : 0) : 0;
@@ -315,7 +318,7 @@ function cellDraw(S, style, x, z) {
       if (i < n) standing(v, person(v, x + dx, z + dz, f), lookOf(r), pick(r, STANDS), r() < 0.5 ? '#e8a317' : '#f5f0c8');
     }
     drink(v, gl, night, x - 0.12, z, 1.1, r); drink(v, gl, night, x + 0.1, z + 0.1, 1.1, r);
-    if (night) candle(v, gl, night, x, z - 0.1, 1.1);
+    if (night) S.nightOnly(() => candle(v, gl, night, x, z - 0.1, 1.1));
   } else { // lounge
     v.box(x, 0, z, 0.8, 0.36, 0.8, S.top);
     v.box(x, 0.36, z, 0.7, 0.03, 0.7, '#e9e2d0');
@@ -327,7 +330,7 @@ function cellDraw(S, style, x, z) {
       if (r() < S.occ) seated(v, { ...o, y: 0.1 }, lookOf(r), pick(r, POSES));
     }
     if (d) drink(v, gl, night, x, z, 0.4, r);
-    if (night) candle(v, gl, night, x + 0.15, z, 0.4);
+    if (night) S.nightOnly(() => candle(v, gl, night, x + 0.15, z, 0.4));
   }
 }
 const COLS = {
@@ -357,8 +360,8 @@ function peperbus(v, gl, night, r, vr) {
   v.box(0, H + 0.18, 0, 0.8, 0.12, 0.8, P.shade(body, 0.8));
   const poster = pick(r, ['#ff4d6d', '#ffd166', '#06d6a0', '#4cc9f0', '#f8f9fa', '#9d4edd']);
   for (const [dx, dz, w, d] of [[0, 0.5, 0.82, 0.04], [0, -0.5, 0.82, 0.04], [0.5, 0, 0.04, 0.82], [-0.5, 0, 0.04, 0.82]]) {
-    v.box(dx, 0.3, dz, w + (d > 0.1 ? 0 : 0), H - 0.4, d + 0.0, body);
-    (night ? gl : v).box(dx * 1.02, 0.45, dz * 1.02, w * 0.9, H - 0.7, d, night ? P.shade(poster, 1.0) : poster);
+    v.box(dx, 0.3, dz, w, H - 0.4, d, body);
+    (night ? gl : v).box(dx * 1.02, 0.45, dz * 1.02, w * 0.9, H - 0.7, d, poster);
   }
 }
 function mupi(v, gl, night, r, vr) {
@@ -367,7 +370,7 @@ function mupi(v, gl, night, r, vr) {
   v.box(0, 0.4, 0, 1.2, 1.9, 0.16, body);
   const c1 = pick(r, ['#ff6b6b', '#ffd166', '#06d6a0', '#4cc9f0', '#ffffff', '#ff9f1c']), c2 = pick(r, ['#2b2d42', '#ef476f', '#118ab2', '#f4f1de']);
   for (const s of [-1, 1]) {
-    (night ? gl : v).box(0, 0.55, s * 0.09, 1.0, 1.6, 0.02, night ? c1 : c1);
+    (night ? gl : v).box(0, 0.55, s * 0.09, 1.0, 1.6, 0.02, c1);
     v.box(0, 1.5, s * 0.1, 0.8, 0.3, 0.01, c2);
   }
 }
@@ -461,7 +464,6 @@ function boat(v, gl, night, r, len, vr) {
     (night ? gl : v).box(0, 1.2, 1.12, len * 0.6, 0.6, 0.04, night ? '#ffd98a' : '#9ec5d6');
     for (let i = 0; i < 3; i++) planterBox(v, -len * 0.3 + i * len * 0.3, 1.2, r, 0.8);
   }
-  if (night && vr !== 2) gl.box(len * 0.46, 1.2, 0, 0.12, 0.12, 0.12, '#ff5a4a');
 }
 function goalPosts(v, w = 7.3, h = 2.44) {
   for (const s of [-1, 1]) v.box(s * w / 2, 0, 0, 0.12, h, 0.12, '#f2f2f2');
@@ -511,7 +513,7 @@ function trafficLight(v, gl, night, r, st, vr) {
   const L = [['#ff3b30', 0.85], ['#ffb703', 0.85], ['#2ee06a', 0.85]];
   for (let i = 0; i < 3; i++) {
     const on = i === st;
-    (on && night ? gl : v).box(0, 2.45 + (2 - i) * 0.28, 0.23, 0.17, 0.17, 0.03, on ? (night ? L[i][0] : L[i][0]) : P.shade(L[i][0], 0.3));
+    (on && night ? gl : v).box(0, 2.45 + (2 - i) * 0.28, 0.23, 0.17, 0.17, 0.03, on ? L[i][0] : P.shade(L[i][0], 0.3));
   }
   if (vr === 1) { v.box(0, 3.0, 0.9, 0.08, 0.08, 1.8, '#3a3e44'); v.box(0, 2.6, 1.7, 0.3, 0.9, 0.2, '#1f2226'); (night ? gl : v).box(0, 2.9, 1.82, 0.17, 0.17, 0.03, night ? L[st][0] : P.shade(L[st][0], 0.8)); }
   if (vr === 2) { v.box(0, 1.5, -0.1, 0.5, 0.5, 0.04, '#1d6fa5'); v.box(0, 1.55, -0.07, 0.38, 0.38, 0.02, '#f4f4f4'); }
@@ -544,8 +546,8 @@ function windbreak(v, w, c1, c2) {
   const n = Math.round(w / 0.5);
   for (let i = 0; i < n; i++) v.box(-w / 2 + (i + 0.5) * (w / n), 0.2, 0, w / n, 1.0, 0.03, i % 2 ? c1 : c2);
 }
-function marketStall(v, gl, night, r, vr, w) {
-  if (night) return stallShut(v, r, w);
+/** An open market stall (by night `stallShut` stands in its place). Front towards +z. */
+function marketStall(v, r, vr, w) {
   const A = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff'], ['#1d6fa5', '#ffffff'], ['#7b2d8f', '#f4f1e8']];
   const [a, b] = pick(r, A), d = 1.5;
   v.box(0, 0, 0.1, w, 0.95, d - 0.4, vr === 3 ? '#cfe5ee' : '#cdbfa3'); // counter
@@ -657,18 +659,63 @@ function stallCheap(v, r, kind, w) {
  * Furniture for one map tile, drawn into the tile's builders. Called once per tile at the finest level of detail.
  * Reads: key, grid, C, trees [x, z, size, ...], pois [[kind, x, y] ...] (decimetres), yAt, v, gl, group, night, lite, roads.
  * Optional (tolerated when missing): ps (flat [cat, nameIdx, flags] per poi, see poicats.js), rails, tile (the tile's raw data).
- * Returns { props }: what the cutscenes may want to use, in tile coordinates.
+ * Returns { props }: what the cutscenes may want to use, in tile coordinates; after it, what only stands in the way (`inTheWay`).
  */
+/**
+ * Every spot where the tram catenary pass below may stand a mast, for world.js shelterPlaces (a shelter keeps clear of
+ * them all): the same rails, the same dice, the same stations and offsets, both sides, whichever the pass then takes.
+ * Flat [x, z, ...] in tile coordinates.
+ */
+export function catenarySpots(key, rails) {
+  const out = [];
+  (rails || []).forEach((rl, ri) => {
+    if (rl.kind !== 1 || rl.flags & 4 || !rl.a || rl.a.length < 4) return;
+    const pl = prep(rl.a);
+    if (pl.len < 20) return;
+    const r = makeRng(hashStr(key + '|mast|' + ri));
+    r(); r.range(5.7, 6.4); // (vr and h, as in the pass)
+    for (let s = r.range(4, 14); s < pl.len - 3; s += r.range(26, 34)) {
+      const f = frameAt(pl, s);
+      for (const side of [-1, 1]) for (const off of [2.5, 3.4, 4.8, 6.5]) out.push(f.x - f.tz * side * off, f.z + f.tx * side * off);
+    }
+  });
+  return out;
+}
+
+/** furnishSteps run to the end in one go (Node checks, the snapshot, and every caller that does not slice). */
 export function furnishTile(o) {
+  const it = furnishSteps(o);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+/**
+ * The furniture of one tile as a job: it hands the frame back (a bare `yield`) between its passes, so a caller with a time
+ * budget (world.js buildTileJob, sliced) can spread a tile over frames. What it draws and returns does not depend on where
+ * it is cut: nothing in it reads a clock or anything another tile changes.
+ */
+export function* furnishSteps(o) {
   const { key, grid, C, trees, pois, yAt, v, gl, group, night, lite } = o;
   const ps = o.ps && o.ps.length >= (pois ? pois.length * 3 : 0) && o.ps.length ? o.ps : null;
   const raw = o.tile || null, rails = o.rails || [];
   const [ktx, kty] = key.split('_').map(Number), ox = ktx * TILE, oy = kty * TILE; // map metres of the tile's south-west corner
   const rnd = makeRng(hashStr('furn|' + key));
   const props = [];
+  // What stands in the street without being an anchor for a scene (statues, fountains and shelters of the map, the stops and
+  // planters put down here): only the obstacle picture and the camera want them. They join `props` in finish(), after
+  // everything is placed, so nothing that counts props while placing (the cap below) ever sees them.
+  const inTheWay = [];
   const cap = lite ? 120 : 320;
   let bonus = 0; // what a terrace field may hold on top of the tile's allowance (see the fields below)
-  const used = () => v.n + gl.n - bonus;
+  // By night the furniture stands where it stands by day, so every budget gate must see the day's count. What only the day
+  // shows is drawn by night into the ghost, which only counts its boxes (24 vertices each, as Vox); what only the night shows
+  // goes through nightOnly, which keeps its vertices out of the count. By day `lit` stays 0 and the ghost only counts the
+  // shelters a stop does not get (see the stops).
+  const ghost = { n: 0, box() { this.n += 24; return this; }, setT() { return this; } };
+  const dayV = night ? ghost : v; // the builder of what only the day shows
+  let lit = 0;
+  const nightOnly = (draw) => { const n0 = v.n + gl.n; draw(); lit += v.n + gl.n - n0; };
+  const used = () => v.n + gl.n + ghost.n - lit - bonus;
   const LIMIT = lite ? 30000 : 60000; // vertices of furniture a tile may hold in all
   let RESERVE = lite ? 12000 : 26000; // of which terraces and places may take this much before the generic items go in
 
@@ -699,14 +746,63 @@ export function furnishTile(o) {
 
   // ---- what stands where
   const taken = []; // { kind, x, z, r }
+  // `taken` is also kept in 8 m cells (TG), so `crowded` looks only at the cells its reach covers: the answer ("is there
+  // any") is the one the full scan gives. Entries whose place is not a finite number, and reaches past 64 m, use the scan.
+  const TG = new Map(), tOdd = [];
+  let tMaxR = 0;
+  const tIndex = (t) => {
+    if (!Number.isFinite(t.x) || !Number.isFinite(t.z) || !Number.isFinite(t.r)) { tOdd.push(t); return; }
+    if (t.r > tMaxR) tMaxR = t.r;
+    const k = Math.floor(t.x / 8) * 4096 + Math.floor(t.z / 8);
+    let l = TG.get(k);
+    if (!l) TG.set(k, (l = []));
+    l.push(t);
+  };
+  const near1 = (t, kind, x, z, r, same) => { const d = Math.hypot(t.x - x, t.z - z); return d < r + t.r || (same && t.kind === kind && d < same); };
   const crowded = (kind, x, z, r, same = 0) => {
-    for (const t of taken) {
-      const d = Math.hypot(t.x - x, t.z - z);
-      if (d < r + t.r || (same && t.kind === kind && d < same)) return true;
+    const reach = Math.max(r + tMaxR, same || 0) + 1e-6;
+    if (!(reach < 64) || !Number.isFinite(x) || !Number.isFinite(z)) { for (const t of taken) if (near1(t, kind, x, z, r, same)) return true; return false; }
+    for (const t of tOdd) if (near1(t, kind, x, z, r, same)) return true;
+    const i0 = Math.floor((x - reach) / 8), i1 = Math.floor((x + reach) / 8), j0 = Math.floor((z - reach) / 8), j1 = Math.floor((z + reach) / 8);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const l = TG.get(i * 4096 + j);
+      if (l) for (const t of l) if (near1(t, kind, x, z, r, same)) return true;
     }
     return false;
   };
-  const stand = (kind, x, z, r) => taken.push({ kind, x, z, r });
+  // What would stand on or against the roof of a map shelter (roofs: 4.2 x 1.8 m, open side local +z, at the place
+  // world.js shelterPlaces gave it), or of a stop of the loop below moved to its own line (3.4 x 1.2 m), is not shown: its boxes go back out of the builders into the counting ghost, its sign
+  // planes are let go, and its `props` and `inTheWay` entries are dropped in finish(). Its room, its dice and its count
+  // stay, so the cap, the budget and every later choice are the same as if it stood there. Only kinds that draw all of
+  // themselves between their `aim` and their `stand` (HIDE_HALF: half their size along the street, metres) can be hidden.
+  const roofs = [], hidden = new Set();
+  // (never a catenary mast or a quay post: wires and chains hang from them; map shelters keep clear of their spots instead)
+  const HIDE_HALF = { bench: 1.05, bin: 0.4, mailbox: 0.4, box: 0.7, rack: 1.3, sign: 0.3, tlight: 0.3, orac: 0.75, column: 0.5,
+    mupi: 0.6, meter: 0.3, charger: 0.5, planter: 1.3, bigrack: 1.7, pbench: 1.05, trolleys: 1.7, flags: 1.8, stall: 1.4, kiosk: 2.4, yard: 2 };
+  let mark = null, hiding = false;
+  const hideIf = (kind, x, z) => {
+    hiding = false;
+    const half = HIDE_HALF[kind];
+    if (!roofs.length || !mark || half === undefined) return false;
+    const d = Math.max(0.65, half + 0.15);
+    for (const q of roofs) {
+      const dx = x - q.x, dz = z - q.z, lx = dx * q.c - dz * q.s, lz = dx * q.s + dz * q.c;
+      if (Math.hypot(Math.max(Math.abs(lx) - q.hx, 0), Math.max(Math.abs(lz) - q.hz, 0)) >= d) continue;
+      ghost.n += v.n - mark.v + gl.n - mark.gl;
+      v.n = mark.v; gl.n = mark.gl;
+      while (group.children.length > mark.g) {
+        const g = group.children[group.children.length - 1];
+        group.remove(g);
+        g.traverse((m) => { if (m.userData && m.userData.texKey !== undefined) P.releaseSign(m); else if (m.geometry) m.geometry.dispose(); });
+      }
+      for (let i = mark.p; i < props.length; i++) hidden.add(props[i]);
+      for (let i = mark.w; i < inTheWay.length; i++) hidden.add(inTheWay[i]);
+      hiding = true;
+      return true;
+    }
+    return false;
+  };
+  const stand = (kind, x, z, r) => { const hid = hideIf(kind, x, z), t = hid ? { kind, x, z, r, hid } : { kind, x, z, r }; tIndex(t); return taken.push(t); };
   /** Do the sample points (in the prop's frame, +z towards the road) all lie on open ground, clear of trunks and others? */
   const fits = (kind, x, z, n, pts, treeR, r, same = 0) => {
     if (x < EDGE || z < EDGE || x > TILE - EDGE || z > TILE - EDGE) return false;
@@ -720,22 +816,39 @@ export function furnishTile(o) {
     return !crowded(kind, x, z, r, same);
   };
   const frameOf = (nx, nz) => { const th = Math.atan2(nx, nz); return [Math.sin(th), Math.cos(th), th]; };
-  const aim = (th, x, z) => { const y = yAt(x, z); v.setT(th, x, z, y); gl.setT(th, x, z, y); return y; };
+  const aim = (th, x, z) => { mark = { v: v.n, gl: gl.n, g: group.children.length, p: props.length, w: inTheWay.length }; hiding = false; const y = yAt(x, z); v.setT(th, x, z, y); gl.setT(th, x, z, y); return y; };
   const holder = (th, x, z) => { const g = new THREE.Group(); g.position.set(x, yAt(x, z), z); g.rotation.y = th; group.add(g); return g; };
   const toMap = (x, z) => [ox + x, oy + TILE - z];
 
   // free-standing things of the tile (statues, fountains, playgrounds ...) and fences: terraces keep clear of them
   const fences = [];
   if (raw) {
-    for (const e of raw.f || []) {
-      const x = e[1] / 10, z = TILE - e[2] / 10, t = e[0];
+    // the map's shelters stand where world.js shelterPlaces put them, beside their street or track (o.shelters: feature
+    // index -> place). Each keeps its room at its map node, as before the shelters were moved, so every choice `fits`
+    // makes, and with it every die cast after it, is what it was; the roof where it now stands is kept clear by hiding
+    // what would stand on it (`roofs`, `hideIf` below), and its `props` entry is at that place. One left out there (no
+    // place beside its line) keeps its room too, and the stop it belongs to gets no shelter of its own (`featured`), but
+    // it is no obstacle in `props`.
+    const shel = o.shelters || null;
+    (raw.f || []).forEach((e, fi) => {
+      const x = e[1] / 10, z = TILE - e[2] / 10, t = e[0], sp = t === 10 && shel ? shel.get(fi) : null;
       if (t === 8) stand('statue', x, z, 3.2);
       else if (t === 9) stand('fountain', x, z, clamp(e[4] / 10 * 0.5 + 1.8, 3, 14));
       else if (t === 11) stand('playground', x, z, 5.5);
-      else if (t === 10) stand('shelterf', x, z, 2.4);
+      else if (t === 10) {
+        stand('shelterf', x, z, 2.4);
+        if (sp && !sp.drop) { taken[taken.length - 1].rx = sp.x; taken[taken.length - 1].rz = sp.z; roofs.push({ x: sp.x, z: sp.z, c: Math.cos(sp.rot), s: Math.sin(sp.rot), hx: 2.1, hz: 0.9 }); }
+      }
       else if (t === 1) stand('fuel', x, z, 9);
       else stand('feature', x, z, 1.6);
-    }
+      // drawn by world.js / landmarks.js `drawFeature`, a shelter at its place and heading from shelterPlaces (the same `rot`)
+      if (t === 8 || t === 9) inTheWay.push({ kind: t === 8 ? 'statue' : 'fountain', x, z, ax: 1, az: 0, nx: 0, nz: 1 });
+      else if (t === 10 && !(sp && sp.drop)) {
+        const rot = sp ? sp.rot : Number.isFinite(e[3]) ? Math.PI / 2 - (e[3] * Math.PI) / 180 : 0;
+        // (hl, hw: half the roof of landmarks.js shelter, for the ground raster: bigger than a stop's of props.js)
+        inTheWay.push({ kind: 'stop', x: sp ? sp.x : x, z: sp ? sp.z : z, ax: Math.cos(rot), az: -Math.sin(rot), nx: Math.sin(rot), nz: Math.cos(rot), hl: 2.1, hw: 0.9 });
+      }
+    });
     for (const e of raw.x || []) {
       const a = [];
       for (let i = 2; i + 1 < e.length; i += 2) a.push(e[i] / 10, TILE - e[i + 1] / 10);
@@ -799,7 +912,13 @@ export function furnishTile(o) {
     const ck = (pi * 2 + (side < 0 ? 0 : 1)) * 100000 + Math.round(s * 2);
     let r = cache.get(ck);
     if (r) return r;
-    const pl = pieces[pi], f = frameAt(pl, s), nx = -f.tz * side, nz = f.tx * side;
+    r = scanLine(pieces[pi], side, s);
+    cache.set(ck, r);
+    return r;
+  };
+  /** The same look across, from any line (a track or a busway too, for the stops), uncached. */
+  const scanLine = (pl, side, s) => {
+    const f = frameAt(pl, s), nx = -f.tz * side, nz = f.tx * side;
     let e = -1, end = -1, bd = Infinity, soft = -1, sand = false;
     for (let d = 0.5; d <= 14; d += 0.3) {
       const x = f.x + nx * d, z = f.z + nz * d, c = grid.get(x, z);
@@ -812,13 +931,12 @@ export function furnishTile(o) {
     if (e >= 0 && pl.cls === 8) e = Math.max(e, 1.8); // keep the middle of a pedestrian street open for walking
     const ok = e >= 0 && end > e;
     const back = Number.isFinite(bd) && (!ok || bd - end <= 1.0) ? bd : end;
-    r = { ok, e, end, bd, back, hasB: Number.isFinite(bd) && (!ok || bd - end <= 1.0), w: ok ? back - e : 0, soft, sand, nx, nz, f };
-    cache.set(ck, r);
-    return r;
+    return { ok, e, end, bd, back, hasB: Number.isFinite(bd) && (!ok || bd - end <= 1.0), w: ok ? back - e : 0, soft, sand, nx, nz, f };
   };
 
   const add = (kind, x, z, f, nx, nz, extra) => {
     props.push({ kind, x, z, ax: f.tx, az: f.tz, nx, nz, ...extra });
+    if (hiding) hidden.add(props[props.length - 1]);
   };
 
   // ---- nearest real street to a point (for shelters and terraces)
@@ -915,7 +1033,6 @@ export function furnishTile(o) {
     if (flagged || forced) eligible.push(e);
   }
   // beach clubs of a `beach` place also get their deck whether flagged or not
-  const beachPlaces = places.filter((p) => p.recipes.beach);
   let nTerr = 0;
   const maxTerr = lite ? 16 : 44;
 
@@ -940,11 +1057,10 @@ export function furnishTile(o) {
       }
       runs.push({ lx, use: run - (ROADY[ended] ? (run < 2.3 ? 0.9 : run < 2.7 ? 1.0 : 1.3) : 0.25) }); // a walking strip is left at the kerb
     }
-    const why = () => 0;
-    if (runs.length < 3) return why();
+    if (runs.length < 3) return 0;
     const usable = (lx) => { let b = runs[0], bd = 1e9; for (const q of runs) if (Math.abs(q.lx - lx) < bd) { bd = Math.abs(q.lx - lx); b = q; } return b.use; };
     const sorted = runs.map((q) => q.use).sort((a, b) => a - b), med = sorted[Math.floor(sorted.length * 0.6)];
-    if (med < 0.8) return why();
+    if (med < 0.8) return 0;
     const narrow = med < 2.2; // a narrow pavement: one row of two-seat tables tight against the wall, the walking strip at the kerb
     // style
     const want = T.tables && T.tables !== 'mix' ? T.tables : null;
@@ -964,8 +1080,8 @@ export function furnishTile(o) {
     const fam = T.parasol || (beach ? 'straw' : pick(r, ['brand', 'brand', 'dark', 'striped', 'cream']));
     const pc = pick(r, COLS[fam] || COLS.brand), chairKind = T.chairs && T.chairs !== 'mix' ? T.chairs : pick(r, ['wicker', 'wood', 'bistro', 'bistro']);
     const S = {
-      v, gl, night, r, chairKind, chairCol: pick(r, CHAIRCOL[chairKind]), wood: pick(r, ['#8d6e4c', '#a9824f', '#6d4a2c']),
-      top: pick(r, TOPS), dishes: cat !== 'ice_cream', occ: clamp((night ? 0.5 : 0.38) * (T.busy || 1) * r.range(0.7, 1.25), 0.08, 0.92),
+      v, gl, night, r, dv: dayV, nightOnly, chairKind, chairCol: pick(r, CHAIRCOL[chairKind]), wood: pick(r, ['#8d6e4c', '#a9824f', '#6d4a2c']),
+      top: pick(r, TOPS), dishes: cat !== 'ice_cream', occ: clamp(0.38 * (T.busy || 1) * r.range(0.7, 1.25), 0.08, 0.92), // (as full by night: the same dice)
     };
     if (style === 'lounge') { S.top = pick(r, ['#6d4a2c', '#4a4e57', '#8d6e4c']); S.chairCol = pick(r, ['#b08a5a', '#8a9a8f', '#c9b79a']); }
     const pkind = T.big ? 'big' : style === 'bistro2' || style === 'high' ? null : pick(r, ['sq', 'sq', 'round', 'stripe', 'sail', 'round'].filter((k) => k !== 'stripe' || fam === 'striped' || r() < 0.3));
@@ -993,7 +1109,7 @@ export function furnishTile(o) {
         cells.push({ lx, lz, ri, ci });
       }
     }
-    if (!cells.length) return why('no cell fits');
+    if (!cells.length) return 0;
     const y0 = yAt(bx, bz) + (beach ? 0.1 : 0);
     v.setT(th, bx, bz, y0); gl.setT(th, bx, bz, y0);
     let minX = 1e9, maxX = -1e9, maxZ = 0;
@@ -1059,7 +1175,15 @@ export function furnishTile(o) {
         v.setT(th, bx, bz, y0);
       }
       const zw = maxZ + 4.2;
-      if (r() < 0.8) for (let i = 0; i < 2; i++) { const lx = minX + 1.6 + i * (maxX - minX - 3.2); if (okAt(lx, zw, 0.5)) windbreak(v, 3.0, pick(r, ['#e63946', '#1d6fa5', '#2a9d8f']), '#ffffff'); }
+      if (r() < 0.8) for (let i = 0; i < 2; i++) {
+        const lx = minX + 1.6 + i * (maxX - minX - 3.2);
+        if (!okAt(lx, zw, 0.5)) continue;
+        // drawn where it was tested (the builder stands at the terrace's front)
+        const x = wx(lx, zw), z = wz(lx, zw);
+        v.setT(th, x, z, yAt(x, z));
+        windbreak(v, 3.0, pick(r, ['#e63946', '#1d6fa5', '#2a9d8f']), '#ffffff');
+        v.setT(th, bx, bz, y0);
+      }
       for (const lx of [minX - 0.4, maxX + 0.4]) if (okAt(lx, 0.8, 0.3) && r() < 0.8) { v.setT(th, wx(lx, 0.8), wz(lx, 0.8), yAt(wx(lx, 0.8), wz(lx, 0.8))); flagpole(v, r, 1); v.setT(th, bx, bz, y0); }
     }
     // a menu board at the door, a waiter, people standing with a drink
@@ -1072,7 +1196,7 @@ export function furnishTile(o) {
       const n = 2 + Math.floor(r() * 2), gx = pick(r, [-1, 1]) * r.range(1.4, 2.4);
       for (let i = 0; i < n; i++) {
         const lx = gx + i * 0.6, lz = 0.28 + r.range(0, 0.15);
-        if (okAt(lx, lz, 0.2)) standing(v, person(v, lx, lz, i % 2 ? 0 : 3 - (i % 2)), lookOf(r), pick(r, STANDS), cat === 'pub' ? '#e8a317' : '#fff');
+        if (okAt(lx, lz, 0.2)) standing(v, person(v, lx, lz, i % 2 ? 0 : 3), lookOf(r), pick(r, STANDS), cat === 'pub' ? '#e8a317' : '#fff');
       }
     }
     v.setT(); gl.setT();
@@ -1124,6 +1248,7 @@ export function furnishTile(o) {
   const dirTh = (dx, dz) => Math.atan2(-dz, dx); // frame whose local +x runs along (dx, dz)
   const placeSeed = (p, tag) => makeRng(hashStr(key + '|' + p.id + '|' + tag));
   for (const pl of places) {
+    yield;
     const R = pl.recipes;
     // ---- strings of lights from facade to facade across the open ground
     if (R.garlands && used() < RESERVE + 4000) {
@@ -1192,7 +1317,7 @@ export function furnishTile(o) {
     // ---- market stalls in rows along the street. By default only on the pavements (the crowd's cars drive the
     // carriageway); `inRoad: true` puts them on the road itself for a street that is closed for the market.
     if (R.market) {
-      const r = placeSeed(pl, 'market'), names = R.market.streets, inRoad = !!R.market.inRoad;
+      const r = placeSeed(pl, 'market'), names = R.market.streets, inRoad = !!R.market.inRoad, rShut = night ? placeSeed(pl, 'market-shut') : null;
       const MK = set(C.WALK, C.LAND, C.PLAZA, C.PED, C.FOOT, ...(inRoad ? [C.ASPHALT, C.KLINKER, C.CURB, C.MARK, C.SERVICE] : []));
       let nst = 0;
       pieces.forEach((pc, pi) => {
@@ -1220,17 +1345,19 @@ export function furnishTile(o) {
                 if (ok && !crowded('mstall', x, z, w / 2 + 0.2)) {
                   const vr = Math.floor(r() * 4);
                   aim(fr[2], x, z);
-                  marketStall(v, gl, night, r, vr, w);
-                  if (!night && r() < 0.5) { v.setT(fr[2], x, z, yAt(x, z)); crateStack(v, r, 0.5); }
+                  // by night the open stall, its crates and its shoppers are only counted (dayV), and the stall stands shut
+                  marketStall(dayV, r, vr, w);
+                  if (night) nightOnly(() => stallShut(v, rShut, w));
+                  if (r() < 0.5) { dayV.setT(fr[2], x, z, yAt(x, z)); crateStack(dayV, r, 0.5); }
                   stand('mstall', x, z, w / 2 + 0.2); nst++;
                   add('mstall', x, z, f, nx, nz, { w, label: ['groente', 'kleding', 'textiel', 'vis'][vr] });
                   // a shopper or two in front (the crowd walks past them)
-                  if (!night && r() < 0.8) {
+                  if (r() < 0.8) {
                     for (let i = 0, n = 1 + (r() < 0.5 ? 1 : 0); i < n; i++) {
                       const lx = r.range(-w / 2 + 0.3, w / 2 - 0.3), lz = 1.5 + r.range(0, 0.4);
                       const px = x + lx * fr[1] + lz * fr[0], pz = z - lx * fr[0] + lz * fr[1];
                       if (!MK[grid.get(px, pz)] || treeNear(px, pz, 0.6)) continue;
-                      standing(v, person(v, lx, lz, 2, 1), lookOf(r), pick(r, ['bag', 'bag', 'idle', 'phone']), pick(r, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557']));
+                      standing(dayV, person(dayV, lx, lz, 2, 1), lookOf(r), pick(r, ['bag', 'bag', 'idle', 'phone']), pick(r, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557']));
                     }
                   }
                 }
@@ -1274,22 +1401,21 @@ export function furnishTile(o) {
             if (bad(c.x + ux * lx + vx * lz, c.z + uz * lx + vz * lz)) { ok = false; break; }
           }
           if (!ok) continue;
-          const r2 = makeRng(hashStr(key + '|ms|' + c.i + '|' + c.j));
+          const r2 = makeRng(hashStr(key + '|ms|' + c.i + '|' + c.j)), rShut = night ? makeRng(hashStr(key + '|msshut|' + c.i + '|' + c.j)) : null;
           for (const side of [-1, 1]) { // the two stalls of a pair, fronts to opposite aisles
             const px = c.x + vx * side * 0.75, pz = c.z + vz * side * 0.75, kind = Math.floor(r2() * 5);
             aim(side > 0 ? th : th + Math.PI, px, pz);
-            if (night) stallShut(v, r2, w);
-            else {
-              stallCheap(v, r2, kind, w);
-              if (r2() < 0.7) standing(v, person(v, r2.range(-w / 3, w / 3), -0.35, 0), lookOf(r2), pick(r2, ['idle', 'idle', 'phone']), '#ffffff'); // the vendor, behind the counter
-            }
+            // by night the open stall and its vendor are only counted (dayV), and the stall stands shut
+            stallCheap(dayV, r2, kind, w);
+            if (r2() < 0.7) standing(dayV, person(dayV, r2.range(-w / 3, w / 3), -0.35, 0), lookOf(r2), pick(r2, ['idle', 'idle', 'phone']), '#ffffff'); // the vendor, behind the counter
+            if (night) nightOnly(() => stallShut(v, rShut, w));
           }
           stand('mstall', c.x, c.z, 2.0);
           placed.push(c);
           add('mstall', c.x, c.z, { tx: ux, tz: uz }, vx, vz, { w, label: 'markt' });
         }
-        // shoppers in the aisles, some with bags or a trolley (never at night: the market is closed)
-        if (!night) for (const c of placed) {
+        // shoppers in the aisles, some with bags or a trolley (never at night: the market is closed, they are only counted)
+        for (const c of placed) {
           if (used() > capM + (lite ? 1500 : 3500)) break;
           if (rm() > 0.42) continue;
           const side = rm() < 0.5 ? -1 : 1, lx = rm.range(-1.4, 1.4), lz = side * (3.25 + rm.range(-0.8, 0.8));
@@ -1297,7 +1423,7 @@ export function furnishTile(o) {
           if (!MG[grid.get(x, z)] || treeNear(x, z, 0.5)) continue;
           aim(th, x, z);
           const face = Math.floor(rm() * 4);
-          standing(v, person(v, 0, 0, face, rm() < 0.12 ? 0.62 : 1), lookOf(rm), pick(rm, ['bag', 'bag', 'trolley', 'idle', 'phone']), pick(rm, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557', '#8d99ae']));
+          standing(dayV, person(dayV, 0, 0, face, rm() < 0.12 ? 0.62 : 1), lookOf(rm), pick(rm, ['bag', 'bag', 'trolley', 'idle', 'phone']), pick(rm, ['#e63946', '#2a9d8f', '#f4a261', '#ffffff', '#1d3557', '#8d99ae']));
         }
         CHEAP = false;
       }
@@ -1337,6 +1463,7 @@ export function furnishTile(o) {
     // ---- picnic and sunbathing on the grass
     if (R.picnic) {
       const r = placeSeed(pl, 'picnic'), RR = R.picnic, per = lite ? Math.ceil((RR.n || 6) / 2) : RR.n || 6, tables = RR.tables !== false;
+      const rStay = night ? placeSeed(pl, 'picnic-night') : null;
       let made = 0;
       for (let t = 0; t < 260 && made < per && used() < LIMIT - 3000; t++) {
         const x = r.range(8, TILE - 8), z = r.range(8, TILE - 8), m = toMap(x, z);
@@ -1347,25 +1474,28 @@ export function furnishTile(o) {
         const kind = tables && r() < 0.45 ? 'table' : r() < 0.7 ? 'blanket' : 'group';
         const fq = Math.floor(r() * 4);
         aim(kind === 'table' ? fq * (Math.PI / 2) : 0, x, z);
-        const home = r() < (night ? 0.35 : 0.9);
+        const home = r() < 0.9;
+        // the people: by night the day's dice still roll, but only about one picnic in three keeps its people (35 in 100
+        // in all); the others are only counted
+        const hv = night && rStay() >= 0.35 / 0.9 ? ghost : v;
         if (kind === 'table') {
           picnic(v, r, Math.floor(r() * 3), r.range(1.6, 2.2));
-          if (home) for (const s2 of [-1, 1]) for (const a of [-0.5, 0.5]) if (r() < 0.65) seated(v, person(v, a, s2 * 0.62, s2 > 0 ? 2 : 0), lookOf(r), pick(r, POSES));
-          if (night) candle(v, gl, night, 0, 0, 0.78);
-          else if (r() < 0.6) v.box(0.2, 0.79, 0, 0.35, 0.2, 0.3, '#c9a066'); // a picnic basket
+          if (home) for (const s2 of [-1, 1]) for (const a of [-0.5, 0.5]) if (r() < 0.65) seated(hv, person(hv, a, s2 * 0.62, s2 > 0 ? 2 : 0), lookOf(r), pick(r, POSES));
+          if (r() < 0.6) dayV.box(0.2, 0.79, 0, 0.35, 0.2, 0.3, '#c9a066'); // a picnic basket (a candle by night)
+          if (night) nightOnly(() => candle(v, gl, night, 0, 0, 0.78));
           add('picnic', x, z, { tx: Math.cos(fq * (Math.PI / 2)), tz: -Math.sin(fq * (Math.PI / 2)) }, 0, 1, {});
           stand('picnic', x, z, 3.0);
         } else if (kind === 'blanket') {
           v.box(0, 0, 0, 2.0, 0.03, 2.0, pick(r, ['#e63946', '#2a9d8f', '#f4a261', '#3a86ff', '#9d4edd', '#ffd166']));
           v.box(0.7, 0.03, 0.6, 0.35, 0.28, 0.35, '#c9a066');
-          if (home) { if (r() < 0.7) lying(v, 0, 0, fq, lookOf(r), pick(r, ['#ffffff', '#ff70a6', '#8ecae6'])); else seated(v, { ...person(v, 0, 0, fq), y: -0.4 }, lookOf(r), pick(r, POSES)); }
-          if (home && r() < 0.5) { v.box(1.5, 0, 1.0, 0.3, 0.3, 0.3, pick(r, ['#ffffff', '#ff4d6d', '#ffd166'])); } // a ball
+          if (home) { if (r() < 0.7) lying(hv, 0, 0, fq, lookOf(r), pick(r, ['#ffffff', '#ff70a6', '#8ecae6'])); else seated(hv, { ...person(hv, 0, 0, fq), y: -0.4 }, lookOf(r), pick(r, POSES)); }
+          if (home && r() < 0.5) { hv.box(1.5, 0, 1.0, 0.3, 0.3, 0.3, pick(r, ['#ffffff', '#ff4d6d', '#ffd166'])); } // a ball
           stand('picnic', x, z, 2.6);
         } else {
           const n = 3 + Math.floor(r() * 3);
           for (let i = 0; i < n && home; i++) {
             const a = (i / n) * TAU + r(), px = Math.cos(a) * 1.0, pz = Math.sin(a) * 1.0;
-            standing(v, person(v, px, pz, Math.floor(((a + Math.PI) / TAU) * 4 + 0.5) & 3, r() < 0.15 ? 0.62 : 1), lookOf(r), pick(r, ['drink', 'idle', 'phone', 'drink']));
+            standing(hv, person(hv, px, pz, Math.floor(((a + Math.PI) / TAU) * 4 + 0.5) & 3, r() < 0.15 ? 0.62 : 1), lookOf(r), pick(r, ['drink', 'idle', 'phone', 'drink']));
           }
           stand('picnic', x, z, 2.2);
         }
@@ -1396,7 +1526,7 @@ export function furnishTile(o) {
           v.box(0, 3.0, 0.78, 2.6, 0.18, 0.02, c1);
           for (let i = 0; i < 6; i++) v.box(-1.2 + i * 0.48, 1.03, 1.1, 0.3, 0.2, 0.3, pick(r, ['#ffd166', '#ff70a6', '#8ecae6', '#e9e2d0']));
           // bunting
-          for (let i = 0; i < 12; i++) (night && i % 3 === 0 ? gl : v).box(-3 + i * 0.5, 3.3 - 0.3 * Math.sin((i / 11) * Math.PI) * 0 - 0.18 * Math.sin((i / 11) * Math.PI), 0.1, 0.22, 0.3, 0.02, pick(r, ['#e63946', '#ffd166', '#2a9d8f', '#3a86ff', '#ff70a6']));
+          for (let i = 0; i < 12; i++) (night && i % 3 === 0 ? gl : v).box(-3 + i * 0.5, 3.3 - 0.18 * Math.sin((i / 11) * Math.PI), 0.1, 0.22, 0.3, 0.02, pick(r, ['#e63946', '#ffd166', '#2a9d8f', '#3a86ff', '#ff70a6']));
           // queue and two high tables
           for (let i = 0, n = 2 + Math.floor(r() * 3); i < n; i++) standing(v, person(v, -1.0 + r.range(-0.6, 1.4), 2.4 + i * 0.75, 2, r() < 0.2 ? 0.62 : 1), lookOf(r), pick(r, ['idle', 'cone', 'phone']), pick(r, ['#ffffff', '#ff70a6', '#ffd166']));
           for (const sx of [-3.2, 3.2]) { tableRound(v, sx, 2.6, 0.62, 1.05, '#c9c2b2', '#3b3b3f'); drink(v, gl, night, sx, 2.6, 1.1, r); }
@@ -1413,7 +1543,8 @@ export function furnishTile(o) {
       for (let t = 0; t < 120 && made < N && used() < LIMIT - 3000; t++) {
         const a = r() * TAU, d = r.range(14, 70), x = sx0 + Math.cos(a) * d, z = sz0 + Math.sin(a) * d;
         if (!inTile(x, z, 4)) continue;
-        const fq = Math.floor(r() * 2) * 2, th = fq * (Math.PI / 2) + (r() < 0.5 ? 0 : Math.PI / 2) * 0;
+        const fq = Math.floor(r() * 2) * 2, th = fq * (Math.PI / 2);
+        r(); // (a spare draw, kept so that every later draw of this place stays the same)
         const fr = frameOf(Math.sin(th), Math.cos(th));
         if (!fits('rack', x, z, fr, [[-2.2, -1.3], [2.2, -1.3], [-2.2, 1.9], [2.2, 1.9], [0, 0]], 1.5, 3.2, 6)) continue;
         let good = true;
@@ -1434,6 +1565,7 @@ export function furnishTile(o) {
   // ---- terrace fields: a curated square lays one continuous field of tables out from the cafe fronts into the square,
   // in neat rows with lanes (3 m along the facades, one every ~13 m), clear of statues and of the places' `keep` circles
   for (const pl of places) {
+    yield;
     const R = pl.recipes.field;
     if (!R) continue;
     const T = pl.recipes.terraces || {}, r = placeSeed(pl, 'field');
@@ -1453,8 +1585,8 @@ export function furnishTile(o) {
       let S = scenes.get(q);
       if (!S) {
         const rr = dig(q.e, 'fieldscene'), ck = T.chairs && T.chairs !== 'mix' ? T.chairs : pick(rr, ['wicker', 'wood', 'bistro']);
-        S = { v, gl, night, r, chairKind: ck, chairCol: pick(rr, CHAIRCOL[ck]), wood: pick(rr, ['#8d6e4c', '#a9824f', '#6d4a2c']), top: pick(rr, TOPS), dishes: false,
-          occ: clamp((night ? 0.38 : 0.3) * (T.busy || 1) * rr.range(0.8, 1.2), 0.1, 0.9), pc: pick(rr, COLS[fam] || COLS.cream), pk: big ? 'big' : pick(rr, ['sq', 'sq', 'round']), ph: rr.range(2.3, 2.6) };
+        S = { v, gl, night, r, dv: dayV, nightOnly, chairKind: ck, chairCol: pick(rr, CHAIRCOL[ck]), wood: pick(rr, ['#8d6e4c', '#a9824f', '#6d4a2c']), top: pick(rr, TOPS), dishes: false,
+          occ: clamp(0.3 * (T.busy || 1) * rr.range(0.8, 1.2), 0.1, 0.9), pc: pick(rr, COLS[fam] || COLS.cream), pk: big ? 'big' : pick(rr, ['sq', 'sq', 'round']), ph: rr.range(2.3, 2.6) };
         scenes.set(q, S);
       }
       return S;
@@ -1513,7 +1645,7 @@ export function furnishTile(o) {
   // ---- block by block, both sides of every street
   const signs = new Map();
   const later = []; // the rarer kinds of furniture go in after every block has its racks, benches and bins
-  pieces.forEach((pl, pi) => {
+  const onePiece = (pl, pi) => {
     const zebras = [];
     if (pl.len >= 45) for (let s = 20; s < pl.len - 12; s += 80) zebras.push(s);
     const nearZebra = (s, r) => zebras.some((z) => Math.abs(z - s) < r);
@@ -1657,6 +1789,7 @@ export function furnishTile(o) {
               q.draw();
               stand(kind, p.x, p.z, q.r);
               if (q.rec) add(q.rec, p.x, p.z, sc.f, p.nx, p.nz, q.extra);
+              else if (q.obst && !hiding) q.obst(p, sc.f, fr);
               return true;
             }
             return false;
@@ -1667,20 +1800,82 @@ export function furnishTile(o) {
           if (busy && chance(0.24)) item('mupi', { off: (sc) => sc.e + 0.45, minW: 1.8, pts: [[-0.6, 0], [0.6, 0], [0, 0.3]], r: 0.9, same: 28, draw: () => mupi(v, gl, night, rnd, vr3()), rec: 'mupi' });
           if (busy && chance(0.14)) item('meter', { off: (sc) => sc.e + 0.35, pts: [[0, 0]], r: 0.7, same: 22, draw: () => meter(v, gl, night, rnd, vr3()), rec: 'meter' });
           if (chance(busy ? 0.05 : 0.1)) item('charger', { off: (sc) => sc.e + 0.4, pts: [[-0.5, 0], [0.5, 0]], r: 0.9, same: 40, draw: () => charger(v, gl, night, rnd, vr4()), rec: 'charger' });
-          if (pl.cls === 8 && chance(0.55)) item('planter', { off: (sc) => sc.back - 0.9, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.5, same: 9, draw: () => { const n = 1 + Math.floor(rnd() * 3); for (let i = 0; i < n; i++) planterBox(v, (i - (n - 1) / 2) * 1.3, 0, rnd, 1.1); }, rec: null });
-          else if (busy && chance(0.1)) item('planter', { off: (sc) => sc.back - 0.8, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.4, same: 20, draw: () => { planterBox(v, 0, 0, rnd, 1.2); }, rec: null });
+          // planters are no anchor, but stand in the way: one entry per box, where draw() put it along the street (its count read back, no draw of its own)
+          let pn = 1;
+          const planters = (p, f, fr) => { for (let i = 0; i < pn; i++) { const lx = (i - (pn - 1) / 2) * 1.3; inTheWay.push({ kind: 'planter', x: p.x + lx * fr[1], z: p.z - lx * fr[0], ax: f.tx, az: f.tz, nx: p.nx, nz: p.nz }); } };
+          if (pl.cls === 8 && chance(0.55)) item('planter', { off: (sc) => sc.back - 0.9, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.5, same: 9, draw: () => { const n = (pn = 1 + Math.floor(rnd() * 3)); for (let i = 0; i < n; i++) planterBox(v, (i - (n - 1) / 2) * 1.3, 0, rnd, 1.1); }, rec: null, obst: planters });
+          else if (busy && chance(0.1)) item('planter', { off: (sc) => sc.back - 0.8, minW: 2.4, pts: [[-1.2, 0], [1.2, 0]], r: 1.4, same: 20, draw: () => { planterBox(v, 0, 0, rnd, 1.2); }, rec: null, obst: planters });
           if (busy && chance(0.07)) item('bigrack', { off: (sc) => sc.back - 1.2, minW: 3.0, pts: [[-1.6, -1], [1.6, -1], [-1.6, 2.4], [1.6, 2.4]], r: 2.4, same: 24, draw: () => { P.bikeRack(v, 0, -0.8, rnd, 5, 0); P.bikeRack(v, 0, 0.9, rnd, 5, 0); }, rec: 'rackpark' });
         });
       }
     }
-  });
+  };
+  for (let pi = 0; pi < pieces.length; pi++) { yield; onePiece(pieces[pi], pi); } // (block by block: a street at a time)
 
-  for (const job of later) { if (used() > LIMIT) break; job(); }
+  for (let q = 0; q < later.length; q++) { if (used() > LIMIT) break; later[q](); if ((q & 15) === 15) yield; }
 
   // ---- tram and bus shelters (the old kind-9 points of interest)
+  // A stop the map also has as a shelter feature (`f` type 10, drawn by landmarks.js `shelter`) gets no second shelter.
+  // The feature's room is at its map node, on the stop's own point; the feature itself now stands beside its street or
+  // track (world.js shelterPlaces), and the stop is moved from its point to the pavement. The moved stop meets the room at
+  // the node in `fits` (its room 2.2 m and the feature's 2.4 m), as before; and a stop within that reach of the feature at
+  // either of the feature's two places, from either of the stop's own two points, is not drawn (`featured`; its room and
+  // its count stay, as for every stop that is not drawn). (A feature in a neighbouring tile is not seen here.)
+  const featured = (x, z) => taken.some((t) => t.kind === 'shelterf' && (Math.hypot(t.x - x, t.z - z) < 2.2 + t.r || (t.rx !== undefined && Math.hypot(t.rx - x, t.rz - z) < 2.2 + t.r)));
+  // The line a stop belongs to: the street, busway or track whose surface edge is nearest its point (a bus stop's point
+  // lies on the edge of the carriageway, a tram stop's on the track), not only the streets the furniture walks along.
+  const stopLines = [];
+  pieces.forEach((pl, pi) => stopLines.push({ pl, pi, hw: pl.w / 2 }));
+  for (const r of o.roads || []) {
+    if ((r.cls !== 9 && r.cls !== 13) || r.flags & 6 || !r.a || r.a.length < 4) continue;
+    const pl = prep(r.a);
+    if (pl.len < 8) continue;
+    pl.cls = r.cls; pl.w = r.w; pl.name = r.name || '';
+    stopLines.push({ pl, pi: -1, hw: r.w / 2 });
+  }
+  for (const rl of rails) {
+    if (!rl.a || rl.a.length < 4 || rl.flags & 4) continue;
+    const pl = prep(rl.a);
+    if (pl.len < 8) continue;
+    pl.cls = 100 + rl.kind; pl.w = rl.kind === 2 ? 3.2 : 2.5; pl.name = '';
+    stopLines.push({ pl, pi: -1, hw: pl.w / 2 });
+  }
+  const ownLine = (x, z) => {
+    let best = null;
+    for (const L of stopLines) {
+      const { a, n } = L.pl;
+      for (let i = 0; i + 1 < n; i++) {
+        const ax = a[i * 2], az = a[i * 2 + 1], dx = a[i * 2 + 2] - ax, dz = a[i * 2 + 3] - az, l2 = dx * dx + dz * dz || 1e-9;
+        const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), d = Math.hypot(x - ax - dx * t, z - az - dz * t);
+        if (d > 16) continue;
+        const e = Math.max(0, d - L.hw);
+        if (!best || e < best.e - 0.05 || (Math.abs(e - best.e) <= 0.05 && d < best.d)) best = { L, e, d, s: L.pl.cum[i] + t * Math.sqrt(l2) };
+      }
+    }
+    return best;
+  };
+  const STOP_PTS = [[-1.7, 0], [0, 0], [1.7, 0], [0, 0.7]];
+  const roofFree = (at) => {
+    const sn = at.fr[0], cs = at.fr[1];
+    let good = 0, n = 0;
+    for (let i = 0; i < 14; i++) for (let j = 0; j < 5; j++) { // (cell centres of a 14 x 5 grid over the roof)
+      const lx = -1.7 + ((i + 0.5) * 3.4) / 14, lz = -0.6 + ((j + 0.5) * 1.2) / 5, px = at.x + lx * cs + lz * sn, pz = at.z - lx * sn + lz * cs;
+      n++;
+      if (GOOD[grid.get(px, pz)]) good++;
+      if (barrierNear(px, pz, 0.3)) return false;
+    }
+    // nor over a lamp post (world.js lampsOf, o.lamps)
+    const la = o.lamps && o.lamps.a;
+    if (la) for (let i = 0; i + 1 < la.length; i += 5) {
+      const dx = la[i] - at.x, dz = la[i + 1] - at.z, lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+      if (Math.abs(lx) < 1.7 + 0.35 && Math.abs(lz) < 0.6 + 0.35) return false;
+    }
+    return good >= 0.8 * n;
+  };
   for (const p of pois || []) {
     const kind = p[0], px = p[1] / 10, pz = TILE - p[2] / 10;
     if (kind !== 9) continue;
+    yield;
     const q = nearestRoad(px, pz, 16);
     if (!q) continue;
     const f = frameAt(q.pl, q.s), vv = (px - f.x) * -f.tz + (pz - f.z) * f.tx;
@@ -1689,18 +1884,58 @@ export function furnishTile(o) {
     const sc = scan(q.pi, side, q.s);
     if (!sc.ok || sc.w < 1.6) continue;
     const off = sc.e + clamp(sc.w - 0.7, 0.8, 1.9), x = f.x - f.tz * side * off, z = f.z + f.tx * side * off, nx = f.tz * side, nz = -f.tx * side, fr = frameOf(nx, nz);
-    if (!fits('stop', x, z, fr, [[-1.7, 0], [0, 0], [1.7, 0], [0, 0.7]], 1.3, 2.2, 30)) continue;
-    aim(fr[2], x, z);
+    if (!fits('stop', x, z, fr, STOP_PTS, 1.3, 2.2, 30)) continue;
+    if (featured(px, pz) || featured(x, z)) {
+      // not drawn, but its room and its count stay, so nothing after it moves
+      P.tramStop(ghost, ghost, 0, 0, night, 0);
+      stand('stop', x, z, 2.2);
+      continue;
+    }
+    // the street it was put beside is not the line it belongs to (a track, a busway, the main road at a corner): stand it
+    // beside that line by the same rule, or, if it does not fit there, leave it out (its room and its count stay)
+    let at = { x, z, fr, f, nx, nz };
+    const own = ownLine(px, pz);
+    if (own && own.L.pi !== q.pi) {
+      const pl = own.L.pl, g = frameAt(pl, own.s), w2 = (px - g.x) * -g.tz + (pz - g.z) * g.tx;
+      let sd = w2 < 0 ? -1 : 1;
+      if (Math.abs(w2) < 1.0) { const a = scanLine(pl, -1, own.s), b = scanLine(pl, 1, own.s); sd = (b.ok ? b.w : 0) >= (a.ok ? a.w : 0) ? 1 : -1; }
+      const s2 = scanLine(pl, sd, own.s);
+      let alt = null;
+      if (s2.ok && s2.w >= 1.6) {
+        const o2 = s2.e + clamp(s2.w - 0.7, 0.8, 1.9), x2 = g.x - g.tz * sd * o2, z2 = g.z + g.tx * sd * o2, nx2 = g.tz * sd, nz2 = -g.tx * sd, fr2 = frameOf(nx2, nz2);
+        if (fits('stop', x2, z2, fr2, STOP_PTS, 1.3, 2.2, 30) && !featured(x2, z2)) alt = { x: x2, z: z2, fr: fr2, f: g, nx: nx2, nz: nz2 };
+      }
+      if (!alt) {
+        P.tramStop(ghost, ghost, 0, 0, night, 0);
+        stand('stop', x, z, 2.2);
+        continue;
+      }
+      at = alt;
+    }
+    // the whole roof (props.js tramStop: 3.4 x 1.2 m) on walkable ground and clear of walls and fences, or it is left out
+    // (its room and its count stay): the four test points of `fits` allow grass and miss a fence between them
+    if (!roofFree(at)) {
+      P.tramStop(ghost, ghost, 0, 0, night, 0);
+      stand('stop', x, z, 2.2);
+      continue;
+    }
+    aim(at.fr[2], at.x, at.z);
     P.tramStop(v, gl, 0, 0, night, 0);
+    // its room stays where the old rule put it, so every later choice is the same; what would stand on its moved roof
+    // is hidden like what would stand on a map shelter's
     stand('stop', x, z, 2.2);
+    if (at.x !== x || at.z !== z) roofs.push({ x: at.x, z: at.z, c: Math.cos(at.fr[2]), s: Math.sin(at.fr[2]), hx: 1.7, hz: 0.6 });
+    inTheWay.push({ kind: 'stop', x: at.x, z: at.z, ax: at.f.tx, az: at.f.tz, nx: at.nx, nz: at.nz }); // (the one not drawn above is the map's shelter, listed with the features)
   }
 
   // ================================================================ whole-area passes (see DETAIL.md)
+  yield;
   const zr = makeRng(hashStr('areas|' + key));
   const spare = () => used() < LIMIT;
   const tanTh = (tx, tz) => Math.atan2(-tz, tx); // frame whose local +x runs along (tx, tz)
 
   // ---- bollards across the ends of pedestrian streets
+  yield;
   if (spare()) pieces.forEach((pl) => {
     if (pl.cls !== 8 || pl.len < 22) return;
     for (const s of [1.8, pl.len - 1.8]) {
@@ -1716,6 +1951,7 @@ export function furnishTile(o) {
   });
 
   // ---- traffic lights and signposts where big streets meet
+  yield;
   if (spare()) {
     const big = pieces.filter((p) => p.cls >= 2 && p.cls <= 5 && p.len > 20);
     const ends = [];
@@ -1736,7 +1972,7 @@ export function furnishTile(o) {
         const off = sc.e + 0.45, x = f.x - f.tz * side * off, z = f.z + f.tx * side * off, nx = f.tz * side, nz = -f.tx * side, fr = frameOf(nx, nz);
         // the light faces the traffic coming from the junction: turn it along the street
         if (!fits('tlight', x, z, fr, [[0, 0]], 1.3, 1.0, 5)) continue;
-        aim(Math.atan2(-f.tx * en.dir, -f.tz * en.dir) + (side > 0 ? 0 : 0), x, z);
+        aim(Math.atan2(-f.tx * en.dir, -f.tz * en.dir) + 0, x, z); // (+ 0: never a negative zero)
         if (r() < 0.75) trafficLight(v, gl, night, r, st, vr); else signPost(v, r, vr);
         stand('tlight', x, z, 1.0);
         add('tlight', x, z, f, nx, nz);
@@ -1746,6 +1982,7 @@ export function furnishTile(o) {
   }
 
   // ---- tram catenary masts and wires
+  yield;
   if (spare()) rails.forEach((rl, ri) => {
     if (rl.kind !== 1 || rl.flags & 4 || !rl.a || rl.a.length < 4) return;
     const pl = prep(rl.a);
@@ -1788,6 +2025,7 @@ export function furnishTile(o) {
   });
 
   // ---- hotels fly flags; supermarkets have trolley shelters; big venues get a parking machine
+  yield;
   if (ps && spare()) for (const e of eats) {
     if (!spare()) break;
     if (e.cat !== 'hotel' && e.cat !== 'supermarket') continue;
@@ -1814,6 +2052,7 @@ export function furnishTile(o) {
   }
 
   // ---- quays: chain posts, mooring bollards, moored boats with gangways
+  yield;
   if (spare()) {
     const water = (x, z) => grid.get(x, z) === C.WATER;
     let hasWater = false;
@@ -1822,7 +2061,9 @@ export function furnishTile(o) {
       const posts = [], boats = [];
       const dirs8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.71, 0.71], [-0.71, 0.71], [0.71, -0.71], [-0.71, -0.71]];
       const hashCell = (x, z) => ((Math.imul(Math.floor(x / 22) + 977, 73856093) ^ Math.imul(Math.floor(z / 22) + 331, 19349663)) >>> 0) / 4294967296;
-      for (let z = 2; z < TILE - 2; z += 1) for (let x = 2; x < TILE - 2; x += 1) {
+      for (let z = 2; z < TILE - 2; z += 1) {
+      if (z > 2 && !((z - 2) & 15)) yield; // (the quay scan looks at every metre of the tile: in pieces)
+      for (let x = 2; x < TILE - 2; x += 1) {
         if (!GOOD[grid.get(x, z)]) continue;
         let nx = 0, nz = 0, n = 0;
         for (const [dx, dz] of dirs8) if (water(x + dx * 1.3, z + dz * 1.3)) { nx += dx; nz += dz; n++; }
@@ -1834,10 +2075,10 @@ export function furnishTile(o) {
         if (!cell) continue;
         const space = cell === 1 ? 3.1 : 8.5;
         if (posts.some((p) => Math.hypot(p.x - x, p.z - z) < space)) continue;
-        if (grid.get(x - nx * 1.2, z - nz * 1.2) === C.BUILDING && cell === 1) { /* against a wall: still a quay */ }
         if (treeNear(x, z, 0.8) || crowded('quay', x, z, 0.4)) continue;
         posts.push({ x, z, nx, nz, cell, vr: Math.floor(hashCell(x * 3, z * 3) * 3) });
         if (posts.length > (lite ? 40 : 90)) break;
+      }
       }
       posts.forEach((p, i) => {
         if (!spare()) return;
@@ -1875,6 +2116,7 @@ export function furnishTile(o) {
         v.setT(th, cx, cz, y - 0.12); gl.setT(th, cx, cz, y - 0.12);
         const vr = len > 11 ? 2 : r() < 0.5 ? 0 : 1;
         boat(v, gl, night, r, len, vr);
+        if (night && vr !== 2) nightOnly(() => gl.box(len * 0.46, 1.2, 0, 0.12, 0.12, 0.12, '#ff5a4a')); // the riding light
         // a gangway to the quay for the big ones
         if (vr === 2 || r() < 0.3) {
           const lz = Math.sin(th) * -p.nx + Math.cos(th) * -p.nz; // which local side faces the quay
@@ -1887,6 +2129,7 @@ export function furnishTile(o) {
   }
 
   // ---- pitches: football fields with goals and lines, courts with fences and hoops
+  yield;
   if (spare()) {
     const NP = 256, seen = new Uint8Array(NP * NP);
     const pit = (i, j) => i >= 0 && j >= 0 && i < NP && j < NP && grid.get(i + 0.5, j + 0.5) === C.PITCH;
@@ -1973,6 +2216,7 @@ export function furnishTile(o) {
   }
 
   // ---- playgrounds get a fence with a gate, a bench and a bin outside
+  yield;
   if (raw && spare()) for (const e of raw.f || []) {
     if (e[0] !== 11 || !spare()) continue;
     const x = e[1] / 10, z = TILE - e[2] / 10, rot = Math.PI / 2 - (e[3] * Math.PI) / 180;
@@ -1995,6 +2239,7 @@ export function furnishTile(o) {
   }
 
   // ---- park paths: benches, bins and lamps (lit at night) where a footpath runs through grass
+  yield;
   if (spare()) {
     const paths = [];
     for (const rd of o.roads || []) if ((rd.cls === 11 || rd.cls === 12) && !(rd.flags & 6) && rd.a && rd.a.length >= 4) { const pl = prep(rd.a); if (pl.len >= 22) paths.push(pl); }
@@ -2021,6 +2266,7 @@ export function furnishTile(o) {
   }
 
   // ---- industrial yards: containers, pallets
+  yield;
   if (raw && raw.bt && spare()) {
     const IND = set(C.LAND, C.PARKING, C.PLAZA, C.WALK, C.DIRT);
     let made = 0;
@@ -2072,6 +2318,11 @@ export function furnishTile(o) {
 
   function finish() {
     v.setT(); gl.setT();
-    return { props };
+    for (const s of inTheWay) props.push(s);
+    // every table of every terrace (props has one anchor per pair of tables): what the ground raster blocks (ground.js)
+    // (a piece hidden under a shelter's roof is not drawn: it is in neither list)
+    const cells = [];
+    for (const q of taken) if (q.kind === 'terrace' && !q.hid) cells.push(q.x, q.z);
+    return { props: hidden.size ? props.filter((q) => !hidden.has(q)) : props, cells };
   }
 }

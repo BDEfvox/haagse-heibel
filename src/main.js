@@ -6,6 +6,7 @@ import '@fontsource/fredoka/700.css';
 import './style.css';
 import { createMap, LV, LV_NAMES } from './map.js';
 import { Stage, preload, VIEW_TAN, EXIT_DIST } from './voxel/stage.js';
+import { bindStick } from './voxel/walker.js';
 import { mixFor, THEMES, GAG_NAMES } from './voxel/gags.js';
 import { setDistrictData } from './voxel/districts.js';
 import { sfx, startMusic, stopMusic, isMuted, setMuted, unlock } from './audio.js';
@@ -178,7 +179,7 @@ async function boot() {
       <li><b>Neighbourhood level</b> is real: registered crimes in ${num(meta.year)} per neighbourhood (buurt), published by the Dutch police via CBS. Citywide average: <b>${num(meta.cityRate)}</b> per 1,000 residents.</li>
       <li><b>Street level</b> is an estimate. Street-by-street crime figures are not public in the Netherlands, so every street starts with its neighbourhood's score and gets nudged by what is on it.</li>
       <li><b>What happens on the street</b> follows the neighbourhood's crime mix: the more a kind of crime is registered there, and the more it stands out from the city average, the more often its cartoon plays. Categories that are no laughing matter count towards the level but have no cartoon.</li>
-      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water, parks, building types, walls and landmark shapes (OpenStreetMap), ground heights (AHN, stretched a little so slopes and quays show) and street trees (the municipal tree register). Light and darkness follow the real time of day in The Hague. Shop signs are generic, not real businesses.</li>
+      <li><b>The streets themselves</b> are built from real map data: building outlines and heights (3DBAG), roads, water, parks, building types, walls and landmark shapes (OpenStreetMap), ground heights (AHN, stretched a little so slopes and quays show) and street trees (the municipal tree register). Light and darkness follow the real time of day in The Hague. Shop signs are jokes on the names of real businesses, not the real names.</li>
       <li>Registered crime depends on reporting and on how many visitors an area gets — a busy centre always looks worse than a sleepy suburb. The cartoon scenes are jokes, not a safety guide and not a verdict on anyone who lives there.</li>
     </ul>
     <p>Sources and licences: ${CREDITS.map((c) => `<a href="${c[1]}" target="_blank" rel="noopener noreferrer">${c[0]}</a> (${c[2]})`).join(' · ')}. The map data has been simplified, combined and redrawn for this site.</p>`;
@@ -217,11 +218,12 @@ async function boot() {
   // and the menu start folded, so the street is what you see first.
   let ui = {};
   try { ui = JSON.parse(localStorage.getItem('heibel-ui') || '{}') || {}; } catch (e) { ui = {}; }
-  const smallScreen = matchMedia('(max-width: 760px)').matches;
+  const smallScreen = matchMedia('(max-width: 760px)').matches, folds = {};
   for (const [key, box, btn, name] of [['file', '#file', '#file-fold', 'the case file'], ['news', '#ticker', '#news-fold', 'the news'], ['panel', '#panel', '#panel-fold', 'the menu']]) {
     const el = $(box), b = $(btn);
     const set = (shut) => { el.classList.toggle('shut', shut); b.setAttribute('aria-expanded', String(!shut)); b.title = shut ? `Show ${name}` : `Hide ${name}`; };
     set(key in ui ? !!ui[key] : smallScreen && key !== 'news');
+    folds[key] = { el, set }; // (the walk folds the case file on a small screen for as long as it lasts: nothing is stored)
     b.onclick = () => {
       const shut = !el.classList.contains('shut');
       set(shut);
@@ -282,15 +284,59 @@ async function boot() {
     $('#count').textContent = '000';
     $('#news').textContent = `Our reporter has arrived on ${p.name}…`;
   }
-  const stageOpts = (p, lngLat) => ({
-    only: onlyParam, seed: DEV ? (params.get('seed') || '').slice(0, 40) : '', geometry: geomOf(p), lngLat, clock: clockParam,
+  const stageOpts = (p, lngLat, land) => ({
+    land, only: onlyParam, seed: DEV ? (params.get('seed') || '').slice(0, 40) : '', geometry: geomOf(p), lngLat, clock: clockParam,
     crime: { cat: byCode.get(p.buurt)?.properties.cat, cats: meta.cats },
   });
   const touch = matchMedia('(hover: none)').matches;
   const HINTS = {
     drop: '',
-    follow: touch ? 'drag to take over the camera' : 'drag to take over the camera · scroll to zoom',
-    free: touch ? 'drag to move · pinch to zoom and turn · tap ! to jump to the action' : 'drag to move · right-drag to turn · scroll to zoom · click ! to jump to the action',
+    follow: touch ? 'drag, pinch or press ↺ ↻ to take the camera' : 'drag, scroll or press ↺ ↻ to take the camera',
+    free: touch ? 'drag to move · pinch to zoom · twist to turn · two fingers up or down to tilt · tap ! to jump to the action'
+      : 'drag to move · right- or shift-drag to turn · scroll to zoom, swipe sideways to turn · click ! to jump to the action',
+    walk: touch ? 'the stick walks, past its rim runs · drag to turn · pinch to zoom · Walk again to stop'
+      : 'W A S D or the arrows walk · Shift runs · drag or Q / E to turn · scroll to zoom · Esc stops',
+  };
+  // Follow the action is a toggle that shows whether the camera follows the action (pressed) or is the viewer's (stage.following)
+  const followBtn = $('#btn-follow');
+  const paintFollow = () => {
+    const on = stage.following;
+    followBtn.setAttribute('aria-pressed', String(on));
+    followBtn.title = on ? 'Following the action. Press to keep the camera where it is' : stage.walking ? 'Stop walking and let the camera follow the action' : 'Let the camera follow the action';
+  };
+  // the walking character: Walk puts him on the street where the camera looks (stage.walkStart), pressed again (or Esc) takes him away
+  const walkBtn = $('#btn-walk'), stickEl = $('#walk-stick'), walkMsg = $('#walk-msg');
+  stage.stick = { x: 0, y: 0, run: false };
+  const stickOff = bindStick(stickEl, stage.stick);
+  let msgT = 0;
+  const paintWalk = () => {
+    const on = stage.walking;
+    walkBtn.setAttribute('aria-pressed', String(on));
+    walkBtn.disabled = !on && (!stage.canWalk || busy); // (busy: a street is being opened or built for a focus shift)
+    walkBtn.title = on ? 'Take the walker away (Esc)' : touch ? 'Put a walker on the street where the camera looks' : 'Put a walker on the street where the camera looks (then W A S D or the arrows, Esc to stop)';
+    if (stickEl.hidden !== !on) { stickEl.hidden = !on; if (!on) stickOff(); }
+  };
+  // while he walks on a small screen the case file is folded (it would cover the stick or the Walk button); the viewer's own choice
+  // stays stored and comes back when the walk ends, unless they opened the file again meanwhile
+  let fileFolded = false;
+  const smallNow = matchMedia('(max-width: 760px)');
+  hooks.onWalk = (on, msg) => {
+    paintWalk(); paintFollow();
+    const F = folds.file;
+    if (on && smallNow.matches && !F.el.classList.contains('shut')) { F.set(true); fileFolded = true; }
+    else if (!on && fileFolded) { fileFolded = false; if (F.el.classList.contains('shut')) F.set(false); }
+    if (msg) { walkMsg.textContent = msg; walkMsg.classList.add('in'); clearTimeout(msgT); msgT = setTimeout(() => walkMsg.classList.remove('in'), 3500); }
+    if (on) play('coin');
+  };
+  walkBtn.onclick = () => {
+    play('click');
+    if (stage.walking) stage.walkEnd();
+    else if (!busy) {
+      const roamed = cut.dataset.roamed;
+      cut.dataset.roamed = '1'; // (no FREE ROAM banner on the way into a walk: the camera becomes the viewer's first)
+      if (!stage.walkStart() && !roamed) delete cut.dataset.roamed; // (a walk that did not start leaves the banner for later)
+    }
+    paintWalk(); paintFollow();
   };
   hooks.onMode = (mode) => {
     cut.dataset.mode = mode;
@@ -299,7 +345,8 @@ async function boot() {
     dh.classList.remove('old');
     clearTimeout(hintT);
     hintT = setTimeout(() => dh.classList.add('old'), 8000); // said once, then out of the way
-    $('#btn-follow').hidden = mode !== 'free';
+    followBtn.hidden = mode === 'leave';
+    paintFollow(); paintWalk();
     if (mode === 'free' && !cut.dataset.roamed) {
       cut.dataset.roamed = '1';
       const t = $('#roam');
@@ -321,12 +368,9 @@ async function boot() {
     if (id !== cand) { cand = id; candN = 0; return; }
     if (++candN >= 3) { cand = -1; shiftFocus(S[id], lngLat); } // the camera has rested on it for most of a second
   };
-  hooks.onSwap = () => {
-    cut.classList.add('swap');
-    setTimeout(() => cut.classList.remove('swap'), 200);
-  };
   // zooming all the way out hands over to the map
-  hooks.onExit = () => closeStreet(true);
+  // (Follow the action is inert while the page hands over to the map: stage.follow() refuses then too)
+  hooks.onExit = () => { followBtn.disabled = true; walkBtn.disabled = true; closeStreet(true); };
   hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; skyBtn.classList.toggle('away', !!on); }; // (the light button steps aside for the SKIP button)
   hooks.onCard = (title, sub, dur) => {
     const c = $('#cine-card');
@@ -379,19 +423,25 @@ async function boot() {
   let zoomedOut = null; // set when the viewer left the city by zooming out: { at, moved }
   api.ready.then(() => api.map.on('dragstart', () => { if (zoomedOut) zoomedOut.moved = true; }));
 
-  async function openStreet(p0, pt, enter = null) {
+  /** `land`: 'free' when the viewer had the camera on the street before (Next street): the drop then lands without following. */
+  let inOpen = false;
+  async function openStreet(p0, pt, enter = null, land = 'follow') {
     if (busy || !p0) return;
     busy = true;
+    inOpen = true;
     try {
-      await doOpen(p0, pt, enter);
+      await doOpen(p0, pt, enter, land);
     } catch (e) {
       console.error(e);
       recover('That street would not load. Try another one.');
     } finally {
       busy = false;
+      inOpen = false;
+      // a way out asked for while the street was still opening (zoomed straight out again, pressed Map or Esc) happens now
+      if (pendingClose) { const z = pendingClose.viaZoom; pendingClose = null; closeStreet(z); }
     }
   }
-  async function doOpen(p0, pt, enter) {
+  async function doOpen(p0, pt, enter, land) {
     const p = withLevel(p0);
     opening = true;
     audioOk = true;
@@ -415,7 +465,7 @@ async function boot() {
     // the world around the street is built while the map waits; the camera then starts from exactly the map's view
     // (and stays there, when the viewer zoomed in rather than picked a street)
     if (enter) lngLat = enter.lngLat;
-    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat), from: swap ? null : entry, enter: enter || null });
+    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat, land), from: swap ? null : entry, enter: enter || null });
     stage.hold = !enter;
     if (swap) {
       play('whoosh');
@@ -426,6 +476,7 @@ async function boot() {
       mapEl.classList.add('lock');
     }
     const ok = await ready;
+    if (ok && opening) { followBtn.hidden = false; followBtn.disabled = false; paintFollow(); } // (the new street's camera: dropping, following unless told otherwise)
     if (!ok) {
       // could not build the street (also when swapping from another street): back to the map, with a message
       recover('That street would not load. Try another one.');
@@ -458,6 +509,7 @@ async function boot() {
     if (busy || !current || !p0) return;
     busy = true;
     shifting = true;
+    paintWalk();
     try {
       const p = withLevel(p0);
       const ok = await stage.show(p, hooks, { ...stageOpts(p, lngLat), keep: true });
@@ -479,17 +531,20 @@ async function boot() {
     } finally {
       busy = false;
       shifting = false;
+      paintWalk();
       // a way out asked for while the next street was being built (zoomed out, or pressed Map) happens now
       if (pendingClose) { const z = pendingClose.viaZoom; pendingClose = null; closeStreet(z); }
     }
   }
   async function closeStreet(viaZoom) {
-    if (busy && shifting) { pendingClose = { viaZoom: viaZoom === true }; return; }
+    if (stage.walking) stage.walkEnd(); // every way out (zooming out, MAP, Esc, a close queued behind a focus shift): the walk ends first
+    if (busy && (shifting || inOpen)) { pendingClose = { viaZoom: viaZoom === true }; followBtn.disabled = true; return; } // (never while closing: nothing stale is left)
     if (busy || !current) return;
     busy = true;
     try { await doClose(viaZoom === true); } catch (e) { console.error(e); recover(); } finally { busy = false; }
   }
   async function doClose(viaZoom) {
+    followBtn.disabled = true;
     play('back');
     stopMusic();
     cut.classList.remove('titled');
@@ -516,12 +571,15 @@ async function boot() {
     api.setEnabled(true);
   }
   $('#btn-back').onclick = closeStreet;
-  $('#btn-follow').onclick = () => { play('click'); stage.follow(); };
+  // pressed while following: the camera stays where it is and is the viewer's; else it follows the action again
+  followBtn.onclick = () => { play('click'); if (stage.following) stage.takeCamera(); else stage.follow(); paintFollow(); };
   $('#btn-skip').onclick = () => { play('click'); stage.skipCine(); };
-  $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null));
+  // the next street keeps who has the camera: dropped into while the viewer had it, it lands without following (stage.js _take)
+  $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null), null, null, stage.following ? 'follow' : 'free');
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('#about').hidden) $('#about').hidden = true;
+    else if (stage.walking) { stage.walkEnd(); paintWalk(); paintFollow(); } // (the first Esc takes the walker away, the next one closes the street)
     else closeStreet();
   });
 
@@ -531,7 +589,7 @@ async function boot() {
   setTimeout(() => $('#loading').remove(), 500);
 
   // deep links: #s=<id> or ?q=<street name>
-  const m = location.hash.match(/s=(\d+)/), q = params.get('q');
+  const m = location.hash.match(/^#s=(\d+)$/), q = params.get('q');
   const deep = m ? S[+m[1]] : q ? S.find((p) => p.lname === q.toLowerCase()) : null;
   if (deep) openStreet(deep);
   if (import.meta.env.DEV) {

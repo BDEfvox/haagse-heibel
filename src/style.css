@@ -17,12 +17,6 @@
 html, body { margin: 0; height: 100%; overflow: hidden; background: #8fd3f4; font-family: var(--body); color: var(--ink); -webkit-font-smoothing: antialiased; }
 #app { position: fixed; inset: 0; overflow: hidden; overflow: clip; } /* clip: nothing (focus, scripts) can scroll the page sideways */
 #map { position: absolute; inset: 0; transform-origin: 50% 50%; }
-#map.anticipate { animation: anticipate 0.16s ease-out forwards; }
-#map.dive { animation: dive 0.95s cubic-bezier(0.5, 0, 0.9, 0.4) forwards; }
-#map.rise { animation: rise 0.7s cubic-bezier(0.2, 1.3, 0.4, 1) both; }
-@keyframes anticipate { to { transform: scale(0.94) rotate(-1deg); } }
-@keyframes dive { 0% { transform: scale(0.94) rotate(-1deg); } 55% { transform: scale(1.25, 1.12) rotate(2deg); filter: blur(0); } 100% { transform: scale(2.6, 2.2) rotate(7deg); filter: blur(5px); } }
-@keyframes rise { 0% { transform: scale(1.7); filter: blur(4px); } 100% { transform: scale(1); filter: blur(0); } }
 
 /* ------------------------------------------------ chrome */
 button { font-family: inherit; cursor: pointer; }
@@ -48,7 +42,7 @@ button { font-family: inherit; cursor: pointer; }
 #search:focus { border-color: var(--hot); }
 #results { position: absolute; left: 0; right: 0; top: 100%; margin: 4px 0 0; padding: 4px; list-style: none; background: #fff; border: 3px solid var(--ink); border-radius: 10px; z-index: 4; box-shadow: var(--hard); max-height: 260px; overflow: auto; }
 #results li { padding: 6px 8px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 14px; }
-#results li:hover, #results li.sel { background: #ffe9e9; }
+#results li:hover { background: #ffe9e9; }
 #results li small { color: #667; margin-left: auto; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
 .dot { width: 12px; height: 12px; border-radius: 3px; border: 2px solid var(--ink); flex: none; }
 .btns { display: flex; gap: 8px; }
@@ -75,11 +69,6 @@ button { font-family: inherit; cursor: pointer; }
 
 .maplibregl-ctrl-attrib { font-size: 10px; }
 .maplibregl-canvas { outline: none; }
-
-/* ------------------------------------------------ zoom transition */
-#speed { position: absolute; inset: -20%; z-index: 40; pointer-events: none; opacity: 0; background: repeating-conic-gradient(from 0deg at var(--sx, 50%) var(--sy, 50%), rgba(255, 255, 255, 0) 0deg 5deg, rgba(255, 255, 255, 0.5) 5deg 7deg); -webkit-mask-image: radial-gradient(circle at var(--sx, 50%) var(--sy, 50%), transparent 16%, #000 60%); mask-image: radial-gradient(circle at var(--sx, 50%) var(--sy, 50%), transparent 16%, #000 60%); }
-#speed.on { animation: speed 0.95s ease-in forwards; }
-@keyframes speed { 0% { opacity: 0; transform: scale(1) rotate(0); } 40% { opacity: 0.9; } 100% { opacity: 1; transform: scale(1.5) rotate(20deg); } }
 
 /* ------------------------------------------------ cutscene */
 #cutscene { position: absolute; inset: 0; z-index: 50; background: radial-gradient(ellipse 100% 45% at 50% 100%, rgba(255, 150, 80, calc(var(--glow, 0) * 0.3)), transparent 75%), linear-gradient(var(--sky-top, #6ec3ff), var(--sky-bot, #d9f2ff)); opacity: 0; }
@@ -168,6 +157,32 @@ button { font-family: inherit; cursor: pointer; }
 #ticker .count b.bump { animation: bump 0.3s; }
 @keyframes bump { 40% { transform: scale(1.7); color: var(--yellow); } }
 #hud-btns { position: absolute; right: 16px; bottom: 66px; display: flex; gap: 8px; }
+/* Follow the action shows whether the camera is following: pressed in while it does (aria-pressed, main.js paintFollow) */
+#btn-follow[aria-pressed="true"] { background: var(--paper); color: var(--hot); transform: translate(3px, 3px); box-shadow: 1px 1px 0 rgba(8, 12, 30, 0.85); }
+#btn-follow:disabled { opacity: 0.5; cursor: default; transform: none; box-shadow: var(--hard); }
+#btn-follow:focus-visible, #cam-pad button:focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
+/* the turn pad (stage.js _bindPad): turn left, higher view, lower view, turn right; above the hint, bottom left */
+#cam-pad { position: absolute; left: 16px; bottom: 100px; display: flex; gap: 6px; pointer-events: none; } /* (only the buttons catch the pointer) */
+#cam-pad button { pointer-events: auto; }
+#cam-pad button { width: 40px; height: 40px; padding: 0; border: 3px solid var(--ink); border-radius: 10px; background: var(--paper); color: var(--ink); font: 600 18px/1 var(--body); box-shadow: 2px 2px 0 rgba(8, 12, 30, 0.85); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#cam-pad button:active { transform: translate(2px, 2px); box-shadow: none; }
+#cutscene[data-mode="leave"] #cam-pad { display: none; }
+/* the walking character (main.js, stage.js walk mode): the Walk button stands over Follow / Next street at the right (the row is
+   about 42 px high at bottom 66); pressed in while he is on the street. The stick (walker.js bindStick) is shown only while walking
+   and only on touch screens: a disc above the turn pad, its knob follows the finger; past the rim he runs */
+#btn-walk { position: absolute; right: 16px; bottom: 116px; }
+#btn-walk[aria-pressed="true"] { background: var(--yellow); transform: translate(3px, 3px); box-shadow: 1px 1px 0 rgba(8, 12, 30, 0.85); }
+#btn-walk:disabled { opacity: 0.5; cursor: default; transform: none; box-shadow: var(--hard); }
+#btn-walk:focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
+#walk-stick { position: absolute; left: 16px; bottom: 150px; width: 120px; height: 120px; border-radius: 50%; background: rgba(16, 25, 53, 0.35); border: 3px solid rgba(255, 248, 231, 0.85); box-shadow: inset 0 0 0 2px rgba(16, 25, 53, 0.5); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#walk-stick[hidden] { display: none; }
+#walk-stick i { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; background: var(--yellow); border: 3px solid var(--ink); box-shadow: 2px 2px 0 rgba(8, 12, 30, 0.85); pointer-events: none; will-change: transform; }
+#walk-stick.run i { background: var(--hot); }
+@media (hover: hover) { #walk-stick { display: none; } } /* (a screen that can hover has a mouse and keys: the keys walk; the same test as main.js `touch`) */
+#walk-msg { position: absolute; left: 50%; bottom: 168px; transform: translateX(-50%); max-width: min(88vw, 420px); font: 600 13px var(--body); color: #fff; background: rgba(16, 25, 53, 0.82); padding: 6px 12px; border-radius: 12px; text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+#walk-msg.in { opacity: 1; }
+#walk-msg:empty { display: none; }
+#cutscene[data-mode="leave"] #walk-stick, #cutscene[data-mode="leave"] #btn-walk { display: none; }
 #credit { position: absolute; left: 50%; bottom: 46px; transform: translateX(-50%); font: 500 10px var(--body); color: rgba(255, 255, 255, 0.85); text-shadow: 0 1px 2px rgba(8, 12, 30, 0.9); white-space: nowrap; }
 #credit a { color: inherit; }
 #drag-hint:empty { display: none; }
@@ -178,6 +193,8 @@ button { font-family: inherit; cursor: pointer; }
 .gag-pin { position: absolute; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; padding: 0; border-radius: 50%; border: 3px solid var(--ink); background: var(--hot); color: #fff; font: 400 15px var(--pix); cursor: pointer; pointer-events: auto; box-shadow: 0 4px 0 rgba(8, 12, 30, 0.5); will-change: transform; }
 .gag-pin span { display: block; animation: pin 0.7s ease-in-out infinite alternate; }
 .gag-pin.edge { background: #ffd60a; color: var(--ink); }
+.gag-pin.faint { pointer-events: none; cursor: default; } /* fading with distance (stage.js PIN_FULL, PIN_GONE): not clickable */
+.gag-pin { touch-action: none; } /* a drag that starts on a pin is the camera's (stage.js _pins), not the browser's */
 .gag-pin[hidden] { display: none; }
 @keyframes pin { from { transform: translateY(1px) scale(0.92); } to { transform: translateY(-2px) scale(1.12); } }
 #file .row em { font-style: normal; font-size: 10px; }
@@ -191,8 +208,11 @@ button { font-family: inherit; cursor: pointer; }
 #drag-hint { position: absolute; left: 16px; bottom: 66px; font: 500 12px var(--body); color: #fff; background: rgba(16, 25, 53, 0.6); padding: 4px 10px; border-radius: 99px; pointer-events: none; }
 
 /* cinematic shots fill the whole frame: the HUD steps aside, a stamped card names the culprit, and there is a way out */
-#file, #title, #hud-btns, #drag-hint, #credit, #ticker { transition: opacity 0.25s, transform 0.4s cubic-bezier(0.2, 1.4, 0.4, 1); }
-#cutscene[data-cine] #file, #cutscene[data-cine] #title, #cutscene[data-cine] #hud-btns, #cutscene[data-cine] #drag-hint, #cutscene[data-cine] #credit, #cutscene[data-cine] #ticker .count { opacity: 0; pointer-events: none; }
+#file, #title, #hud-btns, #drag-hint, #credit, #ticker, #cam-pad, #btn-walk { transition: opacity 0.25s, transform 0.4s cubic-bezier(0.2, 1.4, 0.4, 1); }
+#cutscene[data-cine] #file, #cutscene[data-cine] #title, #cutscene[data-cine] #hud-btns, #cutscene[data-cine] #drag-hint, #cutscene[data-cine] #credit, #cutscene[data-cine] #ticker .count, #cutscene[data-cine] #cam-pad, #cutscene[data-cine] #btn-walk { opacity: 0; pointer-events: none; }
+#cutscene[data-cine] #cam-pad button { pointer-events: none; }
+/* ...and out of reach of Tab too (after the fade) */
+#cutscene[data-cine] #cam-pad, #cutscene[data-cine] #hud-btns, #cutscene[data-cine] #btn-walk { visibility: hidden; transition: opacity 0.25s, visibility 0s 0.25s; }
 #btn-skip { position: absolute; right: 16px; top: 14px; font: 400 10px var(--pix); padding: 10px 11px; display: none; }
 #cutscene[data-cine] #btn-skip { display: block; }
 #cine-card { position: absolute; left: 5%; bottom: 11%; opacity: 0; pointer-events: none; max-width: 90%; }
@@ -234,7 +254,31 @@ button { font-family: inherit; cursor: pointer; }
   #title { top: 60px; max-width: 92vw; }
   #drag-hint { display: none; }
   #ticker .count { display: none; }
+  /* A phone, down to 320 px wide: Follow the action and Next street sit bottom right (smaller; below 421 px Follow says only
+     "Follow"), the pad stands as a column bottom left beside them, left of the case file at any width (the file starts at
+     22 % of the width minus 8 px, at least 62 px in from the left; the column ends at 44 px) */
+  #hud-btns { right: 8px; gap: 6px; }
+  #hud-btns .btn { font-size: 14px; padding: 8px 10px; }
+  #cam-pad { left: 8px; bottom: 66px; gap: 4px; flex-direction: column; }
+  #cam-pad button { width: 36px; height: 36px; font-size: 16px; }
+  #cam-pad [data-el="1"] { order: 1; } #cam-pad [data-az="1"] { order: 2; } #cam-pad [data-az="-1"] { order: 3; } #cam-pad [data-el="-1"] { order: 4; }
+  /* Walk sits over the row (which is 45 px high at bottom 66; pressed in, Walk sits 3 px lower), at the right; the stick over the bottom-left corner, right of
+     the pad column (x 8-44) and above the row's height, so at 320 px wide: pad 8-44, stick 56-168, Walk about 228-312, the row
+     (Follow, Next street) 82-312 below both */
+  #btn-walk { right: 8px; bottom: 118px; font-size: 14px; padding: 8px 10px; }
+  #walk-stick { left: 56px; bottom: 112px; width: 112px; height: 112px; }
+  #walk-stick i { width: 44px; height: 44px; margin: -22px 0 0 -22px; }
+  #walk-msg { bottom: 160px; }
+}
+@media (max-width: 420px) { #btn-follow .more { display: none; } }
+/* a phone on its side: too short for the column (the street's name stands top left), so the pad is a row again, bottom left */
+@media (max-width: 760px) and (max-height: 480px) {
+  #cam-pad { flex-direction: row; }
+  #cam-pad [data-el], #cam-pad [data-az] { order: 0; }
+  #walk-stick { left: 8px; bottom: 110px; width: 96px; height: 96px; } /* (over the pad's row; short enough to stay clear of the title) */
 }
 @media (prefers-reduced-motion: reduce) {
-  #map.dive, #map.anticipate, #map.rise, #speed.on, #zoomcue.on { animation: none; }
+  #zoomcue.on { animation: none; }
+  #cam-pad button:active, #btn-follow[aria-pressed="true"], #btn-walk[aria-pressed="true"] { transform: none; }
+  #walk-msg { transition: none; }
 }

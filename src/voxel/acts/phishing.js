@@ -2,7 +2,7 @@
 // gloating with his eyes shut while a cyber cop on a bike rides up behind his back.
 // Storyboard: storyboards/phishing.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
@@ -12,9 +12,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
   const { entryTime, seen, watching, outPoint, extraKind } = T;
 
@@ -80,7 +80,7 @@ export default function (T) {
         })());
         hk.hold(foldedDesk(), 'front'); hk.arms = 'carry'; hk.mood = 'sly';
         yield* R.enter(hk, hx, hz, undefined, { speed: 3.8, dir: -cs });
-        hk.drop(); hk.arms = 'swing'; hk.heading = hh;
+        R.discard(hk); hk.arms = 'swing'; hk.heading = hh;
 
         B('1b the desk unfolds', [hk, deskPt]);
         cam.ground(deskPt, { dist: 6.5, el: 0.12, az: 0.35 });
@@ -167,7 +167,7 @@ export default function (T) {
           ln.aim(tipX, tipY, tipZ, x, y, z);
         });
         R.rm(wal); R.rm(hook); ln.visible = false;
-        hk.drop(); // the rod is done
+        R.discard(hk); // the rod is done
         const w2 = item.wallet();
         w2.scale.setScalar(1.7); w2.position.set(0, -0.78, 0.1);
         hk.armL.add(w2);
@@ -184,7 +184,7 @@ export default function (T) {
         ctx.fx.cash(hx, 1.2, hz, 8, 2, 4);
         const wad1 = R.add(item.wad()); wad1.scale.setScalar(2); wad1.position.set(hx, 1.0, hz);
         yield* arc(wad1, hx + 0.42, 0.9, dz - fz * 0.05, 0.6, 0.45, 3);
-        hk.armL.remove(w2);
+        hk.armL.remove(w2); disposeTree(w2); // (the wallet on the desk is a fresh one: this one is gone for good)
         const dw = R.add(item.wallet()); dw.scale.setScalar(2); dw.position.set(hx - 0.42, 0.9, dz);
         ctx.sfx('kaching');
         hk.arms = 'count';

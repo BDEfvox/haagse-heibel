@@ -1,6 +1,6 @@
 // Buildings, street furniture and vehicles — the Hague voxel kit.
 import * as THREE from 'three';
-import { Vox, MAT, sculpt, piece, makeSign, TAU } from './kit.js';
+import { Vox, MAT, sculpt, piece, makeSign, makeRng } from './kit.js';
 import { makePerson } from './cast.js';
 import { GLYPHS, fitText } from './brands.js';
 
@@ -10,13 +10,15 @@ export const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexStrin
 const BRICK = ['#9a6452', '#8f5a4a', '#b08064', '#80524a', '#d8b07a', '#e9e2d3', '#74504a', '#c9a070', '#a47058'];
 const DOORS = ['#1f5b3a', '#1d3557', '#8d0801', '#2b2b2b', '#6a4c93', '#0b6e4f', '#e0a100'];
 const ROOFS = ['#c8553d', '#8a3b2e', '#4a4e57', '#a44a3f', '#d9693f'];
-const AWN = [['#e63946', '#ffffff'], ['#2a9d8f', '#ffffff'], ['#f4a261', '#ffffff'], ['#3a86ff', '#ffffff'], ['#ffb703', '#023047'], ['#52b788', '#ffffff']];
 const STONE = '#efe9dc';
 const LIT = ['#ffd97a', '#ffe9a8', '#ffc45e', '#fff1c1'];
+// the seed of the night-only dice of a front drawn without its own (world.js drawHero always passes one per unit)
+const NIGHT_SEED = 0x6e696768;
 
 /** How much of the night's lights are on at the hour (set by the stage): the share of lit windows in homes, and in shop fronts. */
 export const litShare = { home: 0.62, shop: 0.8 };
 let _wglass = '#8fc7e8'; // the glass colour win() just drew (the windows that open copy it)
+// rnd: night-only dice (whether the window is lit and its tint); by day win() draws nothing
 function win(v, gl, x, y, z, w, h, night, rnd, litChance = 0.6) {
   v.box(x, y - 0.08, z + 0.04, w + 0.18, h + 0.18, 0.1, '#f6f3ec');
   const lit = night && rnd.chance(litChance * Math.min(1.3, litShare.home / 0.62));
@@ -355,7 +357,9 @@ function dress(kind, c) {
 
 /** Dutch row house with its front face at z, facing +z. Returns anchors. */
 export function house(v, gl, o) {
-  const { x, z, w, rnd, night } = o;
+  // rnd: the front's own dice, drawn the same way by day and by night, so the layout is the day's at any hour; nrnd: dice for
+  // what only the night has (which windows are lit, their tint), so lights never move a door, window or chimney
+  const { x, z, w, rnd, night } = o, nrnd = o.nrnd || makeRng(NIGHT_SEED);
   const depth = o.depth ?? 5, floors = o.floors ?? 3, y0 = o.y ?? 0.15;
   const gh = 2.6, fh = 2.2, H = gh + (floors - 1) * fh, zc = z - depth / 2;
   const wall = o.wall || rnd.pick(BRICK);
@@ -373,13 +377,13 @@ export function house(v, gl, o) {
   if (o.store) {
     // a store block (world.js storeFronts): one band of glass per floor between piers, a few boxes for a front of any height
     for (let f = 1; f < floors; f++) {
-      const y = y0 + gh + (f - 1) * fh + 0.62, lit = night && rnd.chance(litShare.shop > 0.2 ? 0.4 : 0.08);
+      const y = y0 + gh + (f - 1) * fh + 0.62, lit = night && nrnd.chance(litShare.shop > 0.2 ? 0.4 : 0.08);
       v.box(x, y - 0.08, z + 0.04, w - 0.9, 1.41, 0.1, '#f6f3ec');
       (lit ? gl : v).box(x, y, z + 0.07, w - 1.1, 1.25, 0.08, lit ? '#ffe9a8' : night ? '#1c2a44' : '#8fc7e8');
     }
   } else {
     for (let f = 1; f < floors; f++) {
-      for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, rnd); if (f === 1) glass1[c] = _wglass; }
+      for (let c = 0; c < cols; c++) { win(v, gl, cx(c), y0 + gh + (f - 1) * fh + 0.62, z, 0.9, 1.2, night, nrnd); if (f === 1) glass1[c] = _wglass; }
     }
   }
   const wc = rnd.int(0, cols - 1);
@@ -455,9 +459,9 @@ export function house(v, gl, o) {
     v.box(dx, y0, z + 0.03, 1.14, 2.25, 0.08, '#f6f3ec');
     v.box(dx, y0, z + 0.06, 0.9, 1.8, 0.1, doorCol);
     v.box(dx + 0.28, y0 + 0.9, z + 0.12, 0.08, 0.08, 0.04, '#e9c46a');
-    (night && rnd.chance(0.5) ? gl : v).box(dx, y0 + 1.84, z + 0.07, 0.86, 0.3, 0.06, night ? '#ffd97a' : '#8fc7e8');
+    (night && nrnd.chance(0.5) ? gl : v).box(dx, y0 + 1.84, z + 0.07, 0.86, 0.3, 0.06, night ? '#ffd97a' : '#8fc7e8');
     v.box(dx, y0, z + 0.3, 1.3, 0.12, 0.5, '#bdb6aa');
-    for (let c = 0; c < cols; c++) if (c !== dc) win(v, gl, cx(c), y0 + 0.78, z, 0.95, 1.4, night, rnd, 0.75);
+    for (let c = 0; c < cols; c++) if (c !== dc) win(v, gl, cx(c), y0 + 0.78, z, 0.95, 1.4, night, nrnd, 0.75);
     // the bell: a small plate on the wall beside the frame, on the knob side, when the neighbouring window leaves room for it
     const bellOk = sp >= 1.5;
     if (bellOk) {
@@ -477,7 +481,7 @@ export function house(v, gl, o) {
     const n = 5, D = depth + 0.3;
     for (let i = 0; i < n; i++) v.box(x, ry + i * 0.36, zc, w - 0.04, 0.36, D - (i * D * 0.92) / n, roofCol, 0.05);
     v.box(x, ry + 0.2, z - 0.75, 1.3, 1.0, 1.1, '#f6f3ec');
-    (night && rnd.chance(0.5) ? gl : v).box(x, ry + 0.4, z - 0.2, 0.9, 0.6, 0.06, night ? '#ffd97a' : '#8fc7e8');
+    (night && nrnd.chance(0.5) ? gl : v).box(x, ry + 0.4, z - 0.2, 0.9, 0.6, 0.06, night ? '#ffd97a' : '#8fc7e8');
     v.box(x, ry + 1.2, z - 0.75, 1.5, 0.1, 1.3, shade(roofCol, 0.8));
     out.top = ry + n * 0.36;
   } else {
@@ -491,7 +495,7 @@ export function house(v, gl, o) {
         v.box(x, ry + i * 0.5, z - 0.22, sw, 0.5, 0.44, wall, 0.03);
         v.box(x, ry + (i + 1) * 0.5 - 0.06, z - 0.22, sw + 0.1, 0.08, 0.5, STONE);
       }
-      win(v, gl, x, ry + 0.25, z, 0.6, 0.6, night, rnd);
+      win(v, gl, x, ry + 0.25, z, 0.6, 0.6, night, nrnd);
       out.top = ry + steps * 0.5;
     } else {
       v.box(x, ry, z - 0.22, w * 0.52, 1.7, 0.44, wall, 0.03);
@@ -501,7 +505,7 @@ export function house(v, gl, o) {
       v.box(x + w * 0.3, ry + 0.8, z - 0.22, w * 0.1, 0.5, 0.44, STONE);
       v.box(x, ry + 1.7, z - 0.22, w * 0.6, 0.16, 0.5, STONE);
       v.box(x, ry + 1.86, z - 0.22, w * 0.3, 0.2, 0.44, STONE);
-      win(v, gl, x, ry + 0.45, z, 0.6, 0.7, night, rnd);
+      win(v, gl, x, ry + 0.45, z, 0.6, 0.7, night, nrnd);
       out.top = ry + 2.06;
     }
   }
@@ -515,7 +519,7 @@ export function house(v, gl, o) {
 
 /** Modern tower block, front at z. */
 export function tower(v, gl, o) {
-  const { x, z, w, rnd, night } = o;
+  const { x, z, w, rnd, night } = o, nrnd = o.nrnd || makeRng(NIGHT_SEED); // (nrnd: the night-only dice, as in house)
   const depth = o.depth ?? 5, floors = o.floors ?? 9, y0 = o.y ?? 0.15, fh = 1.5, gh = 2.8;
   const H = gh + floors * fh, zc = z - depth / 2;
   const body = rnd.pick(['#cfd8dc', '#b8c4cc', '#e3ded3', '#9fb0ba', '#d7c9b8', '#8fa3ad']);
@@ -527,13 +531,13 @@ export function tower(v, gl, o) {
   for (let f = 0; f < floors; f++) {
     const y = y0 + gh + f * fh + 0.35;
     for (let c = 0; c < cells; c++) {
-      const lit = night && rnd.chance(0.45);
-      (lit ? gl : v).box(x - (w - 0.8) / 2 + cw * (c + 0.5), y, z + 0.05, cw - 0.12, 0.85, 0.06, lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8');
+      const lit = night && nrnd.chance(0.45);
+      (lit ? gl : v).box(x - (w - 0.8) / 2 + cw * (c + 0.5), y, z + 0.05, cw - 0.12, 0.85, 0.06, lit ? nrnd.pick(LIT) : night ? '#1c2a44' : '#8fc7e8');
     }
     // side windows
     for (let c = 0; c < 3; c++) {
-      const lit = night && rnd.chance(0.4);
-      (lit ? gl : v).box(x + w / 2 - 0.02, y, zc - 1.4 + c * 1.4, 0.06, 0.85, 0.9, lit ? rnd.pick(LIT) : night ? '#1c2a44' : '#7fb9db');
+      const lit = night && nrnd.chance(0.4);
+      (lit ? gl : v).box(x + w / 2 - 0.02, y, zc - 1.4 + c * 1.4, 0.06, 0.85, 0.9, lit ? nrnd.pick(LIT) : night ? '#1c2a44' : '#7fb9db');
     }
   }
   v.box(x, y0 + H, zc, w + 0.1, 0.25, depth + 0.1, shade(body, 0.8));
@@ -544,21 +548,6 @@ export function tower(v, gl, o) {
 }
 
 // ---------------------------------------------------------------- greenery & furniture
-const GREENS = ['#4caf50', '#43a047', '#66bb6a', '#2e9e55', '#58b368'];
-export function tree(v, x, z, rnd, y = 0.15, autumn = false) {
-  const h = rnd.range(1.3, 2.0), g = autumn ? rnd.pick(['#e9a23b', '#d9622b', '#c94f2e', '#8fae3a']) : rnd.pick(GREENS);
-  v.box(x, y, z, 0.42, h, 0.42, '#7a5234', 0.05);
-  const s = rnd.range(0.85, 1.15);
-  v.box(x, y + h, z, 2.2 * s, 0.8, 2.2 * s, shade(g, 0.86), 0.05);
-  v.box(x, y + h + 0.8, z, 2.7 * s, 1.0, 2.7 * s, g, 0.05);
-  v.box(x + rnd.range(-0.2, 0.2), y + h + 1.8, z + rnd.range(-0.2, 0.2), 1.9 * s, 0.8, 1.9 * s, shade(g, 1.1), 0.05);
-  v.box(x, y + h + 2.6, z, 0.9 * s, 0.4, 0.9 * s, shade(g, 1.18));
-}
-export function bush(v, x, z, rnd, y = 0.15, s = 1) {
-  const g = rnd.pick(GREENS);
-  v.box(x, y, z, 1.0 * s, 0.6 * s, 0.9 * s, shade(g, 0.9), 0.06);
-  v.box(x + 0.1, y + 0.6 * s, z, 0.6 * s, 0.3 * s, 0.6 * s, g, 0.06);
-}
 export function tulips(v, x, z, rnd, y = 0.15, n = 5, spread = 0.9) {
   for (let i = 0; i < n; i++) {
     const px = x + rnd.range(-spread, spread), pz = z + rnd.range(-spread * 0.4, spread * 0.4);
@@ -584,18 +573,6 @@ export function bin(v, x, z, y = 0.15) {
   v.box(x, y, z, 0.5, 0.8, 0.5, '#2e7d4f');
   v.box(x, y + 0.8, z, 0.58, 0.1, 0.58, '#1f5a38');
   v.box(x, y + 0.5, z + 0.26, 0.3, 0.1, 0.02, '#111');
-}
-export function bollard(v, x, z, y = 0.15) {
-  v.box(x, y, z, 0.2, 0.7, 0.2, '#3d3d3d');
-  v.box(x, y + 0.7, z, 0.26, 0.1, 0.26, '#e9c46a');
-}
-export function mailbox(v, x, z, y = 0.15) {
-  v.box(x, y, z, 0.2, 0.5, 0.2, '#555');
-  v.box(x, y + 0.5, z, 0.7, 0.8, 0.5, '#f77f00');
-  v.box(x, y + 1.0, z + 0.26, 0.4, 0.06, 0.02, '#222');
-}
-export function hedge(v, x, z, len, y = 0.15) {
-  for (let i = 0; i < len; i++) v.box(x + i - len / 2 + 0.5, y, z, 1.0, 0.7, 0.5, '#3f9a52', 0.07);
 }
 export function atm(v, gl, x, z, y = 0.15) {
   v.box(x, y, z + 0.2, 1.1, 2.0, 0.4, '#dfe6ea');
@@ -623,7 +600,7 @@ function bikeBox(v, alongZ, x, y, z, col, dir = 1) {
   B(0.4, 0.96, 0.07, 0.5, 0.07, '#2b2b2b');
 }
 /** Static parked bicycle drawn into a Vox (lying along x), same size as the ridden one. */
-export function bikeStatic(v, x, z, col, y = 0.15) {
+function bikeStatic(v, x, z, col, y = 0.15) {
   bikeBox(v, false, x, y, z, col);
 }
 export function bikeRack(v, x, z, rnd, n = 4, y = 0.15) {
@@ -650,18 +627,6 @@ export function stall(g, v, x, z, label, colors, y = 0.15, face = 1) {
   s.position.set(x, y + 2.75, z + face * 1.0);
   if (face < 0) s.rotation.y = Math.PI;
   g.add(s);
-}
-export function terrace(v, x, z, rnd, y = 0.15) {
-  const col = rnd.pick(['#e63946', '#ffb703', '#2a9d8f', '#ffffff']);
-  v.box(x, y, z, 0.12, 0.7, 0.12, '#666');
-  v.box(x, y + 0.7, z, 0.9, 0.08, 0.9, '#d9c7a3');
-  for (const [dx, dz] of [[-0.8, 0], [0.8, 0]]) {
-    v.box(x + dx, y, z + dz, 0.42, 0.42, 0.42, '#7a5234');
-    v.box(x + dx * 1.22, y + 0.42, z + dz, 0.08, 0.5, 0.42, '#7a5234');
-  }
-  v.box(x, y + 0.78, z, 0.08, 1.7, 0.08, '#ddd');
-  v.box(x, y + 2.3, z, 2.2, 0.12, 2.2, col);
-  v.box(x, y + 2.42, z, 1.2, 0.12, 1.2, shade(col, 0.9));
 }
 export function tramStop(v, gl, x, z, night, y = 0.15) {
   v.box(x, y + 2.3, z, 3.4, 0.12, 1.2, '#c8102e');
@@ -874,39 +839,6 @@ export function makeCar(rnd, type = 'car', night = false) {
   return a;
 }
 
-/** HTM tram: red skirt, cream top. Forward +z. */
-export function makeTram(night = false) {
-  const g = new THREE.Group(), body = new THREE.Group();
-  g.add(body);
-  const v = new Vox(5), gl = new Vox(6);
-  const seg = 5.2, n = 5, W = 2.4; // 5 segments, about 27.5 m long, 2.4 m wide, 3.3 m high
-  const win = night ? '#ffe9a8' : '#3b5b7a';
-  for (let i = 0; i < n; i++) {
-    const z = (i - (n - 1) / 2) * (seg + 0.3);
-    v.box(0, 0.3, z, W, 1.0, seg, '#c8102e');
-    v.box(0, 1.3, z, W, 1.8, seg, '#f3ecd9');
-    v.box(0, 3.1, z, W - 0.2, 0.2, seg - 0.2, '#8d99a6');
-    for (const sx of [-1, 1]) {
-      for (let k = 0; k < 4; k++) (night ? gl : v).box(sx * (W / 2 + 0.005), 1.65, z - seg / 2 + 0.7 + k * 1.2, 0.03, 1.0, 0.9, win);
-      v.box(sx * (W / 2 + 0.005), 0.4, z, 0.03, 2.2, 0.8, '#f3ecd9'); // door
-    }
-    v.box(0, 0.05, z - 1.6, W - 0.4, 0.4, 1.0, '#222');
-    v.box(0, 0.05, z + 1.6, W - 0.4, 0.4, 1.0, '#222');
-    if (i < n - 1) v.box(0, 0.4, z + seg / 2 + 0.15, W - 0.6, 2.3, 0.3, '#333');
-  }
-  const front = ((n - 1) / 2) * (seg + 0.3) + seg / 2;
-  (night ? gl : v).box(0, 1.65, front + 0.01, W - 0.5, 1.0, 0.04, win);
-  (night ? gl : v).box(0, 1.65, -front - 0.01, W - 0.5, 1.0, 0.04, win);
-  gl.box(-0.75, 0.7, front + 0.02, 0.3, 0.2, 0.04, '#fff6c9');
-  gl.box(0.75, 0.7, front + 0.02, 0.3, 0.2, 0.04, '#fff6c9');
-  v.box(0, 3.3, 0, 0.12, 0.8, 1.6, '#444'); // pantograph
-  v.box(0, 4.1, 0, 1.4, 0.06, 0.1, '#444');
-  body.add(v.mesh(), gl.mesh(MAT.glow));
-  const s = makeSign('HTM', 0.4, { bg: '#111', fg: '#ffb703', pad: 4 });
-  s.position.set(0, 2.8, front + 0.03);
-  body.add(s);
-  return vehicleActor(g, { body, type: 'tram', len: n * (seg + 0.3), wid: W, hgt: 3.3, rigid: true });
-}
 
 /** Bicycle group (forward +z); rider optional. */
 export function makeBike(rnd, rider = null, col = null) {
@@ -973,56 +905,67 @@ function disc(v, cx, cy, cz, r, d, col) {
   v.box(cx, cy - r * 0.75, cz, r * 1.5, r * 1.5, d, col);
 }
 
+const FB_DARK = '#202226'; // the fat-bike's dark parts, the same as the crowd's FB_DARK
+/** The fat-bike's frame colours (its battery block, nose and fenders): the same six as the niffo's `bikeCols` in districts.js. */
+const FAT_COLS = ['#ff6b00', '#ffd400', '#00c389', '#f2f2f2', '#e5173f', '#151515'];
 /**
- * Electric fat-bike, forward +z, about 1.75 m long. 20 x 4 inch tyres (0.71 m across, 0.12 m wide), a long flat bench
- * for two, upright bars, a big round headlight. Same conventions as makeScooter: riders passed in sit on it as part of
- * the vehicle (`a.riders`, [0] drives, [1] is the passenger holding on), the wheels turn and the front one steers with
- * the bars. For a rider that is a separate actor use `mount(bike, rider)` (it reads `a.seatY`).
+ * Electric fat-bike, forward +z, about 1.75 m long, drawn larger than life where it counts so it reads as one from far
+ * off (the same numbers as the crowd's FATBIKE in crowd.js): fat tyres 0.60 m across and 0.28 m wide (three times a
+ * real 4 inch tyre), a solid battery block in a strong frame colour where a bike has an open frame, one long flat dark
+ * bench for two, tall upright bars and a big round headlight (0.46 m). Same conventions as makeScooter: riders passed in
+ * sit on it as part of the vehicle (`a.riders`, [0] drives, [1] is the passenger holding on), the wheels turn and the
+ * front one steers with the bars. For a rider that is a separate actor use `mount(bike, rider)` (it reads `a.seatY`).
  */
 export function makeFatbike(rnd, riders = []) {
   const g = new THREE.Group(), body = new THREE.Group();
   g.add(body);
-  const main = rnd.chance(0.8) ? '#1c1d20' : rnd.pick(['#2b3a55', '#3b3f32', '#4a2b2b']);
-  const acc = rnd.pick(['#e63946', '#ffd60a', '#06d6a0', '#3a86ff', '#ff7b00']);
-  const R = 0.355, TW = 0.12, WZ = 0.52; // tyre radius (20" rim + 4" tyre), tyre width, axle offset from the middle
-  const SEAT = 0.86, HEAD = WZ - 0.13; // seat top; z of the steering axis
+  const main = rnd.chance(0.8) ? FB_DARK : rnd.pick([FB_DARK, FB_DARK, FB_DARK]); // the dark parts (stays, fork, bars, grab bar), as dark as the crowd's (the draws as before)
+  const acc = rnd.pick(FAT_COLS); // the frame colour
+  const R = 0.3, TW = 0.28, WZ = 0.54; // tyre radius, tyre width, axle offset from the middle
+  const SEAT = 0.86, HEAD = WZ - 0.13, SX = TW / 2 + 0.03; // seat top; z of the steering axis; x of stays and fork blades
   body.add(piece((v, gl) => {
     // seat: one long flat bench, kicked up at the back, with a grab bar for the passenger
-    v.box(0, 0.76, -0.27, 0.38, 0.1, 0.94, '#17181a', 0.02);
-    v.box(0, 0.752, -0.27, 0.4, 0.016, 0.96, acc);
-    v.box(0, SEAT, -0.74, 0.38, 0.05, 0.1, '#17181a');
-    for (const sx of [-1, 1]) v.box(sx * 0.15, 0.78, -0.82, 0.03, 0.16, 0.03, main);
-    v.box(0, 0.93, -0.82, 0.33, 0.03, 0.04, main);
-    // battery tower under the seat, with an accent panel each side
-    v.box(0, 0.3, -0.12, 0.16, 0.46, 0.4, main, 0.02);
-    for (const sx of [-1, 1]) v.box(sx * 0.085, 0.38, -0.12, 0.012, 0.28, 0.3, acc);
-    // rear: fender, stays and drop-outs either side of the fat tyre
-    v.box(0, 0.715, -WZ, 0.17, 0.03, 0.56, main);
+    v.box(0, 0.74, -0.3, 0.4, 0.12, 1.04, '#17181a', 0.02);
+    v.box(0, SEAT, -0.76, 0.4, 0.05, 0.12, '#17181a');
+    for (const sx of [-1, 1]) v.box(sx * 0.17, 0.78, -0.82, 0.03, 0.16, 0.03, main);
+    v.box(0, 0.93, -0.82, 0.37, 0.03, 0.04, main);
+    // the battery block fills the frame between the wheels, a nose runs on from it to the head tube
+    v.box(0, 0.24, 0.0, 0.22, 0.5, 0.4, acc, 0.02); // (3 cm clear of the round tyres, see fatWheel)
+    v.box(0, 0.6, 0.3, 0.16, 0.14, 0.22, acc);
+    v.box(0, 0.68, HEAD, 0.11, 0.26, 0.11, main);
+    // rear: fender, stays and hub caps either side of the fat tyre
+    v.box(0, 0.62, -WZ, 0.3, 0.05, 0.46, acc);
     for (const sx of [-1, 1]) {
-      v.box(sx * 0.09, 0.28, -WZ - 0.02, 0.04, 0.46, 0.1, main);
-      v.box(sx * 0.09, 0.3, -0.4, 0.04, 0.07, 0.34, main);
-      v.box(sx * 0.1, 0.295, -WZ, 0.05, 0.12, 0.12, '#8a9199'); // hub motor caps
+      v.box(sx * SX, 0.3, -WZ - 0.02, 0.04, 0.34, 0.08, main);
+      v.box(sx * SX, 0.27, -0.38, 0.04, 0.06, 0.3, main);
     }
-    gl.box(0, 0.66, -WZ - 0.3, 0.14, 0.06, 0.03, '#ff2d2d'); // tail light
-    // front: a chunky nose from the seat over the front tyre to the head tube; footplates either side of the front tyre,
-    // pegs for the passenger either side of the rear one
-    v.box(0, 0.74, 0.29, 0.1, 0.1, 0.2, main);
-    v.box(0, 0.76, HEAD, 0.11, 0.22, 0.11, main);
-    v.box(0, 0.86, HEAD, 0.115, 0.04, 0.115, acc);
+    gl.box(0, 0.66, -0.84, 0.24, 0.08, 0.04, '#ff2d2d'); // tail light
+    // footplates for the rider either side of the block, pegs for the passenger either side of the rear tyre
     for (const sx of [-1, 1]) {
-      v.box(sx * 0.2, 0.12, 0.18, 0.22, 0.05, 0.42, main);
-      v.box(sx * 0.31, 0.12, 0.18, 0.02, 0.07, 0.42, acc);
-      v.box(sx * 0.24, 0.12, -0.3, 0.2, 0.05, 0.4, main);
+      v.box(sx * 0.22, 0.14, 0.08, 0.16, 0.04, 0.34, main);
+      v.box(sx * 0.22, 0.14, -0.3, 0.12, 0.04, 0.16, main);
     }
   }));
-  // wheels: outside the sprung body (they turn with the speed); the front one hangs from the steering axis and carries the fork, bars and headlight
+  // wheels: outside the sprung body (they turn with the speed); the front one hangs from the steering axis and carries the fork, bars and headlight.
+  // A fat tyre is six bars of 2R x 0.16 m at 30 degree steps (three meshes of two crossed bars): round to within 1 cm (R to R + 0.01),
+  // so as it spins it stays clear of the fenders (R + 0.02 above the axle) and the battery block (0.34 m from the axles), unlike
+  // makeWheel's two squares, whose corners reach 1.3 R.
   const mkWheel = () => {
-    const w = makeWheel(R, TW, 1);
-    w.userData.spin.add(sculpt((v) => { // the hub cap on the other side too
-      v.box(-(TW / 2 + 0.005), -R * 0.5, 0, 0.02, R, R, '#c9d1d6');
-      v.box(-(TW / 2 + 0.012), -R * 0.12, 0, 0.02, R * 0.24, R * 1.5, '#7d868c');
-      v.box(-(TW / 2 + 0.012), -R * 0.75, 0, 0.02, R * 1.5, R * 0.24, '#7d868c');
+    const w = new THREE.Group(), spin = new THREE.Group();
+    for (let k = 0; k < 3; k++) {
+      const t = sculpt((v) => { v.box(0, -R, 0, TW, 2 * R, 0.16, '#1a1a1a'); v.box(0, -0.08, 0, TW, 0.16, 2 * R, '#1a1a1a'); });
+      t.rotation.x = (k * Math.PI) / 6;
+      spin.add(t);
+    }
+    spin.add(sculpt((v) => { // the hub caps, both sides
+      for (const sd of [1, -1]) {
+        v.box(sd * (TW / 2 + 0.005), -R * 0.5, 0, 0.02, R, R, '#c9d1d6');
+        v.box(sd * (TW / 2 + 0.012), -R * 0.12, 0, 0.02, R * 0.24, R * 1.5, '#7d868c');
+        v.box(sd * (TW / 2 + 0.012), -R * 0.75, 0, 0.02, R * 1.5, R * 0.24, '#7d868c');
+      }
     }));
+    w.add(spin);
+    w.userData.spin = spin;
     return w;
   };
   const rear = mkWheel();
@@ -1032,20 +975,21 @@ export function makeFatbike(rnd, riders = []) {
   wheelF.position.z = 0.13; // the wheel centre is ahead of the steering axis
   fr.userData = { spin: wheelF.userData.spin, front: true };
   fr.add(wheelF);
-  wheelF.add(piece((v, gl) => { // (origin: the front wheel centre)
-    for (const sx of [-1, 1]) v.box(sx * 0.1, 0, 0, 0.05, 0.34, 0.06, main); // fork blades
-    v.box(0, 0.3, -0.1, 0.26, 0.05, 0.14, main); // crown
-    v.box(0, 0.37, 0, 0.17, 0.03, 0.34, main); // fender
-    v.box(0, 0.3, -0.13, 0.07, 0.66, 0.07, main); // steering column (turns inside the static head tube)
-    v.box(0, 0.92, -0.13, 0.62, 0.04, 0.04, main); // upright bars, swept back at the grips
+  const Y = (y) => y - R; // (origin: the front wheel centre; heights below are above the ground)
+  wheelF.add(piece((v, gl) => {
+    for (const sx of [-1, 1]) v.box(sx * SX, Y(R), 0, 0.05, 0.34, 0.06, main); // fork blades
+    v.box(0, Y(0.62), -0.13, 0.4, 0.05, 0.1, main); // crown
+    v.box(0, Y(0.62), 0, 0.3, 0.05, 0.4, acc); // fender
+    v.box(0, Y(0.62), -0.13, 0.07, 0.66, 0.07, main); // steering column (turns inside the static head tube)
+    v.box(0, Y(1.24), -0.13, 0.74, 0.04, 0.04, main); // upright bars, swept back at the grips
     for (const sx of [-1, 1]) {
-      v.box(sx * 0.3, 0.88, -0.22, 0.05, 0.05, 0.2, '#101113');
-      v.box(sx * 0.3, 0.92, -0.17, 0.04, 0.04, 0.1, main);
+      v.box(sx * 0.35, Y(1.2), -0.22, 0.05, 0.05, 0.2, '#101113');
+      v.box(sx * 0.35, Y(1.24), -0.17, 0.04, 0.04, 0.1, main);
     }
-    v.box(0, 0.96, -0.13, 0.12, 0.04, 0.08, acc); // bar-top display
-    // the big round headlight: bezel, and a glowing lens in front of it
-    disc(v, 0, 0.62, -0.04, 0.16, 0.12, '#25272b');
-    disc(gl, 0, 0.62, 0.03, 0.135, 0.03, '#fff6c9');
+    v.box(0, Y(1.28), -0.13, 0.12, 0.04, 0.08, acc); // bar-top display
+    // the big round headlight in front of the column, below the bars: bezel, and a glowing lens in front of it
+    disc(v, 0, Y(1.0), 0.01, 0.25, 0.08, '#25272b'); // 0.46 m, as the crowd's
+    disc(gl, 0, Y(1.0), 0.06, 0.216, 0.03, '#fff6c9'); // 0.40 m
   }));
   g.add(rear, fr);
   const SIT = 0.285; // sit pose: the hip is this far up the person (times its scale) above its origin
@@ -1109,7 +1053,7 @@ export function makeHeli() {
     body.rotation.z = Math.sin(this.t * 1.3) * 0.06;
     blink.visible = Math.floor(this.t * 3) % 2 === 0;
     // beam from heli to aim point on the ground (world space → local)
-    const h = g.position.y;
+    const h = g.position.y - (this.aim.y || 0); // height over the lit ground (gags.js heli() keeps aim.y at 0; the stage's helicopter, overhead.js, flies at map height)
     const lx = this.aim.x - g.position.x, lz = this.aim.z - g.position.z;
     const c = Math.cos(-g.rotation.y), s = Math.sin(-g.rotation.y);
     const ax = lx * c + lz * s, az = -lx * s + lz * c;
@@ -1147,4 +1091,3 @@ export function makeBoat(rnd) {
   return a;
 }
 
-export { piece };

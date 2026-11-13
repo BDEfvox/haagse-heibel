@@ -17,8 +17,8 @@
 | 3c dive | Both dive behind the van, fingers in their ears. | both | two-shot |
 | 4 KABOOM | Slow motion: flash, fireball, panel spins away, banknotes; the van rocks; crowd flees, then watches. | the machine | wide with shake |
 | 4b the hole | The smoking hole. | the machine | close |
-| 5 harvest | Notes rain down; robbers scoop with open bags, jumping, laughing; a few bystanders creep back for notes. | both robbers | orbit, then face |
-| 6 loading | Bags over shoulders, a run to the van; bags thrown in; the robbers jump after them and disappear into the cargo area; doors slam. | robbers + van | track, then ground |
+| 5 harvest, 5b the laugh | Notes rain down; robbers scoop with open bags, jumping, laughing; a few bystanders creep back for notes. | both robbers | orbit, then face |
+| 6 loading, 6b the bags go in | Bags over shoulders, a run to the van; bags thrown in; the robbers jump after them and disappear into the cargo area; doors slam. | robbers + van | track, then ground |
 | 7 getaway | (stall: the engine coughs twice.) Wheelspin, fishtail only where the road is free, notes flutter out of the door left ajar. | the van | chase cam |
-| 8 the law | Siren heard, then the police car drives in from out of frame and stops at the hole (broadside where there is room). The cop steps out through the door, looks at the hole, down the street, scratches his head; a last note floats down: BEWIJS. | police car, cop | wide, then close on the cop |
+| 8 the law, 8b the cop looks at the hole | Siren heard, then the police car drives in from out of frame and stops at the hole (broadside where there is room). The cop steps out through the door, looks at the hole, down the street, scratches his head; a last note floats down: BEWIJS. | police car, cop | wide, then close on the cop |
 | 9 epilogue | The cop gets back in and the car leaves; the hole smokes, the alarm rings on. | the machine | wide |

@@ -415,7 +415,6 @@ function labelPoint(geom) {
 // ---------------------------------------------------------------- main
 const B = await loadBuurten();
 const buurtIdx = new PolyIndex(500);
-const buurtByCode = new Map(B.list.map((b) => [b.code, b]));
 for (const b of B.list) {
   const polys = b.geom.type === 'Polygon' ? [b.geom.coordinates] : b.geom.coordinates;
   for (const p of polys) buurtIdx.add(p.map((r) => r.map(proj)), b);

@@ -46,7 +46,6 @@ export function shade(hex, k) {
   shadeCache.set(key, r);
   return r;
 }
-export const lighten = (hex, k) => shade(hex, k);
 
 /** Material name or hex string -> hex string. */
 export function C(c) {
@@ -158,7 +157,6 @@ export function cylinder(x, y, z, r, h, col, g = false) {
 }
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-export const lerp = (a, b, t) => a + (b - a) * t;
 
 /** One-time warning for option keys the kit does not know. */
 export function checkKeys(o, allowed, what) {

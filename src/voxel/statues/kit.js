@@ -82,14 +82,14 @@
 
 import { makeRng } from '../kit.js';
 import { S, begin, hooks, MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS } from './core.js';
-import { runParts, SPEC, DRAW } from './parts.js';
+import { runParts, SPEC } from './parts.js';
 import { genericParts, fountainParts } from './generic.js';
 
-export { MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS, SPEC, DRAW, hooks, makeRng };
+export { MATS, POSES, HATS, HAIRS, HOLDS, FIG_OPTS, HORSE_OPTS, PLINTH_STYLES, ANIMALS, SPEC, hooks, makeRng };
 
 // ------------------------------------------------------------------ far level of detail
 const _far = new WeakMap();
-function ext(a) {
+function ext(a, bare) {
   const t = a[0], n = (i) => (typeof a[i] === 'number' ? a[i] : 0);
   switch (t) {
     case 'box': case 'wall': case 'slab': { const r = Math.hypot(n(4), n(6)) / 2; return [n(1) - r, n(2), n(3) - r, n(1) + r, n(2) + n(5), n(3) + r, a[7]]; }
@@ -98,12 +98,23 @@ function ext(a) {
     case 'ball': return [n(1) - n(4), n(2), n(3) - n(4), n(1) + n(4), n(2) + 2 * n(4), n(3) + n(4), a[5]];
     case 'ring': case 'disc': return [n(1) - n(4), n(2), n(3) - n(4), n(1) + n(4), n(2) + 2 * n(4), n(3) + n(4), a[6]];
     case 'arch': return [n(1) - n(4) / 2, n(2), n(3) - n(7) / 2, n(1) + n(4) / 2, n(2) + n(5), n(3) + n(7) / 2, a[8]];
-    case 'beam': return [Math.min(n(1), n(4)), Math.min(n(2), n(5)), Math.min(n(3), n(6)), Math.max(n(1), n(4)), Math.max(n(2), n(5)), Math.max(n(3), n(6)), a[8]];
-    case 'curve': {
+    case 'beam': { // the near level (limb) draws boxes centred on the line, each t wider than the step: the extent is the end points +- t/2
+      const h = bare ? 0 : n(7) / 2;
+      return [Math.min(n(1), n(4)) - h, Math.min(n(2), n(5)) - h, Math.min(n(3), n(6)) - h, Math.max(n(1), n(4)) + h, Math.max(n(2), n(5)) + h, Math.max(n(3), n(6)) + h, a[8]];
+    }
+    case 'curve': { // same for each segment of the polyline, t = a[2]
       if (!Array.isArray(a[1]) || !a[1].length) return null;
+      const h = bare ? 0 : n(2) / 2;
       const e = [1e9, 1e9, 1e9, -1e9, -1e9, -1e9, a[3]];
-      for (const p of a[1]) for (let k = 0; k < 3; k++) { e[k] = Math.min(e[k], p[k]); e[k + 3] = Math.max(e[k + 3], p[k]); }
+      for (const p of a[1]) for (let k = 0; k < 3; k++) { e[k] = Math.min(e[k], p[k] - h); e[k + 3] = Math.max(e[k + 3], p[k] + h); }
       return e;
+    }
+    case 'letters': { // parts.js letters(): s.length cells of 4p - p wide, p = h/5, centred on x, depth max(0.04, 0.6p), from y up to y + h
+      if (bare) return null;
+      const len = String(a[4]).slice(0, 12).length, h = n(5), p = h / 5;
+      if (!len) return null;
+      const r = Math.hypot(len * 4 * p - p, Math.max(0.04, p * 0.6)) / 2;
+      return [n(1) - r, n(2), n(3) - r, n(1) + r, n(2) + h, n(3) + r, a[6]];
     }
     case 'fig': { const h = n(4); return [n(1) - 0.2 * h, n(2), n(3) - 0.15 * h, n(1) + 0.2 * h, n(2) + h, n(3) + 0.15 * h, a[5]]; }
     case 'bust': case 'head': { const h = n(4); return [n(1) - 0.31 * h, n(2), n(3) - 0.15 * h, n(1) + 0.31 * h, n(2) + h, n(3) + 0.15 * h, a[5]]; }
@@ -122,10 +133,11 @@ function ext(a) {
 /**
  * A 3 to 6 box silhouette for a part list: the plinth and steps, one box for what lies on the ground (walls, basins,
  * low blocks), and the rest as a lower and an upper box, in the colour of its biggest part.
+ * `bare` (generic forms and fountains) keeps the old sizes: no thickness for beam and curve, no letters; recipes do not pass it.
  */
-export function deriveFar(parts) {
+export function deriveFar(parts, bare) {
   if (!Array.isArray(parts)) return [];
-  const hit = _far.get(parts);
+  const hit = bare ? null : _far.get(parts);
   if (hit) return hit;
   const items = [];
   let top = 0;
@@ -133,14 +145,14 @@ export function deriveFar(parts) {
     if (!Array.isArray(a) || a[0] === 'paving' || a[0] === 'fence') continue;
     if (a[0] === 'plinth') { items.push({ base: 1, e: [-a[1] / 2, 0, -a[3] / 2, a[1] / 2, a[2], a[3] / 2, a[4]] }); top = Math.max(top, a[2]); continue; }
     if (a[0] === 'steps') { const g = (Math.max(1, a[3]) - 1) * 0.7, hh = Math.max(1, a[3]) * 0.15; items.push({ base: 1, e: [-(a[1] + g) / 2, 0, -(a[2] + g) / 2, (a[1] + g) / 2, hh, (a[2] + g) / 2, a[4]] }); continue; }
-    const e = ext(a);
+    const e = ext(a, bare);
     if (e) { items.push({ base: 0, e }); top = Math.max(top, e[4]); }
   }
-  const out = [], U = (m, e) => { if (!m) return e.slice(0, 6); for (let k = 0; k < 3; k++) { m[k] = Math.min(m[k], e[k]); m[k + 3] = Math.max(m[k + 3], e[k + 3]); } return m; };
+  const U = (m, e) => { if (!m) return e.slice(0, 6); for (let k = 0; k < 3; k++) { m[k] = Math.min(m[k], e[k]); m[k + 3] = Math.max(m[k + 3], e[k + 3]); } return m; };
   let plinth = null, ground = null, gcol = null, mass = null, mcol = null, mvol = 0;
   for (const it of items) {
     const e = it.e, h = e[4] - e[1];
-    if (it.base) { plinth = U(plinth, e); if (!out.length) out.push(e[6]); continue; }
+    if (it.base) { plinth = U(plinth, e); continue; }
     if (e[1] < 0.3 && h < Math.max(1.2, top * 0.3) && e[3] - e[0] > 1.5 * h) { ground = U(ground, e); if (!gcol) gcol = e[6]; continue; }
     mass = U(mass, e);
     const vol = (e[3] - e[0]) * (e[5] - e[2]) * h;
@@ -163,8 +175,7 @@ export function deriveFar(parts) {
     } else res.push(box(mass, c, 0.85));
   }
   if (!res.length) res.push(['box', 0, 0, 0, 1, 1.5, 1, 'stone']);
-  void out;
-  _far.set(parts, res);
+  if (!bare) _far.set(parts, res);
   return res;
 }
 
@@ -191,7 +202,7 @@ export function drawGeneric(v, gl, form, rnd, opts) {
   opts = opts || {};
   begin(v, gl, opts.night, opts.lod, rnd);
   let parts = genericParts(form, rnd);
-  if ((opts.lod | 0) >= 2) parts = deriveFar(parts);
+  if ((opts.lod | 0) >= 2) parts = deriveFar(parts, true);
   runParts(parts);
   return finish(opts);
 }
@@ -203,7 +214,7 @@ export function drawFountain(v, gl, f, recipe, night, opts) {
   const rnd = opts.rnd || makeRng(Math.imul(Math.round((f.x || 0) * 10), 73856093) ^ Math.imul(Math.round((f.z || 0) * 10), 19349663));
   begin(v, gl, night, opts.lod, rnd);
   let parts = fountainParts(f, rnd);
-  if ((opts.lod | 0) >= 2) parts = deriveFar(parts);
+  if ((opts.lod | 0) >= 2) parts = deriveFar(parts, true);
   runParts(parts);
   return finish(opts);
 }

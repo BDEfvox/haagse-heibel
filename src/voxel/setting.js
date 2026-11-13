@@ -9,9 +9,12 @@
 //   ctx.W.treeNear(x, z, r) a tree trunk within r metres
 //   ctx.W.props             furniture { kind, x, z } in scene coordinates (kinds and sizes: FURN below)
 //   ctx.W.anchors.parked / .lamps   the whole street's parked cars and lamp posts { s, z }
+//   ctx.W.ground.at(x, z, r, who, ignore)   may a person stand there, and how high is the ground (ground.js; see groundFree)
 //   ctx.crowd.obstacles(x, z, r, out)   optional: standing groups, waiting vehicles... [x, z, radius, height, ...] in scene coordinates
 // Besides ground, buildings and trees, a spot has an OBSTACLE PICTURE (`obstacles(ctx)`): everything that stands there. The
 // placement helpers, the walking route, the lane finder and the stage scan (`findStage`) all read it.
+
+import { PERSON as G_PERSON, STANDING as G_STANDING, WATER as G_WATER } from './ground.js';
 
 const X0 = -23.5, X1 = 23.5;
 
@@ -58,6 +61,24 @@ export function builtAt(ctx, x, z) {
   if (W.solid && typeof W.solid.get === 'function') { const v = W.solid.get(p[0], p[1]); if (v > 0 && v < 255) return true; }
   return !!(W.C && typeof W.clsAt === 'function' && W.clsAt(p[0], p[1]) === W.C.BUILDING);
 }
+/**
+ * The city's own answer (W.ground, the same function the crowd and the walking character ask): may a person stand at the street-space
+ * point? Only what scenes do not keep in their own picture counts here: buildings as drawn, water, fences and walls (the standing things,
+ * furniture, posts and parked cars, are the obstacle picture's, with its wider clearances). True when the world has no W.ground.
+ * at: a stand spot (somebody standing AT a door, a wall, a bench, a rack): within 0.4 m of open ground counts as open. Never for a way
+ * (the walking grid, the stage corridor, a line or a run): a thin fence is drawn about 0.7 m wide, so with the tolerance a way would cross it.
+ */
+export function groundFree(ctx, x, z, at = false) {
+  const W = world(ctx);
+  if (!W || !W.ground) return true;
+  const G = W.ground, p = scene(ctx, W, x, z), h = G.at(p[0], p[1], 0, G_PERSON, G_STANDING);
+  if (h === h) return true;
+  if (!at || G.bits & G_WATER) return false;
+  // standing AT a wall or a fence (a doorstep, a bench against a front): the raster's half-metre cells reach up to 0.35 m past the drawn
+  // face, so a point within 0.4 m of open ground counts as open; only a point deeper inside a drawn wall or fence is refused
+  for (let k = 0; k < 4; k++) { const v = G.at(p[0] + (k === 0 ? 0.4 : k === 1 ? -0.4 : 0), p[1] + (k === 2 ? 0.4 : k === 3 ? -0.4 : 0), 0, G_PERSON, G_STANDING); if (v === v) return true; }
+  return false;
+}
 /** True when something is known to be there to stand in: a trunk within r metres. */
 export function treeAt(ctx, x, z, r = 0.8) {
   const W = world(ctx);
@@ -75,7 +96,7 @@ export function roadAt(ctx, x, z) {
 // ---------------------------------------------------------------- what stands there: the obstacle picture
 /**
  * Everything that stands on the street and takes room, as [height, footprint radius] in metres, by prop kind. ONE table
- * (the stage's own `FURN` in stage.js has the same numbers for the camera). Unknown kinds count as FURN_DEFAULT.
+ * (the camera's `FURN` in stage.js is built from it). Unknown kinds count as FURN_DEFAULT.
  * A radius of 0 (signs) or a height under 0.2 m is not an obstacle.
  */
 export const FURN = {
@@ -102,13 +123,14 @@ function newPic(ctx, np) {
   const lo = Math.max(-34, L.sA != null ? L.sA - sc + 0.5 : -34), hi = Math.min(34, L.sB != null ? L.sB - sc - 0.5 : 34);
   const z0 = (L.zB != null ? L.zB : -16) - 2, z1 = (L.zF != null ? L.zF : 16) + 2;
   return {
-    np, asked: 0, n: 0, nStat: 0, X: [], Z: [], HX: [], HZ: [], H: [], T: [], K: [], OX: [], OZ: [], cars: [], lamps: [],
+    np, asked: 0, ver: 0, bk: null, n: 0, nStat: 0, X: [], Z: [], HX: [], HZ: [], H: [], T: [], K: [], OX: [], OZ: [], cars: [], lamps: [],
     lo, hi, z0, z1, nx: Math.max(2, Math.ceil((hi - lo) / CS)), nz: Math.max(2, Math.ceil((z1 - z0) / CS)),
     grids: new Map(), gnd: null, tmp: null, g: null, par: null, mark: null, stamp: 0, heapF: [], heapI: [], out: null,
   };
 }
 function addShape(pic, t, x, z, hx, hz, h, kind, ox = x, oz = z) {
   const i = pic.n++;
+  pic.ver++;
   pic.X[i] = x; pic.Z[i] = z; pic.HX[i] = hx; pic.HZ[i] = hz; pic.H[i] = h; pic.T[i] = t; pic.K[i] = kind; pic.OX[i] = ox; pic.OZ[i] = oz;
 }
 function buildStatic(ctx, pic) {
@@ -153,6 +175,7 @@ function buildStatic(ctx, pic) {
 function crowdShapes(ctx, pic) {
   for (const k of ['X', 'Z', 'HX', 'HZ', 'H', 'T', 'K', 'OX', 'OZ']) pic[k].length = pic.nStat;
   pic.n = pic.nStat;
+  pic.ver++;
   pic.grids.clear();
   const cr = ctx.crowd, W = world(ctx);
   if (!cr || typeof cr.obstacles !== 'function' || !W) return;
@@ -190,8 +213,6 @@ export function obstacles(ctx) {
 }
 /** Take a fresh look at the moving part of the picture (the crowd's standing groups and waiting vehicles): after `R.close()`, say. */
 export function refreshCrowd(ctx) { const pic = PICS.get(ctx); if (pic) crowdShapes(ctx, pic); }
-/** Throw the cached picture away (the next ask rebuilds it). */
-export function forgetObstacles(ctx) { PICS.delete(ctx); }
 
 /** Distance from a point to the edge of shape i (negative inside). */
 function gapTo(pic, i, px, pz) {
@@ -215,16 +236,41 @@ function ignored(pic, i, ign) {
  * lets whatever already touches that point stay as close as it is there but no closer (the place a walker starts from).
  */
 export function hitsObst(ctx, x, z, r = 0.45, ign = null, near = null) {
-  const pic = obstacles(ctx);
-  for (let i = 0; i < pic.n; i++) {
-    let re = pic.HX[i] < 0.35 ? Math.min(r, 0.45) : r; // a thin post (lamp, pole, bollard) only needs a person's width beside it
-    if (pic.H[i] < 0.2 || Math.abs(pic.X[i] - x) > pic.HX[i] + re || Math.abs(pic.Z[i] - z) > pic.HZ[i] + re) continue;
-    if (near) { const gn = gapTo(pic, i, near.x, near.z); if (gn < near.r) re = Math.min(re, gn - 0.05); } // what the start already touches: you may stay as close as you are, not closer
-    if (gapTo(pic, i, x, z) >= re) continue;
-    if (ign && ign.length && ignored(pic, i, ign)) continue;
-    return true;
+  const pic = obstacles(ctx), B = pic.bk && pic.bk.ver === pic.ver ? pic.bk : buckets(pic);
+  // only the shapes whose x-extent reaches within r of x can pass the first test below (re <= r): those of the buckets that
+  // cover [x - r, x + r]; a shape in two of them is tested twice, which changes nothing (the answer is "is there any")
+  for (let k = 0; k < B.odd.length; k++) if (hit1(pic, B.odd[k], x, z, r, ign, near)) return true;
+  if (!(r >= 0 && r < 1e4)) { for (let i = 0; i < pic.n; i++) if (hit1(pic, i, x, z, r, ign, near)) return true; return false; } // (a radius that is not a number: the plain scan)
+  const c1 = Math.floor((x + r + 1e-6) / BKW);
+  for (let c = Math.floor((x - r - 1e-6) / BKW); c <= c1; c++) {
+    const l = B.cols.get(c);
+    if (l) for (let k = 0; k < l.length; k++) if (hit1(pic, l[k], x, z, r, ign, near)) return true;
   }
   return false;
+}
+const BKW = 2; // metres of street per bucket
+/** The shapes by their extent along the street, rebuilt when the picture changes (`ver`). Shapes with a non-finite x go to `odd` (asked every time). */
+function buckets(pic) {
+  const B = pic.bk || (pic.bk = { ver: -1, cols: new Map(), odd: [] });
+  for (const l of B.cols.values()) l.length = 0;
+  B.odd.length = 0;
+  for (let i = 0; i < pic.n; i++) {
+    const X = pic.X[i], HX = pic.HX[i];
+    if (!Number.isFinite(X) || !Number.isFinite(HX) || HX < 0 || HX > 1e4) { B.odd.push(i); continue; }
+    const c1 = Math.floor((X + HX + 1e-6) / BKW); // (a hair wider both ways: rounding can only add a bucket, never miss one)
+    for (let c = Math.floor((X - HX - 1e-6) / BKW); c <= c1; c++) { let l = B.cols.get(c); if (!l) B.cols.set(c, (l = [])); l.push(i); }
+  }
+  B.ver = pic.ver;
+  return B;
+}
+/** The test of one shape (what the full scan did for each). */
+function hit1(pic, i, x, z, r, ign, near) {
+  let re = pic.HX[i] < 0.35 ? Math.min(r, 0.45) : r; // a thin post (lamp, pole, bollard) only needs a person's width beside it
+  if (pic.H[i] < 0.2 || Math.abs(pic.X[i] - x) > pic.HX[i] + re || Math.abs(pic.Z[i] - z) > pic.HZ[i] + re) return false;
+  if (near) { const gn = gapTo(pic, i, near.x, near.z); if (gn < near.r) re = Math.min(re, gn - 0.05); } // what the start already touches: you may stay as close as you are, not closer
+  if (gapTo(pic, i, x, z) >= re) return false;
+  if (ign && ign.length && ignored(pic, i, ign)) return false;
+  return true;
 }
 /** The shapes of the picture that a person could hide behind: [{ x, z, r, h }] (stalls, kiosks, shelters, vans). */
 export function hiders(ctx, minH = 2.0) {
@@ -246,6 +292,8 @@ export function roadHere(ctx, z, from = -20, to = 20, need = 0.6, opt = {}) {
  * lamp post, bin, bench, shelter, terrace table... (the obstacle picture). Unknown ground counts as clear.
  * opt.ignore: a list of things the caller is deliberately AT (an anchor { x, z }, an actor, a [x, z] point; `r` widens, default 2 m),
  * so a scene that tips over a bin or breaks into a car does not fail on it. opt.obst === false skips the standing things.
+ * opt.way: the point is on a way somebody walks (the walking grid, lineClear, runway), not a spot to stand at: the ground is asked
+ * strictly (groundFree without its stand-spot tolerance).
  */
 export function clearSpot(ctx, x, z, r = 0.6, opt = {}) {
   const W = world(ctx);
@@ -255,7 +303,7 @@ export function clearSpot(ctx, x, z, r = 0.6, opt = {}) {
   const pts = r > 0 ? [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r]] : [[0, 0]];
   if (r >= 1) pts.push([r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]);
   for (const [dx, dz] of pts) {
-    if (builtAt(ctx, x + dx, z + dz)) return false;
+    if (builtAt(ctx, x + dx, z + dz) || !groundFree(ctx, x + dx, z + dz, !opt.way)) return false; // (both: no spot is gained that either forbids)
     if (tb) { const c = groundAt(ctx, x + dx, z + dz); if (c !== 255 && !tb[c]) return false; }
   }
   if (opt.trees !== false && treeAt(ctx, x, z, r + 0.3)) return false;
@@ -299,7 +347,7 @@ export function nudge(ctx, x, z, r = 0.5, opt = {}) {
  */
 export function runway(ctx, x, z, dir, max = 24, r = 0.45, opt = {}) {
   const lo = (ctx.L && ctx.L.x0 != null ? ctx.L.x0 : -24) + 0.5, hi = (ctx.L && ctx.L.x1 != null ? ctx.L.x1 : 24) - 0.5;
-  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst, near: { x, z, r: r + 0.1 } };
+  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst, near: { x, z, r: r + 0.1 }, way: true };
   let last = x;
   for (let d = 1; d <= max; d++) {
     const cx = x + dir * d;
@@ -316,7 +364,7 @@ export function runway(ctx, x, z, dir, max = 24, r = 0.45, opt = {}) {
  */
 export function lineClear(ctx, x0, z0, x1, z1, r = 0.45, opt = {}) {
   const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 0.5));
-  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst };
+  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst, way: true };
   for (let i = 0; i <= n; i++) {
     const t = i / n, x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
     if (!clearSpot(ctx, x, z, r, { ...o, near: i * 2 < n ? { x: x0, z: z0, r } : { x: x1, z: z1, r } })) return false;
@@ -347,7 +395,7 @@ function stamp(pic, inf0, per, out) {
 function groundBlocked(ctx, pic, i, j) {
   const g = pic.gnd || (pic.gnd = new Uint8Array(pic.nx * pic.nz)), k = j * pic.nx + i;
   let v = g[k];
-  if (!v) { v = clearSpot(ctx, pic.lo + (i + 0.5) * CS, pic.z0 + (j + 0.5) * CS, 0.1, { ground: 'open', obst: false }) ? 1 : 2; g[k] = v; }
+  if (!v) { v = clearSpot(ctx, pic.lo + (i + 0.5) * CS, pic.z0 + (j + 0.5) * CS, 0.1, { ground: 'open', obst: false, way: true }) ? 1 : 2; g[k] = v; }
   return v === 2;
 }
 /** A query over the walking grid: q.blk = the standing things, the ground behind it, and a 1.3 m carve-out round the start and goal. */
@@ -621,7 +669,7 @@ export function laneFor(ctx, dir = 1, x0 = -20, x1 = 20, halfWidth = 0.95, opt =
 
 /**
  * Real house fronts near x, nearest first. opt: { door: true (measure by door, not window), shop: true|false (only /
- * no shops), tower: false (no towers), reach for the standing spot not needed }. A front is only used when a building
+ * no shops), tower: false (no towers) }. A front is only used when a building
  * really stands behind its wall (where that is known), and an invented window is never returned.
  */
 export function housesNear(ctx, x, maxDist, opt = {}) {
@@ -720,7 +768,7 @@ function padLine(ctx, sgn, x) {
 function walkable(ctx, x, z) {
   const W = world(ctx);
   if (!W) return true;
-  if (builtAt(ctx, x, z)) return false;
+  if (builtAt(ctx, x, z) || !groundFree(ctx, x, z)) return false;
   const c = groundAt(ctx, x, z);
   return c === 255 || !W.C || tables(W.C).walk[c] === 1;
 }
@@ -866,7 +914,7 @@ const needKey = (n) => JSON.stringify(n, (k, v) => (v === undefined ? null : v))
  *   { pave: { side: 'near' | 'far' | 'any', len, depth },   a clear pavement strip len x depth metres on that side (default 4 x 2)
  *     road: { len },                                       a clear stretch of carriageway for a car (a lane 1.9 m wide, nothing in it)
  *     cross: true,                                         a clear line across the road between the two pavements, near the strip
- *     anchor: 'door' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'atm' | null, reach }   near one of the spot's anchors (reach 12 m)
+ *     anchor: 'door' | 'home' | 'shop' | 'rack' | 'bench' | 'bin' | 'parked' | 'stall' | 'fish' | 'atm' | null, reach }   near one of the spot's anchors (reach 12 m)
  * Returns the placement with the most room { x, side ('near' | 'far' | null), room (metres of clear run), lane (z of a free driving line,
  * with `road`) } or null when it fits nowhere. `avoid`: [{ x, r }] keeps clear of scenes already playing (default 8 m). Cached per spot and need.
  */

@@ -2,7 +2,7 @@
 //
 // HOW THE TABLE WORKS
 // -------------------
-// The crowd (crowd.js) asks `populationAt(mapX, mapY)` for the spot a lane runs through and gets back
+// The crowd (crowd.js) asks `spotAt(mapX, mapY)` for the spot a lane runs through and reads its `pop`:
 //   { [archetypeId]: density }.
 // UNIT OF A DENSITY: the *share per 100* of the people spawned there who are of that type. A walker archetype
 // is a share of the walkers on the pavement (28 = 28 of every 100 walkers); a rider archetype is a share of the
@@ -27,7 +27,7 @@
 //   byCrime    optional: density by the buurt's crime level [0, 1, 2, 3, 4, 5] when a district row does not state
 //              its own number for this archetype (this is how niffo spreads over the whole city).
 //   riders only:
-//     bike      'bike' | 'fatbike' | 'cargo'   (vehicle model, see crowd.js BIKES)
+//     bike      'bike' | 'fatbike' | 'cargo'   (vehicle model, see crowd.js BIKES_)
 //     bikeCols  hex colours of the vehicle body
 //     twoUp     chance (0-1) of a passenger
 //     pave      fat-bike style: relative weight of riding on the pavement. A rider type with pave 0.1 shows up
@@ -56,12 +56,12 @@
 const NIFFO_CORE = 45;
 
 export const ARCHETYPES = {
-  // Teenagers on fat-bikes (20 x 4 inch tyres, long bench seat, round headlight), parody designer tracksuit
-  // (beige/brown "HH" monogram, green-red stripe), cap or hood. Often two on the seat; some ride on the pavement.
+  // Teenagers on fat-bikes (20 x 4 inch tyres, long bench seat, round headlight) in a beige/brown tracksuit with a
+  // green-red stripe, cap or hood. Often two on the seat; some ride on the pavement.
   niffo: {
     label: 'Straat Niffo', kind: 'rider', models: ['niffo', 'niffoHood'], bike: 'fatbike',
     watch: 0.9,
-    bikeCols: ['#151515', '#151515', '#1f1f23', '#ececec', '#2a2a2a', '#3a3f3a'],
+    bikeCols: ['#ff6b00', '#ffd400', '#00c389', '#f2f2f2', '#e5173f', '#151515'], // strong frame colours: the same six as FAT_COLS in props.js
     shirt: ['#c8aa7c', '#b9966a', '#a98259', '#d6c19a', '#8a6a48'],
     pants: ['#c0a276', '#a98259', '#8a6a48', '#2b2b2f', '#c8aa7c'],
     hair: ['#151515', '#222222', '#3a2a1c', '#c8aa7c', '#0e0e0e'],
@@ -145,7 +145,7 @@ const WORKING = { pop: { pensioner: 6, courier: 4, shopper: 3, parent: 3 }, mult
 const PARK = { pop: { jogger: 12, pensioner: 4, parent: 2 }, mult: { walk: 0.5, bike: 0.7, car: 0.3 } };
 const OFFICE = { pop: { civil: 14, courier: 5, jogger: 2, tourist: 3 }, mult: { walk: 1.0, bike: 1.0, car: 1.0 } };
 
-export const DISTRICTS = {
+const DISTRICTS = {
   // ---- the core
   'Centrum': row(CITY, { civil: 12, tourist: 14, harry: 7 }, { walk: 1.6, car: 1.1 }),
   'Stationsbuurt': row(CITY, { civil: 11, courier: 8, harry: 5 }, { walk: 1.6, bike: 1.3 }),
@@ -221,7 +221,7 @@ function resolve(wijk, buurt, level) {
   Object.freeze(pop); Object.freeze(spot.mult); Object.freeze(spot);
   return spot;
 }
-fallback = (() => { const s = resolve('', '', 1); return { wijk: null, buurt: null, level: 0, pop: s.pop, mult: s.mult }; })();
+fallback = (() => { const s = resolve('', '', 1); return { wijk: null, buurt: null, level: 1, pop: s.pop, mult: s.mult }; })();
 
 /** Called once at boot with buurten.geojson. */
 export function setDistrictData(geojson) {
@@ -270,12 +270,3 @@ export function spotAt(mx, my) {
   }
   return fallback;
 }
-/** Map metres (x east of 4.30 E, y north of 52.07 N) -> { wijk, buurt, level } or null outside every buurt. */
-export function districtAt(mx, my) {
-  const s = spotAt(mx, my);
-  return s === fallback ? null : { wijk: s.wijk, buurt: s.buurt, level: s.level };
-}
-/** { [archetypeId]: density } for a spot (district row, else the default row scaled by crime level). Shared object: do not mutate. */
-export function populationAt(mx, my) { return spotAt(mx, my).pop; }
-/** { walk, bike, car } multipliers for a spot. */
-export function multipliersAt(mx, my) { return spotAt(mx, my).mult; }

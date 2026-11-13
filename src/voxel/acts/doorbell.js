@@ -13,9 +13,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
   const { doorway } = T;
 
@@ -108,7 +108,7 @@ export default function (T) {
         // ---- 2. reveal
         B('2 reveal: the brave one grins at us', [a]);
         a.heading = 0; a.mood = 'smug'; a.arms = 'rub';
-        cam.hero(a, { hold: 3 });
+        cam.hero(a);
         cam.card('BELLETJE TREK', 'Nine years old. Zero regrets.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -217,7 +217,7 @@ export default function (T) {
           say(ctx, owner, 'HAH! DAAR!', { size: 18, color: '#ff6b6b' });
           yield* wait(0.5);
           owner.arms = 'push';
-          owner.drop();
+          R.discard(owner);
           // the pail swings out: a wave of water flies across to the kid
           const wave = R.add(sculpt((v) => v.box(-0.45, 0, -0.3, 0.9, 0.45, 0.6, '#4f9bff')));
           const pail2 = R.add(bucket(false));

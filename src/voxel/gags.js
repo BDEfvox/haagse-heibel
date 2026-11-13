@@ -1,9 +1,8 @@
 // Ambient street life + crime-level shenanigans, written as generator scripts.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from './kit.js';
-import { makePerson, makeDog, makeCat, makeBird, item } from './cast.js';
-import { makeCar, makeBike, makeScooter, makeFatbike, makeHeli, makeBoat } from './props.js';
-import { SKINS, SHIRTS, PANTS, HAIRS } from './crowd.js';
+import { wait, tween, all, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from './kit.js';
+import { makePerson, makeCat, makeBird, item, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
+import { makeCar, makeBike, makeFatbike, makeHeli, makeBoat } from './props.js';
 import * as S from './setting.js';
 import * as ACTS from './acts/index.js';
 
@@ -71,12 +70,24 @@ function* goCar(ctx, a, x, z, speed, stop, o) {
  * rest of the obstacle picture (setting.js `obstacles`) on a detour worked out once per call; if there is no way, it stops at
  * the last clear point of the straight line. `o`: { ignore: [things the walker is deliberately AT], straight: true (opt out) }.
  */
-export function* go(ctx, a, x, z, speed = a.speed, stop = 0.06, o = null) {
+function* go(ctx, a, x, z, speed = a.speed, stop = 0.06, o = null) {
   if (isCar(a)) { yield* goCar(ctx, a, x, z, speed, stop, o); return; }
   const pts = walkRoute(ctx, a, x, z, o);
   if (!pts) { yield* leg(ctx, a, x, z, speed, stop, null); return; }
   if (!pts.length) { yield; return; }
   yield* followRoute(ctx, a, pts, speed, stop, null);
+}
+/** The highest roof (plus a bird's clearance) under street-space (x, z) and 1.5 and 3 m on along (dx, dz), above the ground there; 0 where none. */
+function roofAhead(a, x, z, dx, dz) {
+  const c = a.ctx, W = c && c.W;
+  if (!W || !W.solid || !W.path || typeof W.hAt !== 'function') return 0;
+  const l = Math.hypot(dx, dz) || 1;
+  let top = 0;
+  for (const t of [0, 1.5, 3]) {
+    const q = W.path.xz(c.sc + x + (dx / l) * t, z + (dz / l) * t), v = W.solid.get(q[0], q[1]);
+    if (v > 0 && v < 255) top = Math.max(top, W.solid.y0 + v / 2 - W.hAt(q[0], q[1]) + 0.6);
+  }
+  return top;
 }
 function* fly(a, x, y, z, speed) {
   for (;;) {
@@ -84,7 +95,12 @@ function* fly(a, x, y, z, speed) {
     if (d <= 0.1) return;
     const dt = yield;
     const s = Math.min(d, speed * dt);
-    p.x += (dx / d) * s; p.y += (dy / d) * s; p.z += (dz / d) * s;
+    // over the houses, not through them: a roof on the way ahead is climbed over first (the bird slows down while it climbs)
+    let ny = p.y + (dy / d) * s, k = 1;
+    // (not in the last 4 m before a goal that is itself over a roof: the scene put it there, and the bird must arrive)
+    const top = Math.hypot(dx, dz) < 4 && roofAhead(a, x, z, 0, 0) > y ? 0 : roofAhead(a, p.x, p.z, dx, dz);
+    if (top > ny) { ny = Math.min(top, p.y + speed * dt); if (ny < top - 0.05) k = 0.25; }
+    p.x += (dx / d) * s * k; p.y = ny; p.z += (dz / d) * s * k;
     if (Math.hypot(dx, dz) > 0.2) a.heading = Math.atan2(dx, dz);
     a.moving = speed;
   }
@@ -515,7 +531,7 @@ const padSpot = (ctx, k, x, r = 0.6, tries = 10) => S.findSpot(ctx, x, padZ(ctx,
 
 /** Put a borrowed or scripted person back into neutral. */
 function tidy(a) {
-  if (a.drop) a.drop();
+  if (a.drop) { const h = a.drop(); if (h) disposeTree(h); } // what they still held was the scene's, and the scene is done with it
   a.pose = null; a.air = false; a.arms = 'swing'; a.gait = 'walk'; a.offstage = false;
   a.mood = 'neutral'; a.lookAt = null; a.laughT = 0; a.nodT = 0; a.shakeT = 0; // faces go back to neutral too
   a.g.visible = true; a.g.rotation.x = 0; a.g.rotation.z = 0;
@@ -544,6 +560,7 @@ function rig(ctx) {
   const { L, rnd } = ctx;
   const actors = new Set(), objs = new Set(), peds = new Set(), tasks = new Set(), keep = new Set(), guards = new Set();
   let closed = false, policeClosed = false, cops = 0;
+  const shut = function* () { if (!closed) { closed = true; ctx.road.closed++; } yield* waitUntil(() => ctx.road.vehicles.size === 0, 6); S.refreshCrowd(ctx); /* (the traffic that waited is gone: look again) */ };
   const R = {
     spawn(a, x, z, y) { ctx.spawn(a, x, z, y); actors.add(a); return a; },
     /**
@@ -562,6 +579,8 @@ function rig(ctx) {
     /** a real door or window (doorway/windowAt) the script opens: shut when the script ends (waits for those still walking through it) or is cancelled */
     guard(d) { if (d) guards.add(d); return d; },
     rm(o) { if (objs.delete(o)) ctx.world.remove(o); },
+    /** `a` lets go of what they hold and it is freed for good: only for a thing nothing uses again (to keep it, use a.drop()) */
+    discard(a) { const h = a.drop(); if (h) ctx.world.remove(h); },
     /** survives a normal finish (lasting damage such as a tag); still removed if the script is cancelled */
     stay(o) { keep.add(o); },
     borrow(p) { peds.add(p); return p; },
@@ -569,14 +588,14 @@ function rig(ctx) {
     run(g) { const t = ctx.run(g); if (!t.done) tasks.add(t); return t; },
     stop(t) { ctx.runner.stop(t); tasks.delete(t); },
     *settle(max = 10) { yield* waitUntil(() => { for (const t of tasks) if (!t.done) return false; return true; }, max); },
-    *close() { if (!closed) { closed = true; ctx.road.closed++; } yield* waitUntil(() => ctx.road.vehicles.size === 0, 6); S.refreshCrowd(ctx); /* (the traffic that waited is gone: look again) */ },
+    *close() { policeClosed = false; /* the scene holds the road from here on, even where a police car closed it first: that car must not reopen it */ yield* shut(); },
     open() { if (closed) { closed = false; policeClosed = false; ctx.road.closed = Math.max(0, ctx.road.closed - 1); } },
     /** A police car crosses. It closes the road to ambient traffic first, unless someone else holds it (then it skips). */
     *police(fromDir, z, speed = 11, delay = 0) {
       yield* wait(delay);
       if (L.kind === 'ped' || !S.roadHere(ctx, z)) return;
       if (!closed && ctx.road.closed > 0) return;
-      if (!closed) { policeClosed = true; yield* R.close(); }
+      if (!closed) { policeClosed = true; yield* shut(); }
       cops++;
       try {
         // the line it drives: the one asked for, or a free one (no free line, no police car)
@@ -597,7 +616,7 @@ function rig(ctx) {
         if (policeClosed && cops === 0) { policeClosed = false; R.open(); }
       }
     },
-    /** Walkers near x run for it (like panic(), but tracked so a cancelled gag still tidies them up). */
+    /** Walkers near x run for it (tracked, so a cancelled gag still tidies them up). */
     panic(x, r = 14, n = 5) {
       for (let i = 0; i < n; i++) {
         const p = takePed(ctx, r, null, x);
@@ -905,31 +924,6 @@ function lineObj(R, col = '#e8f7ff', w = 0.045) {
   };
   return o;
 }
-/** A short chain that trails behind an anchor point and drags along the ground. */
-function chainObj(R, n = 6) {
-  const segs = [];
-  for (let i = 0; i < n; i++) { const s = R.add(sculpt((v) => v.box(0, 0, 0, 0.13, 0.1, 0.13, '#aeb7bd'))); s.position.set(0, 0.4, 0); segs.push(s); }
-  return {
-    segs,
-    tail: segs[n - 1],
-    place(x, y, z) { for (const s of segs) s.position.set(x, y, z); },
-    update(ax, ay, az) {
-      let px = ax, py = ay, pz = az;
-      for (const s of segs) {
-        const q = s.position, dx = q.x - px, dz = q.z - pz, d = Math.hypot(dx, dz);
-        if (d > 0.2) { q.x = px + (dx / d) * 0.2; q.z = pz + (dz / d) * 0.2; }
-        q.y = Math.max(0.07, py - 0.07);
-        px = q.x; py = q.y; pz = q.z;
-      }
-    },
-  };
-}
-/** Shrink a prop to nothing, then remove it. */
-function* vanish(R, o, dur = 0.3) {
-  const s = o.scale.x;
-  yield* tween(dur, (t) => o.scale.setScalar(Math.max(0.001, s * (1 - t))), ease.inQuad);
-  R.rm(o);
-}
 /** Little loot boxes in assorted colours. */
 const lootBox = (i) => sculpt((v) => {
   const c = ['#e63946', '#ffd166', '#06d6a0', '#4cc9f0', '#b5179e', '#f4a261'][i % 6];
@@ -1039,8 +1033,6 @@ function* runDust(ctx, a, every = 0.16) {
 }
 /** A coin flip that decides how a scene ends. Named, so the dev audit can force either ending (stage.force = { name: true }). */
 const flip = (ctx, name, p = 0.5) => (ctx.force && name in ctx.force ? !!ctx.force[name] : ctx.rnd.chance(p));
-/** Set a few faces at once: moods({ angry: [keeper], scared: [rob, mate] }). */
-const moods = (m) => { for (const k in m) for (const a of [].concat(m[k])) if (a) a.mood = k; };
 
 // ---------------------------------------------------------------- driving: lines, slides, smoke
 /** Black tyre marks and smoke under the back wheels. Call it every frame while a car slides (drive() does it by itself). */
@@ -1241,39 +1233,30 @@ function* needPed(ctx, xr = 13, filter = null) {
   if (p) { p.busy = true; p.keep = true; }
   return p || null;
 }
-function panic(ctx, x, r = 16) {
-  if (ctx.amb) {
-    const off = ctx.amb.sc - ctx.sc;
-    for (const a of [...ctx.amb.peds]) if (!a.busy && a.alive && Math.abs(a.g.position.x + off - x) <= r) rehome(a, ctx);
-  }
-  // everyone in the crowd nearby runs for it too
-  if (ctx.crowdNear) for (const ag of ctx.crowdNear(x, r).slice(0, 12)) { const p = ctx.promote(ag); if (p) ctx.peds.push(p); }
-  for (const a of [...ctx.peds]) {
-    if (a.busy || !a.alive || Math.abs(a.g.position.x - x) > r) continue;
-    a.busy = true;
-    unped(ctx, a);
-    ctx.run((function* () {
-      a.arms = 'up';
-      if (ctx.rnd() < 0.4) say(ctx, a, ctx.rnd.pick(['AAAH!', 'HELP!', 'OEI!', 'WEG HIER!']), { size: 13, color: '#fff' });
-      yield* walkOff(ctx, a, a.g.position.x < x ? EX0 : EX1, 7.5, a.lineZ);
-      a.arms = 'swing';
-      if (!ctx.demote || !ctx.demote(a)) yield* exitOut(ctx, a);
-    })());
-  }
-}
 
+// Ambient life (boats, gulls, pigeons) is marked `ambient`: at a focus shift the stage hands the ones in view to the overhead as
+// leftovers instead of dropping them (overhead.js). On a spot started by a focus shift (`ctx.soft`), where today's script would put one
+// in place in view, or take one off in view, it arrives (ctx.arrive: drawn coming in, the script's timeline untouched) or is retired
+// (ctx.retire: handed to the overhead). None of this draws from ctx.rnd or changes when the script's own draws happen.
+/** A spot started by a focus shift, not watched, with this street-space point in the picture (camera of the last drawn frame). */
+const SOFT_REACH = 600; // m (stage.js SOFT_REACH)
+const softSeen = (ctx, x, z, y = 1) => !!ctx.soft && !watching(ctx) && typeof ctx.seenNow === 'function' && ctx.seenNow(x, z, y, 0.08, SOFT_REACH);
 function* boatSpawner(ctx) {
   const { L, rnd } = ctx;
   if (!L.canal) return;
   yield* wait(rnd.range(1, 5));
   for (;;) {
     const dir = rnd.sign(), boat = makeBoat(rnd);
-    boat.air = true;
-    const z = L.canal.z + (dir > 0 ? -0.9 : 0.9);
-    yield* enter(ctx, boat, dir > 0 ? X0 + 2.4 : X1 - 2.4, z, L.canal.y, { dir, speed: 2.6 });
+    boat.air = true; boat.ambient = true;
+    const z = L.canal.z + (dir > 0 ? -0.9 : 0.9), x0 = dir > 0 ? X0 + 2.4 : X1 - 2.4;
+    const pop = softSeen(ctx, x0, z); // (enterTo puts an unwatched spot's boat straight there: in view, it is drawn sailing in instead)
+    yield* enter(ctx, boat, x0, z, L.canal.y, { dir, speed: 2.6 });
     boat.face(dir > 0 ? E : W);
+    if (pop && boat.alive) ctx.arrive(boat, 'boat', -dir);
     yield* go(ctx, boat, dir > 0 ? X1 - 2.4 : X0 + 2.4, z, 2.6);
-    yield* exitOut(ctx, boat, { speed: 2.6 });
+    // (exitOut takes an unwatched spot's boat off where it is: in view, the overhead sails it on instead)
+    if (boat.alive && softSeen(ctx, boat.g.position.x, boat.g.position.z)) ctx.retire(boat);
+    else yield* exitOut(ctx, boat, { speed: 2.6 });
     yield* wait(rnd.range(5, 14));
   }
 }
@@ -1282,7 +1265,7 @@ function* gullSpawner(ctx) {
   for (;;) {
     yield* wait(L.strip === 'beach' ? rnd.range(1.5, 4) : rnd.range(6, 13));
     const g = makeBird(rnd, 'gull');
-    g.fly = true;
+    g.fly = true; g.ambient = true;
     const dir = rnd.sign(), y = rnd.range(8, 12), z = rnd.range(L.zB, L.zF);
     // it comes in over the edge of the frame and leaves over the other one (never appears or vanishes in view)
     const x0 = outPoint(ctx, 0, z, -dir, 6, y).x, x1 = outPoint(ctx, 0, z, dir, 6, y).x;
@@ -1291,7 +1274,7 @@ function* gullSpawner(ctx) {
     if (rnd.chance(0.3)) ctx.sfx('squawk');
     ctx.run((function* () {
       yield* fly(g, x1, y + rnd.range(-2, 2), z + rnd.range(-5, 5), rnd.range(5, 8));
-      ctx.despawn(g);
+      if (ctx.soft && ctx.retire) ctx.retire(g); else ctx.despawn(g); // (retire: in view after all (the camera moved), it flies on)
     })());
   }
 }
@@ -1300,6 +1283,7 @@ function* pigeons(ctx) {
   const birds = [];
   for (let i = 0; i < 3; i++) {
     const b = makeBird(rnd, 'pigeon'), px = rnd.range(-18, 18), q = spotNear(ctx, px, padZ(ctx, 'walkF0', px) - 0.4 + rnd.range(-0.2, 0.2), 0.3);
+    b.ambient = true;
     birds.push(b);
     if (watching(ctx) && seen(ctx, q.x, q.z, 0.4)) {
       // in view: they flutter down from over the edge of the frame, one after the other
@@ -1307,6 +1291,8 @@ function* pigeons(ctx) {
     } else {
       ctx.spawn(b, q.x, q.z);
       b.face(rnd.range(0, TAU));
+      // a spot started by a focus shift: one that would simply be there in view is drawn fluttering down (it is on the ground for the script)
+      if (ctx.soft && ctx.seenNow && ctx.seenNow(q.x, q.z, 0.4, 0.08, SOFT_REACH)) ctx.arrive(b, 'air'); // (watched or not: the in-view test above used the old street's camera)
     }
   }
   for (;;) {
@@ -1330,12 +1316,14 @@ function* landBird(ctx, b, x, z) {
   b.fly = false;
   b.face(rnd.range(0, TAU));
 }
-function* heli(ctx) {
-  const { L, rnd } = ctx;
+/** A helicopter patrolling the spot in its street space. Only without a stage (tools): the stage flies its own (overhead.js), which
+ * survives a change of street. `phase` is the ctx.rnd draw startLocale makes for it. */
+function* heli(ctx, phase) {
+  const { L } = ctx;
   const h = makeHeli();
   h.air = true;
   ctx.spawn(h, X0 - 10, L.zc, 16);
-  let t = rnd.range(0, 9), chop = 0;
+  let t = phase, chop = 0;
   const aim = new THREE.Vector3(0, 0, 0);
   for (;;) {
     const dt = yield;
@@ -1356,45 +1344,14 @@ function* heli(ctx) {
   }
 }
 
-function* closeRoad(ctx) {
-  ctx.road.closed++;
-  yield* waitUntil(() => ctx.road.vehicles.size === 0, 6);
-}
-const openRoad = (ctx) => { ctx.road.closed = Math.max(0, ctx.road.closed - 1); };
-
-function* policeRun(ctx, fromDir, z, speed = 11, delay = 0) {
-  yield* wait(delay);
-  if (!S.roadHere(ctx, z)) return; // no road here: no police car
-  const car = makeCar(ctx.rnd, 'police', ctx.L.night);
-  car.siren = true;
-  ctx.sfx('siren', 3);
-  if (watching(ctx)) yield* wait(0.9);
-  yield* enter(ctx, car, fromDir > 0 ? X0 + 2.5 : X1 - 2.5, z, 0, { dir: fromDir });
-  car.face(fromDir > 0 ? E : W);
-  say(ctx, car, 'WEE-OO!', { color: '#7db8ff', size: 16 });
-  yield* go(ctx, car, fromDir > 0 ? X1 - 2.5 : X0 + 2.5, z, speed);
-  yield* exitOut(ctx, car, { speed });
-}
-function* footCop(ctx, target, speed = 5.6, delay = 0.6) {
-  yield* wait(delay);
-  if (!target.alive) return;
-  const cop = makePerson(ctx.rnd, { kind: 'cop' });
-  const fromLeft = target.heading > 0; // chase from behind
-  ctx.sfx('whistle');
-  yield* enter(ctx, cop, fromLeft ? EX0 : EX1, target.g.position.z, undefined, { dir: fromLeft ? 1 : -1, speed });
-  say(ctx, cop, ctx.rnd.pick(['HALT!', 'STOP!', 'POLITIE!', 'STA STIL!']), { color: '#7db8ff', size: 15 });
-  yield* chase(ctx, cop, target, speed, 0.8, 14);
-  yield* leave(ctx, cop, speed, fromLeft ? EX1 : EX0);
-}
-
 /** The set-piece toolkit, handed to the scenes in ./acts (they cannot import this file: it imports them). */
 const T = {
   X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, exitOut, entryTime, seen, watching, outPoint,
   edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo, yell, padZ, once,
   spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-  extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap,
-  tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake,
-  exhaust, spawnPed, unped, stroll, release, needPed, panic, closeRoad, openRoad, policeRun, footCop, doorway, windowAt, doorHouse,
+  extraKind, fatbike, seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap,
+  tumble, getUp, seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake,
+  exhaust, spawnPed, unped, stroll, release, needPed, doorway, windowAt, doorHouse,
 };
 // ---------------------------------------------------------------- the gags
 const G = {};
@@ -1495,7 +1452,7 @@ G.boredCop = {
     ctx.focus(cop.g.position.x, cop.g.position.z, 0.62, 3.5);
     ctx.news('Police blotter: one (1) stroopwafel consumed');
     yield* wait(2.2);
-    cop.drop(); cop.arms = 'swing';
+    ctx.world.remove(cop.drop()); cop.arms = 'swing';
     say(ctx, cop, '*geeuw*', { size: 13, color: '#cfe8ff' });
     ctx.sfx('zzz');
     yield* wait(1.6);
@@ -1620,7 +1577,7 @@ const weight = (ctx, n) => G[n].w[ctx.level - 1] * (ctx.mix?.factor?.[n] ?? 1);
  * The free ground a scene needs when it does not say (`stage:` next to `w`, `crime`, `avail`; `stage: false` = none): a modest
  * clear patch of pavement, about 4 x 2 m, on either side. See S.findStage for the vocabulary.
  */
-export const DEFAULT_STAGE = { pave: { side: 'any', len: 4, depth: 2 } };
+const DEFAULT_STAGE = { pave: { side: 'any', len: 4, depth: 2 } };
 const stageOf = (n) => (G[n].stage === false ? null : G[n].stage || DEFAULT_STAGE);
 /** Scenes playing on this spot right now keep their stage x (so a second one is not put on top of the first). */
 const busyStages = (ctx) => (ctx._stages && ctx._stages.size ? [...ctx._stages] : null);
@@ -1689,8 +1646,25 @@ export function castScene(pool, weightOf, seen, dice, opening = false, C = CASTI
 export const sceneTable = () => Object.fromEntries(Object.keys(G).map((n) => [n, { w: G[n].w, crime: !!G[n].crime }]));
 
 /** The opening scene: drawn from what this neighbourhood's figures point at (crime scenes first), heaviest likeliest. */
-function signatureFor(ctx, dice) {
-  const lv = ctx.level, names = Object.keys(G).filter((n) => G[n].w[lv - 1] > 0 && !PLAYING.get(n) && ready(ctx, n));
+/**
+ * The scenes of `names` that pass `ok`, into `out`, asked over as many frames as it takes: the stage scan of a spot (ready ->
+ * S.stageClear) can take 25 ms when its cache has run out, so the director gives the frame back after every 2 ms of asking.
+ * Nothing is drawn from the dice while it asks; the frame a scene starts in moves by a frame or two at most.
+ */
+function* sweep(names, ok, out) {
+  // (seeded, ?seed=: the director's dice are the spot's, shared with its scenes, so it gives the frame back after every 6 scenes
+  // asked, never by the clock: the order of draws between the director and the scenes does not depend on the machine)
+  let t0 = performance.now(), k = 0;
+  for (const n of names) {
+    if (ok(n)) out.push(n);
+    k++;
+    if (SEEDED ? k % 6 === 0 : performance.now() - t0 > 2) { yield; t0 = performance.now(); }
+  }
+  return out;
+}
+function* signatureFor(ctx, dice) {
+  const lv = ctx.level, names = yield* sweep(Object.keys(G), (n) => G[n].w[lv - 1] > 0 && !PLAYING.get(n) && ready(ctx, n), []);
+  for (let i = names.length - 1; i >= 0; i--) if (PLAYING.get(names[i])) names.splice(i, 1); // (started elsewhere while it asked)
   if (!names.length) return null;
   const crime = names.filter((n) => G[n].crime), pool = lv > 1 && crime.length ? crime : names;
   return castScene(pool, (n) => weight(ctx, n), SEEN, dice, true);
@@ -1707,24 +1681,25 @@ function* director(ctx, delay = 2.4, signature = true) {
     if (recent.length > 3) recent.shift();
     noteSeen(name);
     PLAYING.set(name, (PLAYING.get(name) || 0) + 1);
-    ctx.gagStart?.(name, { stage: G[name].stage || null });
+    ctx.gagStart?.(name);
     ctx.run((function* () {
       try { yield* runGag(ctx, name); } finally { active--; if (g.lock) locks.delete(g.lock); PLAYING.set(name, Math.max(0, (PLAYING.get(name) || 1) - 1)); ctx.gagEnd?.(name); }
     })());
   };
   yield* wait(delay);
-  if (signature) { const sig = signatureFor(ctx, dice); if (sig) launch(sig); }
+  if (signature) { const sig = yield* signatureFor(ctx, dice); if (sig && !PLAYING.get(sig)) launch(sig); }
   for (;;) {
     yield* wait(rnd.range(pace.gap[0], pace.gap[1]));
     if (active >= pace.max) continue;
     if (ctx.cineBusy && ctx.cineBusy()) continue; // a set piece holds the camera here
-    const opts = Object.keys(G).filter((n) => weight(ctx, n) > 0 && !recent.includes(n) && !PLAYING.get(n) && !(G[n].lock && locks.has(G[n].lock)) && ready(ctx, n));
+    const free = (n) => !PLAYING.get(n) && !(G[n].lock && locks.has(G[n].lock));
+    const opts = (yield* sweep(Object.keys(G), (n) => weight(ctx, n) > 0 && !recent.includes(n) && free(n) && ready(ctx, n), [])).filter(free); // (free again: another spot may have started one meanwhile)
+    if (active >= pace.max || (ctx.cineBusy && ctx.cineBusy())) continue; // (the same, after the frames the asking took)
     if (!opts.length) { recent.shift(); continue; }
     launch(castScene(opts, (n) => weight(ctx, n), SEEN, dice));
   }
 }
 
-/** Street-long background life. */
 /** The road at one spot, as the gags see it: they close it, and wait until the city's traffic has cleared it. */
 const roadOf = (ctx) => ({ closed: 0, vehicles: { get size() { return ctx.trafficNear ? ctx.trafficNear() : 0; }, add() {}, delete() {}, has: () => false } });
 /** The street as a whole. Its walkers, bikes, cars and trams belong to the city's crowd (crowd.js), not to the street. */
@@ -1741,12 +1716,18 @@ export function startLocale(ctx, { only = null, delay = 2.4, signature = true, w
   ctx.run(boatSpawner(ctx));
   ctx.run(gullSpawner(ctx));
   ctx.run(pigeons(ctx));
-  if (withHeli) ctx.run(heli(ctx));
+  if (withHeli) {
+    // the one draw from ctx.rnd the helicopter has always made, at the same point (it was heli()'s first step, which Runner.run takes at
+    // once), so the scenes after it draw the same numbers. The stage's helicopter uses it as its phase when it is new; one carried over
+    // from the last street keeps its own
+    const phase = ctx.rnd.range(0, 9);
+    if (ctx.heli) ctx.heli(phase); else ctx.run(heli(ctx, phase));
+  }
   if (only && Object.hasOwn(G, only)) {
     ctx.run((function* () {
       for (;;) {
         yield* wait(2);
-        if (ready(ctx, only)) { ctx.gagStart?.(only, { stage: G[only].stage || null }); try { yield* runGag(ctx, only); } finally { ctx.gagEnd?.(only); } }
+        if (ready(ctx, only)) { ctx.gagStart?.(only); try { yield* runGag(ctx, only); } finally { ctx.gagEnd?.(only); } }
         yield* wait(2);
       }
     })());
@@ -1758,7 +1739,7 @@ export const canPlay = (ctx, name) => Object.hasOwn(G, name) && ready(ctx, name)
 export function playGag(ctx, name) {
   if (!canPlay(ctx, name)) return null;
   const state = { done: false };
-  ctx.gagStart?.(name, { stage: G[name].stage || null });
+  ctx.gagStart?.(name);
   ctx.run((function* () { try { yield* runGag(ctx, name); } finally { state.done = true; ctx.gagEnd?.(name); } })());
   return state;
 }

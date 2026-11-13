@@ -1,7 +1,7 @@
 // Pickpocketing: a fat wallet in a back pocket, a pickpocket on tiptoe, a moth for a payday, and a cop with his hand up.
 // Storyboard: storyboards/pickpocket.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
@@ -11,9 +11,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
 
   /** A fat, bright wallet: far easier to read from across the street than item.wallet(). */
@@ -112,16 +112,16 @@ export default function (T) {
         // (an invented victim is still walking in: the first shot holds the place he is coming to, then follows him)
         B('1 the mark: wallet in the back pocket, a victim strolls along', invented ? [pt(inX, lz)] : [ped]);
         if (invented) cam.wide(pt(inX, lz), { dist: 10, el: 0.22, az: -dir * 0.5 }); // (tight on the place he is coming to: the frame's edge is a few metres away)
-        else cam.track(ped, { dist: 8, el: 0.1, az: -dir * 0.8, y: 0.9, lead: 1.2, fov: 34, hold: 2.2 });
+        else cam.track(ped, { dist: 8, el: 0.1, az: -dir * 0.8, y: 0.9, lead: 1.2, fov: 34 });
         yield* waitUntil(() => arrived || (vTask && vTask.done), 40);
         if (invented) {
-          cam.track(ped, { dist: 8, el: 0.1, az: -dir * 0.8, y: 0.9, lead: 1.2, fov: 34, cut: 0.8, hold: 2.2 });
+          cam.track(ped, { dist: 8, el: 0.1, az: -dir * 0.8, y: 0.9, lead: 1.2, fov: 34, cut: 0.8 });
           yield* wait(0.9);
         }
         yield* waitUntil(() => thiefIn || tTask.done, 40);
         B('1b the tail: the pickpocket creeps up behind him', [ped, thief]);
         tail = mkTail();
-        cam.shot({ on: [ped, thief], dist: 8, el: 0.1, az: -dir * 0.7, y: 0.95, fov: 34, fit: true, cut: 0.6, hold: 5 });
+        cam.shot({ on: [ped, thief], dist: 8, el: 0.1, az: -dir * 0.7, y: 0.95, fov: 34, fit: true, cut: 0.6 });
         yield* wait(1.2);
         yield* waitUntil(() => (pp.x - thief.g.position.x) * dir < near + 0.2, 6);
 
@@ -130,7 +130,7 @@ export default function (T) {
         pv = 0; ped.arms = 'phone'; ped.mood = 'focus';
         R.stop(tail);
         thief.lookAt = null; thief.gait = 'walk'; thief.heading = 0.25; thief.mood = 'sly'; thief.arms = 'rub';
-        cam.hero(thief, { hold: 3.2 });
+        cam.hero(thief);
         cam.card('DE ZAKKENROLLER', 'Fingers faster than the Dutch tax office.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -140,7 +140,7 @@ export default function (T) {
 
         // ---- 3. the lift: close on the pocket, the hand dives in, the wallet slides out
         B('3 the lift: the hand reaches in and the wallet slides out', [ped, thief, vw]);
-        cam.shot({ on: ped, y: 0.75, dist: 3.4, el: 0.06, az: -dir * 1.0, fov: 38, hold: 3.6 });
+        cam.shot({ on: ped, y: 0.75, dist: 3.4, el: 0.06, az: -dir * 1.0, fov: 38 });
         yield* wait(0.35);
         pv = 1.1; near = 0.8; ped.arms = 'swing'; ped.mood = 'whistle';
         const tail2 = mkTail();
@@ -167,7 +167,7 @@ export default function (T) {
         // ---- 4. the gloat: he opens the wallet... a moth, a receipt, and a very sad face
         B('4 the gloat: the wallet holds a moth and a receipt', [thief, vw]);
         thief.heading = 0.3; thief.mood = 'smug'; thief.arms = 'hold';
-        cam.close(thief, { y: 1.35, dist: 6, fov: 28, hold: 6.5 });
+        cam.close(thief, { y: 1.35, dist: 6, fov: 28 });
         yield* wait(0.3);
         yield* laugh(ctx, thief, 0.7, 'he');
         ctx.sfx('tick');
@@ -230,7 +230,7 @@ export default function (T) {
         // ---- 5. the pat: the victim feels for his wallet, freezes, turns
         B('5 the pat: the victim pats his pockets and freezes', [ped]);
         ped.heading = hd; ped.arms = 'swing'; ped.mood = 'whistle'; ped.lookAt = null;
-        cam.crash(ped, { hold: 4.2 });
+        cam.crash(ped);
         yield* wait(0.7);
         ped.arms = 'hips'; ctx.sfx('tick'); ped.squash(0.12);
         yield* wait(0.4);
@@ -254,7 +254,7 @@ export default function (T) {
         yield* fright(ctx, thief, 'OEPS');
         thief.mood = 'happy'; thief.arms = 'hold';
         yield* waitUntil(() => copTask.done, 40);
-        cam.shot({ on: [thief, ped, pt(cx, lz)], dist: 10, el: 0.1, az: fd * 0.55, y: 1.0, fov: 34, lead: 2.5, shake: 0.5, fit: true, cut: 0.4, hold: 6 });
+        cam.shot({ on: [thief, ped, pt(cx, lz)], dist: 10, el: 0.1, az: fd * 0.55, y: 1.0, fov: 34, lead: 2.5, shake: 0.5, fit: true, cut: 0.4 });
         const dustT = R.run(runDust(ctx, thief));
         cackle(ctx, thief, 2.4, 'ha');
         const pchase = R.run((function* () {
@@ -270,7 +270,7 @@ export default function (T) {
           if (!cut && d < 3.4) {
             cut = true;
             B('6b the fall: straight into the raised hand', [thief, cop]);
-            cam.dutch([thief, cop], { dist: 8, az: fd * 0.3, face: false, fit: true, cut: 0.2, hold: 2.6 });
+            cam.dutch([thief, cop], { dist: 8, az: fd * 0.3, face: false, fit: true, cut: 0.2 });
           }
           return d < 1.1;
         });
@@ -280,7 +280,7 @@ export default function (T) {
         ctx.fx.text('BONK!', at(tp.x, 2.4, lz), { size: 30, color: '#ffd60a' });
         ctx.fx.pips(tp.x, 1.9, lz, 8);
         thief.lookAt = null;
-        thief.drop();
+        R.discard(thief);
         const wp = R.add(mkWallet());
         wp.position.set(tp.x, 1.3, tp.z);
         R.stop(pchase);
@@ -288,7 +288,7 @@ export default function (T) {
         const tumbled = R.run(tumble(ctx, thief, tp.x - fd * 1.8, lz, 1.0, 0.6));
         yield* wait(0.95);
         B('6c the wallet flies back', [wp, ped]);
-        cam.shot({ on: [wp, ped], dist: 7, el: 0.15, az: -fd * 0.4, y: 0.6, fov: 40, fit: true, cut: 0.3, hold: 2.6 });
+        cam.shot({ on: [wp, ped], dist: 7, el: 0.15, az: -fd * 0.4, y: 0.6, fov: 40, fit: true, cut: 0.3 });
         yield* arc(wp, pp.x, 1.05, pp.z, 2.6, 1.0, 8);
         R.rm(wp);
         ctx.sfx('tada');
@@ -299,7 +299,7 @@ export default function (T) {
 
         // ---- 7. epilogue: cuffs and stars, the victim counts the loyalty cards, satisfied
         B('7 epilogue: the cop cuffs him', [cop, thief]);
-        cam.two(cop, thief, { az: fd * 0.2, hold: 4 });
+        cam.two(cop, thief, { az: fd * 0.2 });
         cop.arms = 'hips'; cop.mood = 'smug';
         yield* go(ctx, cop, tp.x + fd * 0.9, lz + 0.15, 2.8);
         cop.heading = tp.x - cop.g.position.x > 0 ? E : W; cop.lookAt = thief;
@@ -338,6 +338,7 @@ export default function (T) {
       } finally {
         cam.release();
         if (vw.parent) vw.parent.remove(vw);
+        disposeTree(vw); // nothing uses the wallet after the scene, finished or cancelled (a second dispose through the thief's drop is harmless)
         R.free(done);
       }
     },

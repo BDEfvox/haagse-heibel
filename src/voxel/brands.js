@@ -19,8 +19,6 @@
 //  * parodyName(): the rule that twists every other real name (Hague dialect, then small letter play).
 //  * signFor(cat, realName, flags, seed) -> { text, bg, fg, mark, kind, cat, chain } is what the drawing code uses.
 
-import { POI_FLAG } from './poicats.js';
-
 // ---------------------------------------------------------------- small helpers
 function hash(s) { // FNV-1a: the same everywhere, no dependency
   let h = 2166136261;
@@ -30,8 +28,7 @@ function hash(s) { // FNV-1a: the same everywhere, no dependency
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 const hx = (a) => '#' + a.map((c) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0')).join('');
 /** hex colour times k (k < 1 darker, > 1 lighter towards white). */
-export const shadeHex = (hex, k) => hx(rgb(hex).map((c) => (k <= 1 ? c * k : c + (255 - c) * (k - 1))));
-const mix = (a, b, t) => { const p = rgb(a), q = rgb(b); return hx(p.map((c, i) => c + (q[i] - c) * t)); };
+const shadeHex = (hex, k) => hx(rgb(hex).map((c) => (k <= 1 ? c * k : c + (255 - c) * (k - 1))));
 
 /** Lower case, no accents, no apostrophes, '&' and punctuation as spaces: how names are compared. */
 export const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
@@ -160,13 +157,13 @@ C('TUI', 'TUIT REIZEN', '#d83a3a', '#ffffff', 'sun', '#ffffff', '#ffd23a', 'offi
 // -- general stores
 C('HEMA', 'HEMMA', '#2f6fcf', '#ffffff', 'stripe', '#ffffff', '#e6504a', 'department');
 C('De Bijenkorf|Bijenkorf', 'DE HONINGKORF', '#232323', '#f4dca0', 'diamond', '#f4dca0', '#ffffff', 'department');
-C('Action', 'AKSIE', '#e8502d', '#ffffff', 'star', '#ffffff', '#ffd23a', 'variety_store');
+C('Action', 'AKSIE', '#e8502d', '#ffffff', 'star', '#ffffff', '#ffd23a', 'gift');
 C('Wibra', 'WOBRA', '#1f6fb5', '#ffffff', 'bag', '#ffffff', '#ffd23a', 'department');
 C('Xenos', 'XEROS', '#b83a6a', '#ffffff', 'mug', '#ffffff', '#ffd23a', 'gift');
 C('Blokker', 'BLOKKADE', '#d6352f', '#ffffff', 'mug', '#ffffff', '#ffd23a', 'gift');
 C('Kwantum', 'KWANTUMPJE', '#1f6e8a', '#ffffff', 'house', '#ffffff', '#ffd23a', 'furniture');
-C('Intertoys', 'INTERSPEELGOED', '#e8402a', '#ffffff', 'star', '#ffffff', '#ffd23a', 'toys');
-C('Top1Toys|Top 1 Toys', 'TOP2TOYS', '#2a7ad8', '#ffffff', 'star', '#ffffff', '#ff8a2a', 'toys');
+C('Intertoys', 'INTERSPEELGOED', '#e8402a', '#ffffff', 'star', '#ffffff', '#ffd23a', 'gift');
+C('Top1Toys|Top 1 Toys', 'TOP2TOYS', '#2a7ad8', '#ffffff', 'star', '#ffffff', '#ff8a2a', 'gift');
 C('Wereldwinkel', 'WERELDWINKELTJE', '#2f8f6a', '#ffffff', 'sun', '#ffffff', '#ffd23a', 'gift');
 C('Flying Tiger|Flying Tiger Copenhagen', 'VLIEGENDE TIJGER', '#e8452a', '#ffffff', 'wheel', '#ffffff', '#2b2b2b', 'gift');
 C('Leen Bakker', 'LEEN BAKKES', '#d6352f', '#ffffff', 'house', '#ffffff', '#ffd23a', 'furniture');
@@ -270,7 +267,7 @@ C('Gulf', 'GULP', '#f08a2a', '#2a5ab0', 'drop', '#2a5ab0', '#ffffff', 'fuel');
 C('Argos', 'ARGUS', '#2a8ad8', '#ffffff', 'drop', '#ffffff', '#e63232', 'fuel');
 C('Avia', 'AVIAAT', '#d8282d', '#ffffff', 'drop', '#ffffff', '#2a5ab0', 'fuel');
 C('Q8', 'Q9', '#2a4aa0', '#ffe14d', 'drop', '#ffe14d', '#e63232', 'fuel');
-C('ANWB', 'ANBW', '#f5d020', '#2a3a8a', 'wheel', '#2a3a8a', '#ffffff', 'outdoor');
+C('ANWB', 'ANBW', '#f5d020', '#2a3a8a', 'wheel', '#2a3a8a', '#ffffff', 'sports');
 C('Kwik Fit|KwikFit', 'KWIK-FLAT', '#d8282d', '#fff07a', 'wheel', '#fff07a', '#2b2b2b', 'car');
 C('Bosch Car Service', 'BOSCH KAR SERVICE', '#c8282d', '#ffffff', 'wheel', '#ffffff', '#2b2b2b', 'car');
 C('Citroën|Citroen', 'LIMOEN', '#d8c82a', '#2b2b2b', 'arrow', '#2b2b2b', '#ffffff', 'car');
@@ -289,13 +286,22 @@ C('RataPlan', 'RATAPLAN-B', '#8a6a3a', '#f6efe0', 'bag', '#f6efe0', '#c9a46a', '
 
 // ---------------------------------------------------------------- finding a chain from a real name
 const PREFIX = [...BY_NAME.keys()].filter((k) => k.length >= 4).sort((a, b) => b.length - a.length);
-/** The chain a real shop name belongs to, or null. */
-export function chainOf(realName) {
+/**
+ * The chain a real shop name belongs to, or null. An exact name or alias always counts. A longer name that only STARTS with
+ * an alias ("Shell Café", "Michel Vis Tweewielers") counts only when the map category `cat` is the chain's own, or the map
+ * says nothing useful (missing, other, restaurant, terrace); a call without `cat` is "category missing".
+ */
+export function chainOf(realName, cat) {
   const n = norm(realName);
   if (!n) return null;
   const ex = BY_NAME.get(n);
   if (ex) return ex;
-  for (const k of PREFIX) if (n.startsWith(k + ' ')) return BY_NAME.get(k);
+  const open = !cat || cat === 'other' || cat === 'restaurant' || cat === 'terrace';
+  for (const k of PREFIX) {
+    if (!n.startsWith(k + ' ')) continue;
+    const ch = BY_NAME.get(k);
+    if (open || ch.cat === cat) return ch;
+  }
   return null;
 }
 
@@ -473,7 +479,6 @@ export function parodyName(realName, cat = 'other') {
   if (!words.length) words.push(s);
   const h = hash(norm(orig));
   const base = words.map(dialectWord);
-  const same = (arr) => norm(arr.join(' ')) === norm(orig) || norm(arr.join(' ')) === norm(words.join(' '));
   const attempt = (k) => {
     const outs = base.slice();
     let keep = fitIdx(words, outs, 16);
@@ -498,7 +503,7 @@ export function parodyName(realName, cat = 'other') {
  * `flags` are POI_FLAG bits; `seed` picks between the unnamed-shop words and tints a colour.
  */
 export function signFor(cat, realName, flags = 0, seed = 0) {
-  const ch = chainOf(realName);
+  const ch = chainOf(realName, cat);
   if (ch) {
     const use = !cat || cat === 'other' || cat === 'restaurant' || cat === 'terrace' ? ch.cat || cat || 'other' : cat;
     return { text: ch.name, bg: ch.bg, fg: ch.fg, mark: ch.mark, kind: 'chain', cat: use, chain: ch.id, win: ch.win };
@@ -514,6 +519,3 @@ export function signFor(cat, realName, flags = 0, seed = 0) {
   const words = Array.isArray(L.word) ? L.word : [L.word];
   return { text: words[seed % words.length], bg: L.bg, fg: L.fg, mark: g, kind: 'cat', cat, chain: null, win: null };
 }
-/** For buildings drawn elsewhere (landmarks.js supermarkets, fuel stations): the sign for a real name of a given kind. */
-export const signForName = (name, cat = 'other', flags = 0) => signFor(cat, name, flags, 0);
-export { POI_FLAG, mix };

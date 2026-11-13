@@ -1,7 +1,7 @@
 // The herring heist: a dog (or a cat) steals a herring from the stall, then a gull steals it from the thief. Or nobody does.
 // Storyboard: storyboards/herringHeist.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
@@ -11,9 +11,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
   const { entryTime, seen, watching, outPoint, extraKind } = T;
 
@@ -90,7 +90,7 @@ export default function (T) {
           keeper.squash(0.1);
         }
         const hero = fish[2], loose = fish[1];
-        keeper.drop();
+        R.discard(keeper);
         const crateOnGround = R.add(crate());
         crateOnGround.position.set(kx - dir * 0.7, 0, kz - fn * 0.3);
         keeper.arms = 'rub';
@@ -185,7 +185,7 @@ export default function (T) {
         B('4b the keeper slips on a herring', [keeper, loose]);
         cam.dutch(keeper, { dist: 7, el: 0.1, az: dir * 0.3, y: 0.8 });
         ctx.sfx('boing');
-        keeper.drop();
+        R.discard(keeper);
         const flung = R.add(ladle());
         flung.position.set(keeper.g.position.x, 1.2, keeper.g.position.z);
         R.run(arc(flung, slipX + dir * 4, 0.0, runZ - fn * 0.8, 3, 1.1, 8));
@@ -244,7 +244,7 @@ export default function (T) {
           cam.close(thief, { dist: 4.5, el: 0.06, az: -dir * 0.4, y: 0.5, fov: 36, cut: 0.6 });
           thief.heading = 0;
           yield* wait(0.4);
-          if (mouthFish) thief.b.remove(mouthFish);
+          if (mouthFish) { thief.b.remove(mouthFish); disposeTree(mouthFish); mouthFish = null; } // eaten: gone for good
           ctx.sfx('gulp');
           yield* hop(thief, 0.25, 0.22);
           say(ctx, thief, catThief ? 'prr...' : '*slurp*', { size: 14, color: '#b9fbc0', off: 1.0 });

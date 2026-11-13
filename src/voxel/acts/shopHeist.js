@@ -10,9 +10,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
   const { doorway } = T;
 
@@ -99,7 +99,7 @@ export default function (T) {
         const rx0 = clamp(dx - dir * 8, EX0, EX1);
         yield* waitUntil(() => T.seen(ctx, rx0, padZ(ctx, 'walkB1', rx0)) && !T.seen(ctx, dx - dir * 19, padZ(ctx, 'walkB1', rx0)), 1.5); // (the tight shot is up before he walks into it)
         yield* R.enter(rob, rx0, padZ(ctx, 'walkB1', rx0), undefined, { from: 'edge', speed: 4.4 });
-        cam.track(rob, { dist: 9.5, el: 0.14, az: dir * 0.5, lead: 1.5, cut: 1.0, hold: 6 });
+        cam.track(rob, { dist: 9.5, el: 0.14, az: dir * 0.5, lead: 1.5, cut: 1.0 });
         yield* tiptoe(ctx, rob, cx - dir * 1.4, cz, 3.0);
         rob.heading = 0; rob.mood = 'sly';
         yield* lookAround(rob, 0.8, 0.28);
@@ -107,7 +107,7 @@ export default function (T) {
         // ---- 2. reveal
         B('2 reveal: the customer grins at us', [rob]);
         rob.heading = 0; rob.mood = 'smug'; rob.arms = 'rub';
-        cam.hero(rob, { dist: 6, hold: 3 });
+        cam.hero(rob, { dist: 6 });
         cam.card('DE KLANT', 'Always right. Never pays.', 1.9);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -132,10 +132,10 @@ export default function (T) {
         for (let i = 0; i < 2; i++) {
           if (i === 0) {
             B('3 the spree: first trip into the shop, out with a box', [rob, door, cart]);
-            cam.shot({ on: [rob, door, cart], dist: 11, el: 0.4, az: -dir * 0.3, fit: true, hold: 6 });
+            cam.shot({ on: [rob, door, cart], dist: 11, el: 0.4, az: -dir * 0.3, fit: true });
           } else {
             B('3b second trip: bigger box, the pile grows', [rob, cart]);
-            cam.dolly([rob, cart], { dist: 8, el: 0.2, az: dir * 0.35, fit: true, hold: 6 });
+            cam.dolly([rob, cart], { dist: 8, el: 0.2, az: dir * 0.35, fit: true });
           }
           yield* wait(0.3);
           if (!doorHeld) { doorHeld = true; yield* dw.open(); }
@@ -157,7 +157,7 @@ export default function (T) {
         ctx.incident(2);
         ctx.news(`Television leaves ${s.shop} without paying`);
         B('3c the pile: the tower of goods wobbles, he gloats', [rob, cart]);
-        cam.ground(cart, { dist: 6.5, el: 0.08, az: -dir * 0.5, hold: 2.4 });
+        cam.ground(cart, { dist: 6.5, el: 0.08, az: -dir * 0.5 });
         rob.lookAt = keeper;
         yield* wait(0.3);
         yield* laugh(ctx, rob, 1.0, 'he');
@@ -168,7 +168,7 @@ export default function (T) {
         const tv = item.tv();
         tv.scale.setScalar(1.25);
         yield* doorWalk(function* () {
-          cam.shot({ on: [door, gate], y: 1.0, dist: 7.5, el: 0.12, az: -dir * 0.4, fit: true, hold: 4 });
+          cam.shot({ on: [door, gate], y: 1.0, dist: 7.5, el: 0.12, az: -dir * 0.4, fit: true });
           yield* wait(0.3);
         });
         rob.hold(tv, 'front'); rob.arms = 'carry'; rob.mood = 'smug';
@@ -176,7 +176,7 @@ export default function (T) {
         yield* outAgain();
         yield* go(ctx, rob, dx, gz + 0.9, 2.2);
         B('4b the beep: frozen in the light of the gate', [rob, gate]);
-        cam.crash(rob, { hold: 2.4 });
+        cam.crash(rob);
         yield* wait(0.3);
         ctx.sfx('alarm');
         ctx.fx.text('PIEP! PIEP! PIEP!', at(dx, 2.5, gz), { size: 18, color: '#ff6b6b', dur: 1.8 });
@@ -187,7 +187,7 @@ export default function (T) {
 
         // ---- 5. complication: the shopkeeper turns round, very slowly
         B('5 niks aan de hand: the shopkeeper turns round, very slowly', [keeper, rob]);
-        cam.two(keeper, rob, { az: -dir * 0.2, el: 0.12, hold: 5 });
+        cam.two(keeper, rob, { az: -dir * 0.2, el: 0.12 });
         yield* wait(0.3);
         rob.lookAt = null; rob.mood = 'sly';
         yield* lookAround(rob, 0.9, 0.3);
@@ -198,7 +198,7 @@ export default function (T) {
         keeper.heading = Math.atan2(rob.g.position.x - keeper.g.position.x, 3);
         keeper.lookAt = rob; keeper.mood = 'shock';
         B('5b the keeper sees it', [keeper]);
-        cam.crash(keeper, { hold: 1.8 });
+        cam.crash(keeper);
         yield* wait(0.3);
         yield* doubleTake(ctx, keeper, 'HÈ?!');
         keeper.arms = 'fist'; keeper.mood = 'angry';
@@ -206,13 +206,13 @@ export default function (T) {
         rob.lookAt = keeper; rob.mood = 'scared';
         yield* wait(0.4);
         B('5c bystanders gasp, one films it', [rob, keeper, door]);
-        cam.wide([rob, keeper], { dist: 13, el: 0.25, az: dir * 0.2, fit: true, hold: 3 });
+        cam.wide([rob, keeper], { dist: 13, el: 0.25, az: dir * 0.2, fit: true });
         yield* wait(0.3);
         const crowd = gather(ctx, R, dx, 2, 14);
         crowd.forEach((c, i) => { if (i) { faceTo(c, dx, gz); c.arms = 'up'; c.mood = 'shock'; say(ctx, c, 'OEI!', { size: 13, color: '#fff' }); } else filmIt(c, dx, gz); });
         // the television goes on top of the pile; he grabs the cart and runs
         B('5d the grab: the TV goes on the pile, he takes the cart', [rob, cart]);
-        cam.shot({ on: [rob, cart], dist: 9, el: 0.25, az: -dir * 0.4, fit: true, hold: 3 });
+        cam.shot({ on: [rob, cart], dist: 9, el: 0.25, az: -dir * 0.4, fit: true });
         yield* wait(0.3);
         rob.drop();
         addLoot(tv, 0.15 + stack.length * 0.34 + 0.1);
@@ -222,7 +222,7 @@ export default function (T) {
 
         // ---- 6. the getaway: a shopping cart with a leaning tower of goods, dropping things as it goes
         B('6 the getaway: the tower sways, a box works loose', [rob, cart]);
-        cam.track(rob, { dist: 10, el: 0.14, az: dir * 0.55, fov: 34, shake: 0.4, lead: 3, hold: 5 });
+        cam.track(rob, { dist: 10, el: 0.14, az: dir * 0.55, fov: 34, shake: 0.4, lead: 3 });
         rob.arms = 'carry'; rob.heading = hd; rob.lookAt = keeper; rob.mood = 'happy';
         const chaseT = R.run(chase(ctx, keeper, rob, 5.6, 0.9, 12));
         cackle(ctx, rob, 1.4, 'he');
@@ -245,7 +245,7 @@ export default function (T) {
           if (!cut && trav > 4.4) { // the shot changes well before the pile comes down
             cut = true;
             B('7 the crash: the whole tower comes down', [rob, cart]);
-            cam.dutch([rob, cart], { dist: 9, az: dir * 0.4, fit: true, hold: 3.6 });
+            cam.dutch([rob, cart], { dist: 9, az: dir * 0.4, fit: true });
           }
           if (trav > 7.5) return true;
         });
@@ -277,7 +277,7 @@ export default function (T) {
         say(ctx, rob, '★ ★', { size: 16, color: '#ffe066', dur: 1 });
 
         B('7b stars: a box on his head', [rob]);
-        cam.close(rob, { dist: 4.5, hold: 2.6 });
+        cam.close(rob, { dist: 4.5 });
         yield* wait(0.3);
         R.run(seeStars(ctx, rob, 1.2));
         yield* wait(0.9);
@@ -286,7 +286,7 @@ export default function (T) {
         ctx.news(`Shoplifter's cart of goodies collapses on ${ctx.st.name}; shopkeeper "swept up before the police arrived"`);
         const cop = makePerson(rnd, { kind: 'cop' });
         B('8 the law arrives: POLITIE, the keeper stands over him', [cop, rob, keeper]);
-        cam.wide([rob, keeper], { dist: 14, el: 0.22, az: -dir * 0.2, fit: true, hold: 3 });
+        cam.wide([rob, keeper], { dist: 14, el: 0.22, az: -dir * 0.2, fit: true });
         yield* wait(0.3);
         yield* R.enter(cop, clamp(rp.x - dir * 9, EX0, EX1), cz, undefined, { from: 'edge' });
         ctx.sfx('whistle');
@@ -302,7 +302,7 @@ export default function (T) {
 
         // reverse spree: the shopkeeper sweeps all the goods back to the door
         B('9 uitverkoop: the broom sweeps the goods back into the shop', [keeper, door]);
-        cam.shot({ on: [keeper, door], y: 1.2, dist: 12, el: 0.3, az: dir * 0.3, fit: true, hold: 3.4 });
+        cam.shot({ on: [keeper, door], y: 1.2, dist: 12, el: 0.3, az: dir * 0.3, fit: true });
         yield* wait(0.3);
         keeper.arms = 'spray'; keeper.lookAt = null; keeper.mood = 'smug';
         ctx.sfx('whoosh');
@@ -311,14 +311,14 @@ export default function (T) {
         yield* wait(1.1);
 
         B('9b the bill: the keeper presents it', [keeper, rob]);
-        cam.two(keeper, rob, { az: dir * 0.2, el: 0.1, hold: 3 });
+        cam.two(keeper, rob, { az: dir * 0.2, el: 0.1 });
         yield* wait(0.3);
         keeper.arms = 'point';
         yell(ctx, keeper, 'DAT IS DAN €1.249,95!', '#ffd166', 13);
-        rob.drop();
+        R.discard(rob);
         yield* wait(0.5);
         B('9c contant?: a very small voice', [rob]);
-        cam.face(rob, { hold: 2.2 });
+        cam.face(rob);
         yield* wait(0.3);
         rob.arms = 'beg'; rob.mood = 'sad'; rob.lookAt = keeper;
         say(ctx, rob, 'contant?', { size: 12, color: '#cfe8ff' });
@@ -329,7 +329,7 @@ export default function (T) {
 
         // the broom escorts him out
         B('10 the broom escorts him out', [rob, cop, keeper]);
-        cam.wide([rob, cop, keeper], { dist: 14, el: 0.2, az: dir * 0.25, fit: true, hold: 3 });
+        cam.wide([rob, cop, keeper], { dist: 14, el: 0.2, az: dir * 0.25, fit: true });
         yield* wait(0.3);
         keeper.arms = 'push';
         for (const c of crowd) R.give(c);

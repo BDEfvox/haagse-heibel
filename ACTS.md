@@ -54,10 +54,16 @@ Pavement lines: `padZ(ctx, 'walkB0' | 'walkB1' | 'walkF0' | 'walkF1', x)` (B = h
 ### 2a. The obstacle picture, and `ignore`
 
 Every spot has one picture of what STANDS there, in street space (`S.obstacles(ctx)`, built lazily, cached): parked cars (three
-circles each), lamp posts, every furniture prop (bins, benches, racks, bus shelters, terraces with tables, parasols, market stalls,
-kiosks, advertising columns, underground-bin posts, charging posts, trolley shelters, big bike parks, tram masts, traffic lights,
-statues, fountains...) with a footprint radius and height from ONE table, `S.FURN` (kind -> [height, radius]; unknown kinds count
-as 1.1 x 0.6; add new kinds there), and, when the crowd offers `ctx.crowd.obstacles`, the standing groups and waiting vehicles.
+circles each), lamp posts, every prop in the tiles' `props` lists (furnish.js): bins, benches, bike racks and big bike parks,
+mailboxes, transformer boxes, terraces with tables, beach parasols, picnic tables, market and herring stalls, kiosks, advertising
+columns, MUPIs, parking meters, underground-bin posts, charging posts, trolley shelters, tram masts, traffic lights, and, listed
+after the anchors, the tram and bus shelters (kind `stop`, furnish's own and the map's), planters (one per box) and the map's
+statues and fountains; each with a footprint radius and height from ONE table, `S.FURN` (kind -> [height, radius]; unknown
+kinds count as 1.1 x 0.6; add new kinds there; a statue or fountain is one circle of the table's size, not its own, so a wide
+basin is bigger than its circle), and, when the crowd offers `ctx.crowd.obstacles`, the standing groups and waiting vehicles.
+NOT in it (drawn, but not in `props`), e.g.: bollards, quay posts and chains, street-name signs, poles, flagpoles, sport-pitch
+goals, playgrounds and their fences, fuel-station canopies and the map's other point features. Many of the map's shelters stand
+on the tram bed or the road (a platform in the middle of the street), so they are in the way of road scenes too.
 Buildings, water and tree trunks are checked as before. `clearSpot`, `findSpot`, `spotOr`, `nudge`, `runway`, `lineClear`,
 `roadHere` and the new `S.route`, `S.laneClear`, `S.laneFor` all respect it. A thin post (lamp, pole) only needs a person's
 width beside it; `runway` lets a post on the line pass when there is 0.7 m to go round it (the walking helpers do).
@@ -72,7 +78,7 @@ helpers pass `ignore` in the last argument, `go(ctx, a, x, z, speed, 0.06, { ign
 
 ### 2b. The stage declaration: `stage:` and `ctx.stage`
 
-A scene file exports `{ w, crime, avail, lock, stage, *run }`. `stage` says what free ground the scene uses, as data:
+A scene file exports `{ w, crime, avail, lock, need, stage, *run }`. `need` is an optional list of street-furniture lists of `ctx.L` (`['racks']`, `['bins']`, `['parked']`, `['benches']`): the scene is only offered on a spot where every one of them has at least one entry, checked before `avail` (`ready()` in gags.js). `stage` says what free ground the scene uses, as data:
 
 ```js
 stage: { pave: { side: 'near' | 'far' | 'any', len, depth },  // len metres of walkable ground at least `depth` metres wide (default 4 x 2)
@@ -124,6 +130,7 @@ out of view) · `yield* R.out(a, opts?)` take off stage (3b) ·
 `R.add(object3d)` / `R.rm(o)` a prop in street space (`o.position.set(x, y, z)`) · `R.stay(o)` survives a normal finish ·
 `R.run(gen)` / `R.stop(task)` · `yield* R.settle(maxSeconds)` wait for running tasks (stop endless ones first!) ·
 `yield* R.close()` closes the road to traffic and waits for it to clear, `R.open()` ·
+`R.gone(a)` removes an actor at once, wherever it is (only for something out of view or meant to vanish; `R.out` is the normal way off) ·
 `R.borrow(p)` / `R.give(p)` a passer-by from the crowd (`takePed(ctx, xr, null, cx)` or `yield* needPed(ctx, xr)`; `gather(ctx, R, x, n)` gives up to n onlookers; `filmIt(p, x, z)` makes one film with a phone) ·
 `extraKind(ctx)` the kind ('niffo' | 'harry' | 'civ') for an extra YOU invent, weighted by `ctx.district.pop` (use it in `makePerson(rnd, { kind: extraKind(ctx) })`; the toolkit's own `spawnPed`/`needPed`/passer-by `resident` already do) ·
 `fatbike(ctx, R, x, z, { passenger })` a spawned electric fat-bike with a rider (and a passenger if `passenger: true`) on it, returns `{ bike, rider, passenger }`; move it with `go`/`drive`/`rideTo`-style code, the rig cleans it up ·
@@ -154,14 +161,14 @@ A person on a balcony steps back through the window. When the scene ends normall
 by themselves. `R.police`, `R.cop`, `spawnPed`, `needPed`, `resident` and the four ambient gags use the same entrances and exits.
 
 **Order "shot, then entrance".** Walking in takes longer than popping in (an entrance from a frame edge 14 m away is 4 to 5 seconds at
-a walk). So: (1) cut to the shot that will hold the arrival point *before* you call `R.enter`, and give that shot a `hold` longer than the
-walk; (2) if the beat after depends on the arrival (a cop who must be standing there when the thief runs into him), start the entrance
+a walk). So: (1) cut to the shot that will show the arrival point *before* you call `R.enter` (a shot stays until the next one, so it
+needs no length); (2) if the beat after depends on the arrival (a cop who must be standing there when the thief runs into him), start the entrance
 earlier with `R.run(R.enter(...))` and `T.entryTime(ctx, a, x, z, opts)` (seconds it will take now, 0 when it is instant) and
 wait for that, or pass `speed` (runners: 5 to 7); (3) the first beat of a scene is the shot of the place, the entrance is the second
-half of it. In `burglar.js`: beat 1 holds `cam.wide(land, { hold: 3 })` and then calls `R.enter(rob, ...)`, and the track shot is cut after the
-entrance: lengthen the wide hold to the entrance (or cut to `cam.track` first and enter into it); the busted ending `wait(0.9)` then
-enters the cop, who now needs `entryTime` seconds, not 0.3: start him as soon as the getaway begins. The owner's `R.enter(owner,
-h.door.x, h.door.z, 0.001)` already steps out of the door.
+half of it. In `burglar.js`: beat 1 cuts to `cam.wide(doorPt, ...)`, tight on the door, waits until that shot is up and then calls
+`R.enter(rob, ...)` from the frame's edge; the track shot is cut after the entrance. In the busted ending the cop must be standing
+there when the chase reaches him, so his entrance is started two beats earlier, in the background (`R.run` around `R.enter(cop, ...)`);
+in the clean-away ending he only has to arrive late and walks in while the thief goes.
 
 A short lead-in (the first beat should start within about 3 seconds): open on a tight shot of the place and let the first
 entrance wait for it, so the frame edge is a few metres away, not fifteen:
@@ -185,7 +192,7 @@ script ends), `windowAt(ctx, R, house)` the first-floor window.
   size swung out on its hinge; closed, nothing extra shows. `d.force()` for a kicked or jemmied door.
 - `yield* d.passOut(actor, speed, z1)` / `yield* d.passIn(actor, speed)`: the person starts behind the wall, is seen in
   the dark doorway, and steps over the threshold (or goes back in). `d.out`, `d.inside`, `d.at(lx, lz)`, `d.heading`.
-- `d.bell`, `d.bellStand`, `yield* d.press(actor)`: the real bell plate beside the door and where to stand to ring it.
+- `d.bell`, `d.bellStand`, `yield* d.press()` (no argument; the button lights for a moment): the real bell plate beside the door and where to stand to ring it.
 - Windows: `d.pose(actor, u)` stands the person inside (u = 0) or leaning out over the sill (u = 1), `yield* d.retreat(actor)`.
 - `R.enter(a, x, z, 0, { from: 'door' })` and `R.out(a)` of someone who came from a door use the same doorway.
   Careful: a point within 1.2 m of ANY door counts as that door. For someone who must not come out of a neighbour's
@@ -212,22 +219,22 @@ A person standing on something or flying: set `a.air = true` and `a.g.position.y
 
 ## 5. Acting: `makePerson(rnd, { kind, scale, shirt, pants, hair, hat })`
 
-kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a parody designer tracksuit (HH monogram, green-red sleeve stripe, cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
+kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a beige/brown tracksuit (green-red stripe down sleeves and legs, no lettering; cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
 
 - `a.arms`: `swing` (default) `up` (panic) `carry` `fist` `hold` `wave` `sneak` `spray` `bag` (hand at the shoulder holding a slung sack) `laugh` `point` `shrug` `cheer` `hips` `cover` (hands over head/ears) `push` `drive` `facepalm` `phone` `count` (counting notes) `rub` (rubbing hands) `reach` `drag` `cross` `beg` `stop` (halt hand) `write`
 - `a.mood`: `neutral happy laugh smug sly angry shock scared sad dizzy sleepy focus whistle`; `a.emote('shock', 1.2)` for a passing one.
 - `a.lookAt = actor | { x, z } | null` (head and eyes turn), `a.nodT = 1` / `a.shakeT = 1` (seconds of yes / no).
-- `a.gait`: `walk sneak strut stagger` · `a.pose`: `null sit ride crouch` · `a.talk` is set by `say()`.
+- `a.gait`: `walk sneak strut stagger` · `a.pose`: `null sit ride crouch` (an animal from `makeDog`/`makeCat` also has `'sleep'`: it lies curled up and breathes) · `a.talk` is set by `say()`.
 - `a.squash(0.25)` one bounce of squash and stretch. `a.heading`, `a.face(h)` (instant).
 - `say(ctx, a, 'TEKST', { size, color, dur })`, `yell(ctx, a, 'TEKST', color, size)`; text at a point: `ctx.fx.text('BONK!', at(x, y, z), { size, color })`. Size 20+ is a punchline (the camera nudges to it).
-- Holding: `a.hold(obj)` right hand, `a.hold(obj, 'handL' | 'front' | 'back' | 'head' | 'shoulder')`, `a.drop()` returns it. `shoulder(a, item.moneybag())` slings a bag and raises the arm.
-- `item.*`: `moneybag(scale)` (the € swag bag) `wad` `crowbar` `torch` `pad` `megaphone` `lollipop` `cuffs` `fries` `balloon(col)` `spray` `wafel` `purse` `tv` `wallet` `ticket` `bomb` `can` `phone` `rod` `cutters` `broom` `nightcap` `bumper` `paper` `radio` `shoe`.
+- Holding: `a.hold(obj)` right hand, `a.hold(obj, 'handL' | 'front' | 'back' | 'head' | 'shoulder')`, `a.drop()` returns it (to put it somewhere else); `R.discard(a)` lets go and frees it for good, for a thing nothing uses again (a new `hold` frees the old thing the same way). `shoulder(a, item.moneybag())` slings a bag and raises the arm.
+- `item.*`: `moneybag(scale)` (the € swag bag) `wad` `crowbar` `torch` `pad` `megaphone` `lollipop` `cuffs` `fries` `balloon(col)` `spray` `wafel` `purse` `tv` `wallet` `ticket` `bomb` `can` `phone` (twice real size, glowing screen towards the holder) `rod` `cutters` `broom` `nightcap` `bumper` `paper` `radio` `shoe`.
   Your own props: `sculpt((v) => { v.box(x, yBottom, z, w, h, d, '#colour'); })`, glowing: `sculpt(fn, MAT.glow)`, both: `piece((v, gl) => {...})`.
 - Animals: `makeDog(rnd)`, `makeCat(rnd)`, `makeBird(rnd, 'gull' | 'pigeon')` (`a.fly = true`, move with a tween).
 
 ## 6. Vehicles: `makeCar(rnd, 'car' | 'police' | 'van' | 'taxi', L.night)`, `makeScooter(rnd, [riders])`, `makeFatbike(rnd, [riders])`, `makeBike(rnd)`
 
-`makeFatbike` is an electric fat-bike like the scooter (1.75 m, 4 inch tyres, long bench for two, big round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
+`makeFatbike` is an electric fat-bike like the scooter (1.75 m; drawn larger than life so it reads from far off: tyres 0.60 m across and 0.28 m wide, a battery block in a strong frame colour, a long dark bench for two, tall bars, a 0.46 m round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
 
 Enter with `yield* R.enter(car, x, z, 0, { dir: 1 })` (it drives in from out of the frame heading the way you say) then `car.face(E)`. A car is 4.4 m long (`car.len`, `car.wid`). The body sits
 on springs: it **rolls in bends, dives when braking and squats when accelerating by itself** from how you drive it.
@@ -245,8 +252,8 @@ on springs: it **rolls in bends, dives when braking and squats when accelerating
 A shot follows its subject until the next shot.
 
 **Shots are binding (the camera rules, `stage.js`).** Every shot has a purpose, a minimum length and a motivated cut.
-- *A shot never expires.* It stays until you ask for the next one or call `cam.release()` (or the scene ends). `hold` is
-  gone as an expiry: it no longer cuts to the street's wide view (that was the "jumps up for a second, jumps back" bug).
+- *A shot never expires.* It stays until you ask for the next one or call `cam.release()` (or the scene ends). There is no
+  `hold` option: a shot's length is the time until the scene asks for the next one.
   The only timer left is a safety net for a scene that hangs: 20 s after the last shot or `B(...)` beat the stage releases the
   camera once and logs a warning (the audit counts it as `expired`, which must be 0). If a shot's subjects leave the world the
   last picture is held.
@@ -255,11 +262,12 @@ A shot follows its subject until the next shot.
   glide (`cut: seconds`) is never deferred. Do not rely on two shots 0.2 s apart: the first never shows.
 - *The stand is decided once* when the shot starts (walls, parked cars, furniture, lamp posts, trunks, bystanders, statues and
   shelters; never under a terrace parasol or inside a market stall or kiosk), then kept. If the sight line then stays blocked
-  for 0.7 s the stand is reconsidered once, with a 0.5 s glide, and not again for 2 s; failing a clear stand the camera goes
-  high and wide the same way (once), and comes back down after 1 s of clear view. The cutaway of the buildings follows that
+  for 0.7 s (`BLOCKED_FOR`) the stand is decided again, with a 0.5 s glide. This can repeat for as long as the shot lasts, but
+  never sooner than 2 s after the last decision (`noRe`, `RECONSIDER`); failing a clear stand the camera goes
+  high and wide the same way, and comes back down after 1 s of clear view. The cutaway of the buildings follows that
   decision, not the passing sight line.
-- *Motivated cuts.* A shot on the same subject from nearly the same place (angle within 30 degrees, distance within 30%)
-  glides instead of cutting. A cut that would cross the line between two characters the last shot showed (the 180 degree
+- *Motivated cuts.* A shot whose view is nearly the last shot's (angle within 30 degrees, distance within 30%, target within 3 m;
+  the subjects are not compared) glides instead of cutting. A cut that would cross the line between two characters the last shot showed (the 180 degree
   rule) is mirrored to the same side, unless the shot has `from` (you asked for the over-the-shoulder side) or `free`.
 - *Fitting the beat's subjects* eases in and out: the camera starts backing off when somebody is outside 97% of the frame and
   comes back when everybody is inside 85%.
@@ -307,7 +315,7 @@ For several subjects pass them all with `fit: true`. Keep `dist` ≥ 5 for a per
 
 `ctx.sfx('name')`: `pop thud slam yoink boing hey bell ding dingdong whistle coin honk squawk bark spray snip fuse alarm
 siren skid boom rocket pang splash chop zzz typing reel glass bonk sting gasp clatter laugh snigger rev screech crash
-kaching door womp tada tick swish gulp cuff meow`.
+kaching door womp tada tick swish gulp cuff meow whoosh`.
 
 ## 9. Checking your work
 

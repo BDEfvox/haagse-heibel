@@ -4,6 +4,11 @@ import { TAU } from './kit.js';
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _c = new THREE.Color();
 
+// The two materials of the particle pools, made once for the page: a street's Fx comes and goes (every open, every focus
+// shift), and a disposed material takes its compiled program with it, which the next street's first particle would link again.
+let _mats = null;
+const fxMats = () => (_mats ||= { solid: new THREE.MeshLambertMaterial(), glow: new THREE.MeshBasicMaterial({ toneMapped: false }) });
+
 class Pool {
   constructor(scene, cap, mat, owner) {
     this.cap = cap;
@@ -71,7 +76,7 @@ class Pool {
   dispose() {
     this.mesh.parent?.remove(this.mesh);
     this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
+    // (the material is shared by every Fx: kept)
     this.mesh.dispose();
   }
 }
@@ -82,6 +87,18 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 // popup words are full strength up to TEXT_NEAR metres from the lens and gone by TEXT_FAR
 const TEXT_NEAR = 26, TEXT_FAR = 44;
 
+/** Take an overlay element off the screen: at once, or (fade) over FADE_MS where it stands, unclickable meanwhile. */
+export const FADE_MS = 300;
+export function fadeOut(el, fade) {
+  if (!fade || el.hidden) { el.remove(); return; }
+  // inline, because the frame sets the words' opacity inline (update)
+  el.style.transition = `opacity ${FADE_MS}ms`;
+  el.style.pointerEvents = 'none';
+  if ('disabled' in el) el.disabled = true;
+  requestAnimationFrame(() => { el.style.opacity = '0'; });
+  setTimeout(() => el.remove(), FADE_MS + 50);
+}
+
 export class Fx {
   constructor(scene, camera, overlay) {
     this.camera = camera;
@@ -91,8 +108,8 @@ export class Fx {
     /** Camera distance: comic text shrinks and fades as the camera pulls away. */
     this.zoom = 60;
     this.alpha = 1;
-    this.solid = new Pool(scene, 900, new THREE.MeshLambertMaterial(), this);
-    this.glow = new Pool(scene, 500, new THREE.MeshBasicMaterial({ toneMapped: false }), this);
+    this.solid = new Pool(scene, 900, fxMats().solid, this);
+    this.glow = new Pool(scene, 500, fxMats().glow, this);
     this.texts = [];
     this.shakeAmt = 0;
   }
@@ -195,7 +212,7 @@ export class Fx {
     this.solid.update(dt);
     this.glow.update(dt);
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * (1.2 + this.shakeAmt * 2.4));
-    const w = this.overlay.clientWidth, h = this.overlay.clientHeight;
+    const S = this.size, w = S ? S.w : this.overlay.clientWidth, h = S ? S.h : this.overlay.clientHeight; // (the stage keeps the size: no layout read per frame)
     // words belong to the street: from further away they shrink, then slowly fade out
     const want = 1 - Math.min(1, Math.max(0, (this.zoom - 115) / 150));
     this.alpha += (want - this.alpha) * Math.min(1, dt * 1.6);
@@ -221,10 +238,11 @@ export class Fx {
       t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px) scale(${k.toFixed(3)})`;
     }
   }
-  dispose() {
+  /** `fade`: the words fade out where they are (a focus shift: the scene that said them is gone) instead of vanishing. */
+  dispose(fade = false) {
     this.solid.dispose();
     this.glow.dispose();
-    this.texts.forEach((t) => t.el.remove());
+    for (const t of this.texts) fadeOut(t.el, fade);
     this.texts = [];
   }
 }

@@ -1,5 +1,5 @@
 // The cash-machine blast: a van, two men in striped shirts, a bomb, a rain of banknotes, laughing, bags thrown into the van, and a
-// police car that arrives in time to take its cap off and scratch its head.
+// police car that slides up to the hole: the cop looks at the hole, scratches his head, pockets the last banknote and drives off.
 // Storyboard: storyboards/plofkraak.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
 import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
@@ -12,9 +12,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed, seen, watching,
   } = T;
 
   /**
@@ -285,7 +285,7 @@ export default function (T) {
 
         // ---- 6. loading up: bags over their shoulders, a run to the van, the bags are thrown in, the robbers jump after them
         B('6 loading up: bags over their shoulders, running for the van', [r1, r2, van]);
-        r1.drop(); r2.drop();
+        R.discard(r1); R.discard(r2);
         shoulder(r1, item.moneybag(1.1)); shoulder(r2, item.moneybag(1.1));
         r1.mood = r2.mood = 'happy';
         cam.track([r1, r2], { dist: 11, el: 0.14, az: 0.9, lead: 2 });
@@ -298,7 +298,7 @@ export default function (T) {
         cam.ground(pt(xr - vdir * 0.5, vz), { dist: 6.5, az: -vdir * 0.8 });
         yield* wait(0.3);
         const toss = function* (a, k) {
-          a.drop();
+          R.discard(a);
           a.arms = 'push';
           const bag = R.add(item.moneybag(1.1)), ap = a.g.position;
           bag.position.set(ap.x, 1.5, ap.z);

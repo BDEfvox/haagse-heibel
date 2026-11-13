@@ -10,9 +10,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop, seen, watching,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed, seen, watching,
   } = T;
 
   /** Speed profile for drive(): hold v0, then ease down to v1 over the last part of the line (the nose dives as it brakes). */
@@ -119,7 +119,7 @@ export default function (T) {
         B('2 car A rolls up, the driver is on his phone', [a]);
         yield* R.enter(a, x0, z, 0, { dir, speed: 10 });
         a.face(heading);
-        cam.chase(a, dir, { dist: 7.5, hold: 3.6 });
+        cam.chase(a, dir, { dist: 7.5 });
         say(ctx, a, '*appje*', { size: 13, color: '#cfe8ff' });
         yield* wait(0.4);
         const dA = Math.abs(xs - a.g.position.x);
@@ -132,7 +132,7 @@ export default function (T) {
 
         // ---- 3. nose to beak: he honks, the pigeon does not budge
         B('3 car A stops for the pigeon; the pigeon holds its ground', [a, bird]);
-        cam.shot({ on: [a, bird], fit: true, dist: 8, el: 0.05, az: dir * 1.1, y: 0.5, hold: 3.4, cut: 0.4 });
+        cam.shot({ on: [a, bird], fit: true, dist: 8, el: 0.05, az: dir * 1.1, y: 0.5, cut: 0.4 });
         yield* wait(0.4);
         ctx.sfx('honk'); say(ctx, a, 'TUUT', { size: 13, color: '#ffd166' });
         bird.face(dir > 0 ? W : E);
@@ -146,7 +146,7 @@ export default function (T) {
         B('4 car B bears down, radio on', [b]);
         yield* R.enter(b, x0, z, 0, { dir, speed: 12 });
         b.face(heading);
-        cam.nose(b, dir, { dist: 8, hold: 3.2 });
+        cam.nose(b, dir, { dist: 8 });
         say(ctx, b, '♪ la la la ♪', { size: 12, color: '#cfe8ff' });
         yield* wait(0.4);
         const dB = Math.abs(bx - b.g.position.x);
@@ -157,7 +157,7 @@ export default function (T) {
             if (!near && left < 7.5) {
               near = true;
               B('5 the bump: both cars in one frame', [a, b]);
-              cam.shot({ on: [a, b], fit: true, dist: 11, el: 0.06, az: dir * 1.2, y: 0.6, hold: 3, cut: 0.2 });
+              cam.shot({ on: [a, b], fit: true, dist: 11, el: 0.06, az: dir * 1.2, y: 0.6, cut: 0.2 });
             }
             if (near && !slowed && left < 5) { slowed = true; ctx.slowmo(0.2, 1.6); }
             if (left < 2.6 && !b._brk) { b._brk = true; say(ctx, b, '!!', { size: 18, color: '#fff' }); ctx.sfx('skid'); }
@@ -192,7 +192,7 @@ export default function (T) {
 
         // ---- 6. the debris: bumpers on the tarmac, steam from the bonnet
         B('6 two bumpers lie in the road, steam rises', [bumps[0], bumps[1], b]);
-        cam.ground(pt(ix, z), { dist: 8, az: dir * 0.9, fit: true, cut: 0.5, hold: 2.6 });
+        cam.ground(pt(ix, z), { dist: 8, az: dir * 0.9, fit: true, cut: 0.5 });
         yield* wait(1.0);
         if (lv >= 4) R.panic(xs, 14, 3);
         ctx.news(`Fender-bender on ${ctx.st.name}. Both drivers "had right of way"`);
@@ -200,7 +200,7 @@ export default function (T) {
         // ---- 7. the culprit: the pigeon, unbothered
         B('7 the ' + bn + ', the culprit, unbothered', [bird]);
         bird.face(0);
-        cam.hero(bird, { dist: 4.5, hold: 2.6, cut: 0.4 });
+        cam.hero(bird, { dist: 4.5, cut: 0.4 });
         cam.card('DE ' + BN, bkind === 'gull' ? 'Wanted a chip. Caused everything.' : 'Did nothing. Caused everything.', 1.9);
         yield* wait(0.4);
         say(ctx, bird, 'rrrk', { size: 11, color: '#cfe8ff' });
@@ -214,7 +214,7 @@ export default function (T) {
         d1.heading = dir > 0 ? W : E; d2.heading = dir > 0 ? E : W;
         d1.arms = d2.arms = 'fist'; d1.mood = d2.mood = 'angry';
         d1.lookAt = d2; d2.lookAt = d1;
-        cam.two(d1, d2, { dist: 10, el: 0.1, hold: 1.4 });
+        cam.two(d1, d2, { dist: 10, el: 0.1 });
         ctx.sfx('pop');
         const crowd = gather(ctx, R, xs, 2, 14);
         for (const g of crowd) filmIt(g, xs - dir * 1.5, sz);
@@ -222,7 +222,7 @@ export default function (T) {
         const lines = ['KIJK UIT JE DOPPEN!', 'JIJ REMDE ZOMAAR!', 'ER LIEP EEN ' + BN + '!', 'EEN ' + BN + '?!'];
         for (let i = 0; i < 4; i += (i === 1 ? 2 : 1)) {
           const sp = i % 2 ? d1 : d2, other = i % 2 ? d2 : d1;
-          if (i % 2) cam.ots(d1, d2, { hold: 1.8, cut: 0.3 }); else cam.ots(d2, d1, { hold: 1.8, cut: 0.3 });
+          if (i % 2) cam.ots(d1, d2, { cut: 0.3 }); else cam.ots(d2, d1, { cut: 0.3 });
           yield* wait(0.3);
           sp.arms = 'point'; other.arms = 'fist';
           yell(ctx, sp, lines[i], i % 2 ? '#ffb4a2' : '#ff6b6b', 14);
@@ -236,7 +236,7 @@ export default function (T) {
         // ---- 9. escalation: each fetches a bumper
         const b1 = bumps[0], b2 = bumps[1];
         B('9 each driver fetches a bumper', [d1, d2, b1, b2]);
-        cam.two(d1, d2, { dist: 12, el: 0.12, fit: true, hold: 3.2 });
+        cam.two(d1, d2, { dist: 12, el: 0.12, fit: true });
         yield* wait(0.4);
         d1.arms = d2.arms = 'swing';
         yield* all(go(ctx, d1, b1.position.x, sz, 4.5), go(ctx, d2, b2.position.x, sz, 4.5));
@@ -249,7 +249,7 @@ export default function (T) {
         // ---- 10. the duel (a third car is already on its way, honking; and a cop, whistling, is on his)
         const c3In = R.run((function* () { yield* wait(1.2); ctx.sfx('honk'); yield* R.enter(c3, x0, z, 0, { dir, speed: 11 }); c3.face(heading); })());
         B('10 the bumper duel', [d1, d2]);
-        cam.dutch([d1, d2], { dist: 7.5, fit: true, az: dir * 0.2, hold: 3.2, cut: 0.4 });
+        cam.dutch([d1, d2], { dist: 7.5, fit: true, az: dir * 0.2, cut: 0.4 });
         yield* wait(0.3);
         yield* all(go(ctx, d1, xs - dir * 0.2, sz, 4), go(ctx, d2, xs - dir * 1.4, sz, 4));
         faceTo(d1, d2.g.position.x, sz); faceTo(d2, d1.g.position.x, sz);
@@ -268,9 +268,9 @@ export default function (T) {
         d1.lookAt = d2.lookAt = pt(xs - dir * 9, z);
         yield* waitUntil(() => c3In.done, 8);
         d1.lookAt = d2.lookAt = c3;
-        cam.nose(c3, dir, { dist: 8, hold: 2.6 });
+        cam.nose(c3, dir, { dist: 8 });
         ctx.sfx('honk'); say(ctx, c3, 'HÉ! DOORRIJDEN!', { size: 13, color: '#ffd166' });
-        d1.drop(); d2.drop();
+        R.discard(d1); R.discard(d2);
         d1.arms = d2.arms = 'stop'; d1.mood = d2.mood = 'scared';
         yield* wait(0.9);
         const tx = b.g.position.x - dir * (b.len + 0.1), dC = Math.abs(tx - c3.g.position.x);
@@ -280,7 +280,7 @@ export default function (T) {
             if (!nearC && dC * (1 - u) < 6.5) {
               nearC = true;
               B('12 the second bump: B shoved into A', [c3, b, a]);
-              cam.shot({ on: [a, b, c3], fit: true, dist: 12, el: 0.06, az: dir * 1.2, y: 0.6, hold: 3, cut: 0.2 });
+              cam.shot({ on: [a, b, c3], fit: true, dist: 12, el: 0.06, az: dir * 1.2, y: 0.6, cut: 0.2 });
             }
           },
         });
@@ -298,7 +298,7 @@ export default function (T) {
         d1.mood = d2.mood = 'shock';
         const d3 = makePerson(rnd, { kind: rnd.chance(0.4) ? 'chef' : 'civ' });
         B('13 driver three storms out', [c3, d1, d2]);
-        cam.close(c3, { dist: 6, hold: 2.4, cut: 0.3 });
+        cam.close(c3, { dist: 6, cut: 0.3 });
         yield* emerge(ctx, R, d3, c3, c3.g.position.x, sz);
         d3.arms = 'fist'; d3.mood = 'angry'; d3.heading = dir > 0 ? E : W;
         yell(ctx, d3, 'JULLIE STONDEN STIL!', '#ffb4a2', 13);
@@ -319,7 +319,7 @@ export default function (T) {
           clip = cop.hold(item.paper());
           cop.arms = 'hold';
         } else {
-          cam.close(d1, { dist: 6, hold: 2.4 });
+          cam.close(d1, { dist: 6 });
           d1.mood = 'sad';
           say(ctx, d1, 'Zullen we... het formulier?', { size: 12, color: '#cfe8ff' });
           clip = d1.hold(item.paper());
@@ -334,8 +334,8 @@ export default function (T) {
         // ---- 15. a gust of wind: the form takes off
         B('15 a gust: papers everywhere', [d1, d2, d3, spot]);
         const src = cop || d1;
-        src.drop();
-        cam.high(spot, { dist: 18, el: 0.55, hold: 3.4, cut: 0.3 });
+        R.discard(src);
+        cam.high(spot, { dist: 18, el: 0.55, cut: 0.3 });
         yield* wait(0.3);
         ctx.fx.text('FWOEF!', at(xs, 3.2, sz), { size: 24, color: '#e8f7ff' });
         ctx.sfx('whoosh');
@@ -355,7 +355,7 @@ export default function (T) {
         // ---- 16. everybody goes for the same sheet
         const target = dest[0], other = dest[1];
         B('16 three people, one sheet of paper', [d1, d2, d3, pt(target[0], sz)]);
-        cam.two(d1, d2, { dist: 12, fit: true, hold: 3.4, cut: 0.3 });
+        cam.two(d1, d2, { dist: 12, fit: true, cut: 0.3 });
         for (const g of [d1, d2, d3]) { g.arms = 'up'; g.lookAt = null; g.mood = 'focus'; }
         yield* wait(0.5);
         yield* all(
@@ -377,7 +377,7 @@ export default function (T) {
 
         // ---- 17. the pigeon strolls through the middle of the circle. Level decides how it all ends
         B('17 the pigeon strolls through the circle', [bird, d1, d2]);
-        cam.close(bird, { hold: 2.4, cut: 0.4 });
+        cam.close(bird, { cut: 0.4 });
         const pace = R.run(go(ctx, bird, xs - dir * 1.5, sz, 2));
         yield* wait(0.9);
         say(ctx, bird, 'rrrk', { size: 11, color: '#cfe8ff' });

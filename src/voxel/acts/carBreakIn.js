@@ -10,9 +10,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
 
   const alarmLights = (x, z) => {
@@ -96,7 +96,7 @@ export default function (T) {
         // ---- 3. reveal
         B('3 reveal: the car thief grins at us', [thief]);
         thief.gait = 'walk'; thief.heading = 0; thief.lookAt = null; thief.mood = 'smug'; thief.arms = 'rub';
-        cam.hero(thief, { dist: 5, hold: 2.8 });
+        cam.hero(thief, { dist: 5 });
         cam.card('DE KLINKENPOETSER', 'Tries every handle. Eternal optimist.', 2);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -110,7 +110,7 @@ export default function (T) {
         if (decoys[0]) {
           const c = decoys[0], cp = pt(c.x, c.z);
           B('4 first car: locked', [thief, cp]);
-          cam.ots(thief, cp, { dist: 6, hold: 4, cut: 0.4 });
+          cam.ots(thief, cp, { dist: 6, cut: 0.4 });
           yield* handle(c, 3, 'op slot.');
           thief.mood = 'sad'; thief.arms = 'shrug'; thief.shakeT = 1;
           yield* wait(0.8);
@@ -120,7 +120,7 @@ export default function (T) {
         if (decoys[1]) {
           const c = decoys[1], cp = pt(c.x, c.z);
           B('5 second car: the alarm goes off', [thief, cp]);
-          cam.shot({ on: [thief, cp], fit: true, dist: 7, el: 0.1, az: 0.5, y: 0.8, hold: 3.6, cut: 0.4 });
+          cam.shot({ on: [thief, cp], fit: true, dist: 7, el: 0.1, az: 0.5, y: 0.8, cut: 0.4 });
           yield* handle(c, 2, null);
           ctx.sfx('alarm');
           const al = alarm(c, 1.9);
@@ -131,8 +131,8 @@ export default function (T) {
           // act natural: whistle, hands behind the back, stare at nothing
           const watcher = takePed(ctx, 12, null, c.x + dir * 3);
           B('6 act natural: whistling, innocent', watcher ? [thief, watcher] : [thief]);
-          if (watcher) { R.borrow(watcher); faceTo(watcher, c.x + dir * 3, z); watcher.arms = 'cross'; watcher.mood = 'sly'; watcher.lookAt = thief; cam.two(thief, watcher, { dist: 9, hold: 4.6, cut: 0.4 }); }
-          else cam.close(thief, { hold: 4.6, cut: 0.4 });
+          if (watcher) { R.borrow(watcher); faceTo(watcher, c.x + dir * 3, z); watcher.arms = 'cross'; watcher.mood = 'sly'; watcher.lookAt = thief; cam.two(thief, watcher, { dist: 9, cut: 0.4 }); }
+          else cam.close(thief, { cut: 0.4 });
           thief.arms = 'swing'; thief.gait = 'walk'; thief.mood = 'whistle';
           yield* wait(0.4);
           yield* go(ctx, thief, c.x + dir * 3, z, 2.0);
@@ -147,7 +147,7 @@ export default function (T) {
 
         // ---- 7. the right car: he leans in and hears something
         B('7 the right car: he peers in through the window', [thief, carPt]);
-        cam.ots(thief, carPt, { dist: 6, hold: 3.4, cut: 0.4 });
+        cam.ots(thief, carPt, { dist: 6, cut: 0.4 });
         yield* go(ctx, thief, car.x, z, 3);
         thief.heading = Math.PI; thief.arms = 'sneak'; thief.lookAt = winPt; thief.mood = 'sly';
         yield* wait(0.5);
@@ -160,7 +160,7 @@ export default function (T) {
         // ---- 8. the window goes
         B('8 the crowbar, the window, KRAK', [thief, winPt]);
         thief.hold(item.crowbar()); thief.arms = 'up';
-        cam.shot({ on: [thief, winPt], fit: true, dist: 6.5, el: 0.05, az: 0.35, y: 0.9, hold: 3, cut: 0.3 });
+        cam.shot({ on: [thief, winPt], fit: true, dist: 6.5, el: 0.05, az: 0.35, y: 0.9, cut: 0.3 });
         thief.squash(0.2);
         yield* wait(0.6);
         thief.arms = 'push';
@@ -180,7 +180,7 @@ export default function (T) {
         const loot = [item.radio(), item.shoe(), item.wallet()];
         loot[0].scale.setScalar(1.6); loot[1].scale.setScalar(1.8); loot[2].scale.setScalar(1.8);
         B('9 radio, shoe and wallet fly out of the window', [thief, loot[0], loot[1], loot[2]]);
-        cam.close(thief, { dist: 6, y: 1.3, hold: 3.2, cut: 0.3 });
+        cam.close(thief, { dist: 6, y: 1.3, cut: 0.3 });
         yield* wait(0.3);
         const held = [true, true, true];
         for (let i = 0; i < 3; i++) {
@@ -206,7 +206,7 @@ export default function (T) {
 
         // ---- 10. the owner has been in the back seat all along
         B('10 the owner sits up in the back seat', [thief, carPt]);
-        cam.two(thief, carPt, { dist: 9, hold: 2.6, cut: 0.4 });
+        cam.two(thief, carPt, { dist: 9, cut: 0.4 });
         yield* wait(0.4);
         owner.g.visible = true;
         yield* tween(0.35, (u) => { owner.g.position.y = lerp(-0.4, 0.1, ease.outBack(u)); }); // he sits bolt upright
@@ -219,7 +219,7 @@ export default function (T) {
         yield* wait(0.2);
 
         B('11 the owner leaps out, furious', [owner, thief]);
-        cam.crash(owner, { hold: 1.8 });
+        cam.crash(owner);
         owner.arms = 'fist'; owner.mood = 'angry';
         yield* wait(0.3);
         yield* arc(owner.g, car.x + dir * 0.9, 0, z + 0.4, 1.0, 0.45); // out through the broken window
@@ -229,7 +229,7 @@ export default function (T) {
 
         // ---- 12. the chase: loot juggling at full speed
         B('12 the chase: juggling loot at full speed', [thief, owner]);
-        cam.track(thief, { hold: 4.5, lead: 3, fit: false, cut: 0.4 });
+        cam.track(thief, { lead: 3, fit: false, cut: 0.4 });
         thief.gait = 'walk'; thief.arms = 'up'; thief.lookAt = owner; thief.mood = 'scared';
         yield* wait(0.3);
         const oc = R.run(goEach(ctx, owner, edge, z + 0.4, 5));
@@ -264,7 +264,7 @@ export default function (T) {
         thief.lookAt = null;
         if (cop && Math.abs(thief.g.position.x - edge) > 1.5) {
           B('13 busted: the cop steps out with the cuffs', [thief, cop]);
-          cam.dutch([thief, cop], { dist: 7, fit: true, az: dir * 0.2, hold: 2.6, cut: 0.2 });
+          cam.dutch([thief, cop], { dist: 7, fit: true, az: dir * 0.2, cut: 0.2 });
           yield* wait(0.3);
           ctx.sfx('skid'); ctx.shake(0.2);
           yield* fright(ctx, thief, null);
@@ -275,14 +275,14 @@ export default function (T) {
           yield* wait(0.5);
           cop.hold(item.cuffs()); cop.arms = 'hold'; cop.mood = 'smug';
           faceTo(cop, thief.g.position.x, z); cop.lookAt = thief;
-          cam.close(thief, { hold: 2, cut: 0.3 });
+          cam.close(thief, { cut: 0.3 });
           thief.mood = 'sad'; thief.arms = 'beg';
           ctx.sfx('cuff');
           yield* wait(1.2);
         } else {
           B('13 clean away: the thief gloats', [thief]);
           thief.arms = 'swing';
-          cam.hero(thief, { dist: 5, hold: 2.6, cut: 0.4 });
+          cam.hero(thief, { dist: 5, cut: 0.4 });
           yield* wait(0.4);
           thief.heading = 0; thief.mood = 'smug';
           yield* laugh(ctx, thief, 1.3, 'he');
@@ -293,7 +293,7 @@ export default function (T) {
         // ---- 14. the owner, panting, collects his things
         B('14 the owner collects his things, one by one', [owner, loot[0], loot[1], loot[2]]);
         owner.mood = 'sad'; owner.arms = 'swing';
-        cam.track(owner, { dist: 8, el: 0.14, lead: 1.5, hold: 5, cut: 0.5 });
+        cam.track(owner, { dist: 8, el: 0.14, lead: 1.5, cut: 0.5 });
         const rest = loot.slice().sort((p, q) => Math.abs(p.position.x - owner.g.position.x) - Math.abs(q.position.x - owner.g.position.x));
         for (const o of rest) {
           yield* go(ctx, owner, o.position.x, o.position.z + 0.3, 6);
@@ -311,7 +311,7 @@ export default function (T) {
         yield* go(ctx, owner, car.x, z, 6);
         owner.heading = Math.PI;
         B('15 back to bed: yawn, and the car snores again', [owner, carPt]);
-        cam.low(carPt, { dist: 8, hold: 3.4, cut: 0.5 });
+        cam.low(carPt, { dist: 8, cut: 0.5 });
         say(ctx, owner, '*geeuw*', { size: 13, color: '#cfe8ff' });
         yield* wait(0.8);
         // back in through the broken window and down into the seat, where the body hides him again
@@ -324,7 +324,7 @@ export default function (T) {
         ctx.fx.text('Z', at(car.x, 2.3, car.z), { size: 18, color: '#cfe8ff', rise: 1.4, dur: 1.8 });
         thief.arms = 'swing'; thief.mood = 'sad';
         R.run(R.away(thief, dir * 6, cop ? 3.4 : 6));
-        if (cop) { cop.drop(); cop.lookAt = null; cop.arms = 'swing'; R.run(R.away(cop, dir * 6, 3.4)); }
+        if (cop) { R.discard(cop); cop.lookAt = null; cop.arms = 'swing'; R.run(R.away(cop, dir * 6, 3.4)); }
         yield* wait(0.6);
         cam.wide(pt(car.x, z), { dist: 20 });
         yield* wait(1.4); // (the payoff has landed: the camera lets go and the rig walks the thief off)

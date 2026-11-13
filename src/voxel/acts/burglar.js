@@ -13,9 +13,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
   const { doorway, windowAt, entryTime } = T;
 
@@ -73,7 +73,7 @@ export default function (T) {
         // ---- 2. the reveal
         B('2 reveal: the burglar grins at us', [rob]);
         rob.lookAt = null; rob.heading = 0; rob.mood = 'smug'; rob.arms = 'rub';
-        cam.hero(rob, { hold: 3 });
+        cam.hero(rob);
         cam.card('DE INBREKER', 'Lets himself in. Never wipes his feet.', 2.1);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -97,7 +97,7 @@ export default function (T) {
         rob.arms = 'sneak'; rob.mood = 'sly';
         yield* go(ctx, rob, dx, dw.out.z, 1.8);
         yield* dw.passIn(rob, 1.5);
-        rob.drop();
+        R.discard(rob);
         ctx.incident(2);
         ctx.news(`Burglar lets himself in on ${ctx.st.name}; "the door was basically open"`);
 
@@ -148,7 +148,7 @@ export default function (T) {
         // ---- 5. the gloat: bag over the shoulder, and he laughs
         B('5 the gloat: bag over his shoulder, laughing', [rob]);
         yield* go(ctx, rob, dx - dir * 0.9, lz, 3.2);
-        rob.drop();
+        R.discard(rob);
         shoulder(rob, item.moneybag(1.2));
         rob.squash(0.15);
         rob.heading = 0.5; rob.mood = 'smug';
@@ -224,7 +224,7 @@ export default function (T) {
           ctx.fx.pips(stopX, 1.9, lz, 8);
           rob.lookAt = null; cop.lookAt = null;
           const sack = R.add(item.moneybag(1.2)), rp = rob.g.position;
-          rob.drop();
+          R.discard(rob);
           sack.position.set(rp.x, 1.5, rp.z);
           // the bag keeps going: up, open, raining money, and down into the owner's arms
           const sackT = R.run((function* () {
@@ -260,7 +260,7 @@ export default function (T) {
           R.run(R.away(rob, dir * 5, 2.6));
           R.run((function* () { yield* wait(0.35); yield* R.away(cop, dir * 5, 2.6); })());
           owner.mood = 'happy';
-          R.run((function* () { yield* wait(0.6); yield* go(ctx, owner, dw.out.x, dw.out.z, 2.8); owner.drop(); yield* R.out(owner); })());
+          R.run((function* () { yield* wait(0.6); yield* go(ctx, owner, dw.out.x, dw.out.z, 2.8); R.discard(owner); yield* R.out(owner); })());
         } else {
           // ---- 8b. clean away: the law is half a minute late
           B('8 clean away: gone round the corner, still laughing', [rob]);

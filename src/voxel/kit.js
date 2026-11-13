@@ -61,9 +61,22 @@ export const MAT = {
   glow: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
   water: new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.86 }),
 };
+/** Materials that many objects share and that are never disposed with one of them (world.js adds its cutaway set, CUT). */
+export const SHARED = new Set([MAT.solid, MAT.glow, MAT.water]);
+/**
+ * Free the GPU buffers of an object that has left the scene for good: every geometry, and every material that is not shared
+ * (per-object materials: signs, beams, clouds). Here, in the leaf module, so that cast.js, gags.js and stage.js use one copy.
+ */
+export function disposeTree(o) {
+  o.traverse((c) => {
+    if (c.geometry) c.geometry.dispose();
+    if (c.material && !SHARED.has(c.material)) c.material.dispose(); // per-object materials (signs, beams, clouds); shared ones stay
+  });
+}
 
 // ---------------------------------------------------------------- Vox builder
 const _c = new THREE.Color();
+const _cols = new Map(); // colour string -> [r, g, b] as Color.set leaves them (working space)
 const FACES = [
   // each: 4 corner selectors (0 = min, 1 = max per axis) + normal
   [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 0]],
@@ -131,7 +144,17 @@ export class Vox {
   /** vary: random lightness jitter (0..1) to give flat colours a hand-placed feel. */
   box(x, y, z, w, h, d, color, vary = 0) {
     if (this.n + 24 > this.cap) this._grow();
-    _c.set(color);
+    // a colour string is parsed once (three's setStyle, then the colour-space conversion): later boxes take the same r, g, b
+    if (typeof color === 'string') {
+      const q = _cols.get(color);
+      if (q) { _c.r = q[0]; _c.g = q[1]; _c.b = q[2]; }
+      else {
+        // (a string three cannot read leaves the colour as it was: then it is not cached, and the box keeps that colour as before)
+        const pr = _c.r, pg = _c.g, pb = _c.b;
+        _c.r = NaN; _c.set(color);
+        if (Number.isNaN(_c.r)) { _c.r = pr; _c.g = pg; _c.b = pb; } else if (_cols.size < 8192) _cols.set(color, [_c.r, _c.g, _c.b]);
+      }
+    } else _c.set(color);
     if (vary) _c.multiplyScalar(1 + (this._rand() * 2 - 1) * vary);
     const X0 = x - w / 2, X1 = x + w / 2, Y1 = y + h, Z0 = z - d / 2, Z1 = z + d / 2;
     const T = this.T, B = this.B, pos = this.pos, nor = this.nor, col = this.col, tag = this.tag, idx = this.idx;
@@ -209,7 +232,7 @@ export function clearSigns() {
   for (const t of signCache.values()) t.dispose();
   signCache.clear();
 }
-export function signTexture(text, { fg = '#fff', bg = '#1d4ed8', pad = 6, px = 16, border = null } = {}) {
+function signTexture(text, { fg = '#fff', bg = '#1d4ed8', pad = 6, px = 16, border = null } = {}) {
   const key = [text, fg, bg, pad, px, border].join('|');
   if (signCache.has(key)) return signCache.get(key);
   const c = document.createElement('canvas');

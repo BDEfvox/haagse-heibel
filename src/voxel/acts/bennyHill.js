@@ -12,9 +12,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
   const { entryTime, seen, watching, outPoint, extraKind } = T;
 
@@ -173,7 +173,7 @@ export default function (T) {
         // ...and the second cop, who stood aside and watched the whole line go by, falls in at the back
         if (hasCop2) {
           yield* waitUntil(() => d * (tail().g.position.x - cop2.g.position.x) < 0.9, 8);
-          cop2.lookAt = tail(); cop2.drop();
+          cop2.lookAt = tail(); R.discard(cop2);
           say(ctx, cop2, 'HÈ?! PAK HEM!', { size: 14, color: '#7db8ff' });
           ctx.sfx('whistle');
           cop2.arms = 'point'; cop2.mood = 'angry';
@@ -242,7 +242,7 @@ export default function (T) {
           const bag2 = item.moneybag(0.6);
           bag2.position.set(0, 0.5, 0.75);
           ctx.sfx('yoink');
-          rob.drop();
+          R.discard(rob);
           dog.b.add(bag2);
           rob.arms = 'swing'; rob.mood = 'shock'; rob.lookAt = dog;
           yield* hop(dog, 0.4, 0.25);

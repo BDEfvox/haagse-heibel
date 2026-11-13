@@ -2,25 +2,23 @@
 // Pure drawing code: every function draws boxes into tagged Vox builders (see kit.js) and nothing else.
 // Conventions: metres, y up, buildings drawn from y = 0 (the shader seats them on the terrain), every box
 // tagged with setB(centreX, centreZ, height + 2, halfDepth) so the cutaway shader can flatten them.
-import * as THREE from 'three';
-import { inRing, obbOf, rectsOf } from './geo.js';
+import { inRing, obbOf, rectsOf, ringArea } from './geo.js';
 import { SPECIALS as S1 } from './specials.js';
 import { SPECIALS2 as S2 } from './specials2.js';
 import { makeRng } from './kit.js';
+import { shade } from './props.js';
 import { drawStatue, drawGeneric, drawFountain, statueRot } from './statues/kit.js';
 import { recipeFor } from './statues/index.js';
 
 // hand-made landmarks (the Ridderzaal, the Peace Palace, the skyline towers, ...): see specials.js and specials2.js
 const SPECIALS = [...S1, ...S2];
 
-const _c = new THREE.Color();
-const shade = (hex, k) => '#' + _c.set(hex).multiplyScalar(k).getHexString();
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const hexOf = (n, fb) => (n >= 0 ? '#' + (n & 0xffffff).toString(16).padStart(6, '0') : fb);
 const HALF = Math.PI / 2;
 
 const BRICKS = ['#8f5546', '#9a6350', '#80524a', '#a47058', '#74504a'];
-const STONE = '#d9d2c3', CONC = '#a9a59c', SLATE = '#4f545c', GLASS = '#9fd0e6', DARK = '#1f2328';
+const STONE = '#d9d2c3', SLATE = '#4f545c', GLASS = '#9fd0e6', DARK = '#1f2328';
 const BRIGHT = ['#e63946', '#ffb703', '#3a86ff', '#2a9d8f', '#f4a261', '#8338ec', '#fb5607'];
 const NL = ['#ae1c28', '#ffffff', '#21468b']; // Dutch flag
 
@@ -244,16 +242,31 @@ function chimneyShape(v, H) {
   v.box(0, H, 0, s * 1.15, 0.35, s * 1.15, '#3b3f45');
   return H + 0.35;
 }
+/** A lattice mast, red and white. Drawn for a broadcast mast of 40 m; a lower one (most are mobile-phone masts of 20 to 30 m)
+ * is the same shape in proportion: section, crossbars and light scale with H / 40 (not below 0.35), unchanged from 40 m up. */
 function mastShape(v, gl, H) {
-  const n = 4, sh = H / n;
+  const n = 4, sh = H / n, k = clamp(H / 40, 0.35, 1);
   for (let i = 0; i < n; i++) {
-    const s = 1.1 - 0.15 * i;
+    const s = (1.1 - 0.15 * i) * k;
     v.box(0, i * sh, 0, s, sh, s, i % 2 ? '#ffffff' : '#e63946');
   }
-  for (const f of [0.55, 0.8]) v.box(0, H * f, 0, 3.6 * (1.25 - f), 0.3, 0.3, '#c8cdd2');
-  gl.box(0, H, 0, 0.55, 0.55, 0.55, '#ff3b3b');
-  return H + 0.6;
+  for (const f of [0.55, 0.8]) v.box(0, H * f, 0, 3.6 * (1.25 - f) * k, 0.3 * k, 0.3 * k, '#c8cdd2');
+  gl.box(0, H, 0, 0.55 * k, 0.55 * k, 0.55 * k, '#ff3b3b');
+  return H + 0.6 * k;
 }
+/** A small antenna on a roof at height y: a pole with three panels and a light. */
+function roofAntenna(v, gl, y) {
+  v.box(0, y, 0, 0.14, ROOF_ANTENNA, 0.14, '#9aa0a6');
+  v.box(0.13, y + ROOF_ANTENNA - 1.6, 0, 0.06, 1.2, 0.32, '#d6d9dc');
+  v.box(-0.13, y + ROOF_ANTENNA - 1.6, 0, 0.06, 1.2, 0.32, '#d6d9dc');
+  v.box(0, y + ROOF_ANTENNA - 1.6, 0.13, 0.32, 1.2, 0.06, '#d6d9dc');
+  gl.box(0, y + ROOF_ANTENNA, 0, 0.2, 0.2, 0.2, '#ff3b3b');
+  return y + ROOF_ANTENNA + 0.2;
+}
+// A mast the map gives no height: most mapped masts are mobile-phone masts (mapped heights 8 to 137 m, lower quartile 22 m,
+// median 25 m); one without a height is more often a small one, so a little under the quartile.
+export const MAST_H = 20;
+export const ROOF_ANTENNA = 4; // a mast that stands in a building is an antenna on its roof, this tall
 
 // ------------------------------------------------------------------ building types
 function church(c) {
@@ -417,7 +430,9 @@ function prison(c) {
   return true;
 }
 function windmillB(c) {
-  const H = c.h >= 12 ? Math.min(c.h, 30) : 18, s0 = clamp(c.D * 0.8, 4, 9);
+  // the body as high as the map measures it (3D BAG roof heights; typeOf only lets a windmill through at WINDMILL.MIN_H
+  // or more), else 18 m
+  const H = c.h >= WINDMILL.MIN_H ? Math.min(c.h, 30) : 18, s0 = clamp(c.D * 0.8, 4, 9);
   const t = windmillShape(c.v, H, s0, c.rnd.pick(['#e3dccb', '#9a6452', '#5a4a3e']));
   c.tag(t);
   return true;
@@ -686,6 +701,44 @@ const DRAW = {
   23: hotel, 24: industrial, 25: castle,
 };
 export const TYPED = new Set(Object.keys(DRAW).map(Number));
+
+// ------------------------------------------------------------------ what a typed building really is
+// The data build types a building by a mapped thing it holds or stands near: scripts/build-world.mjs gives 12 ("other
+// tower") to any building that contains, or stands within 12 m of, a man_made=tower, and that includes the antennas on
+// the roofs of flats, offices and a hospital. The drawers of 9 (windmill) and 12 replace the WHOLE building with that
+// thing's shape. So these two types are believed only when the building itself has the shape: a tower is tall, slender
+// and small, with a compact footprint; a windmill is a compact, small footprint of some height. A building that fails is
+// an ordinary building (type 0) everywhere: its drawing, its house fronts, its shop, the far city. Lighthouses (10) and
+// water towers (11) were checked one by one (the one lighthouse and the three water towers are real) and keep their type.
+// Heights in metres, areas in square metres, SLENDER = height / short side, ELONG = long side / short side of the
+// smallest bounding rectangle (the same rectangle the drawers fit the shape to).
+export const TOWER = { MIN_H: 12, MAX_AREA: 200, SLENDER: 2.5, MAX_ELONG: 1.8 };
+export const WINDMILL = { MIN_H: 6, MAX_AREA: 150, MAX_ELONG: 1.4 };
+/** Footprint area, short and long side and height of a raw tile building entry [h, roof, year, x0, y0, ...]. */
+export function shapeOf(e) {
+  const ring = [];
+  for (let i = 3; i + 1 < e.length; i += 2) ring.push([e[i] / 10, TILE_M - e[i + 1] / 10]);
+  if (ring.length < 3) return { area: 0, D: 0, L: 0, h: e[0] };
+  const o = obbOf(ring);
+  return { area: ringArea(ring), D: Math.min(o.w, o.d), L: Math.max(o.w, o.d), h: e[0] };
+}
+export const isTower = (s) => s.h >= TOWER.MIN_H && s.area <= TOWER.MAX_AREA && s.D > 0 && s.h / s.D >= TOWER.SLENDER && s.L / s.D <= TOWER.MAX_ELONG;
+export const isWindmill = (s) => s.h >= WINDMILL.MIN_H && s.area <= WINDMILL.MAX_AREA && s.D > 0 && s.L / s.D <= WINDMILL.MAX_ELONG;
+const _types = new WeakMap();
+/** The type a building of tile t is drawn as: t.bt[bi], except a tower or windmill that is not one (0). */
+export function typeOf(t, bi) {
+  const ty = t.bt ? t.bt[bi] | 0 : 0;
+  if (ty !== 9 && ty !== 12) return ty;
+  let m = _types.get(t);
+  if (!m) _types.set(t, (m = new Map()));
+  let v = m.get(bi);
+  if (v === undefined) {
+    const s = shapeOf(t.b[bi]);
+    v = ty === 12 ? (isTower(s) ? 12 : 0) : isWindmill(s) ? 9 : 0;
+    m.set(bi, v);
+  }
+  return v;
+}
 /** What a hand-made landmark drawer gets to work with. */
 const KIT = { gable, hip, pyramid, dome, onion, arch, line, body, flatTop, roofs, flag, shade, clamp, BRICKS, STONE, SLATE };
 
@@ -962,8 +1015,10 @@ export function drawFeature(v, gl, f, rnd, night) {
       case 2: { const H = f.b > 8 ? f.b : 22; tag(H + 14, 4); t = windmillShape(v, H, clamp(H * 0.3, 4, 8), rnd.pick(['#e3dccb', '#9a6452'])); break; }
       case 3: { const H = f.b > 12 ? f.b : 30; tag(H + 7, 3); lighthouseShape(v, gl, H, clamp(H * 0.2, 4, 7), night); break; }
       case 4: { const H = f.b > 12 ? f.b : 28; tag(H + 4, 3); waterTowerShape(v, H, clamp(H * 0.16, 3, 6)); break; }
-      case 5: { const H = f.b > 5 ? f.b : 40; tag(H + 1, 1.5); mastShape(v, gl, H); break; }
-      case 6: { const H = f.b > 8 ? f.b : 35; tag(H + 1, 2.5); chimneyShape(v, H); break; }
+      // f.roof: the mast stands in a building of this height (world.js): an antenna on its roof
+      case 5: { if (f.roof > 0) { tag(f.roof + ROOF_ANTENNA + 1, 1); roofAntenna(v, gl, f.roof); break; } const H = f.b > 5 ? f.b : MAST_H; tag(H + 1, 1.5); mastShape(v, gl, H); break; }
+      // a chimney at its mapped height; with none 35 m, and above the building it stands in (f.base, world.js) by 10 m
+      case 6: { const H = f.b >= 3 ? f.b : Math.max(35, (f.base || 0) + 10); tag(H + 1, 2.5); chimneyShape(v, H); break; }
       case 7: { const H = f.b > 10 ? f.b : 45; tag(H + 3, 3); wheel(v, gl, f, rnd, night); break; }
       case 8: case 9: tag(6, 1.5); landmark(v, gl, f, night); break;
       case 10: tag(3.5, 1); shelter(v, gl, night); break;

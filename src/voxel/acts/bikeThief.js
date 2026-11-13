@@ -14,9 +14,9 @@ export default function (T) {
   const {
     X0, X1, EX0, EX1, E, W, go, fly, chase, popIn, popOut, enter, edgeOf, walkOff, leave, hop, say, at, camFor, pt, faceTo,
     yell, padZ, once, spotNear, padSpot, tidy, takePed, rig, gather, filmIt, resident, lookAround, doubleTake, arc, goEach,
-    seat, rideTo, mount, dismount, lineObj, chainObj, vanish, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
-    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, moods, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
-    release, needPed, panic, closeRoad, openRoad, policeRun, footCop,
+    seat, rideTo, mount, dismount, lineObj, lootBox, beatsFor, flip, laugh, cackle, leap, tumble, getUp,
+    seeStars, fright, tiptoe, shoulder, noteTrail, runDust, skid, drive, handbrake, exhaust, spawnPed, unped, stroll,
+    release, needPed,
   } = T;
 
   /** How far (metres) one can ride away from this rack, best direction first: { dir, edge }. Null if neither way has room. */
@@ -135,7 +135,7 @@ export default function (T) {
         B('2 reveal: the thief shows us the cutters', [th]);
         th.gait = 'walk'; th.heading = 0; th.mood = 'smug';
         th.hold(item.cutters()); th.arms = 'hold';
-        cam.hero(th, { dist: 6, hold: 3 });
+        cam.hero(th, { dist: 6 });
         cam.card('DE KNIPPER', 'Bike economy, Hague edition', 1.9);
         cam.freeze(0.7);
         ctx.sfx('sting');
@@ -149,7 +149,7 @@ export default function (T) {
         const lk = { x: A.x + dir * 0.3, z: A.z + 0.5, y: 0.5 };
         B('3 first lock: snip, snip, SNIP', [th, lk]);
         th.mood = 'focus';
-        cam.shot({ on: [th, lk], y: 0.7, dist: 6.5, el: 0.3, az: 0.5, fit: true, hold: 3.2, drift: { dist: -0.3 } });
+        cam.shot({ on: [th, lk], y: 0.7, dist: 6.5, el: 0.3, az: 0.5, fit: true, drift: { dist: -0.3 } });
         yield* wait(0.3);
         for (let i = 0; i < 3; i++) {
           ctx.sfx('snip'); ctx.fx.sparks(lk.x, 0.45, lk.z, i === 2 ? 9 : 4);
@@ -160,7 +160,7 @@ export default function (T) {
         kr.x = kid.g.position.x - dir * 0.5;
         lockKid.set(A.x + dir * 0.5, A.y, A.z + 0.3, A.x + dir * 0.9, 0.06, A.z + 0.6, 3); // the cut chain slithers down to the foot of the rack
         B('3b the kid\'s bike: the thief rides off on something far too small', [th, kid]);
-        cam.shot({ on: [th, kid], y: 0.6, dist: 7, el: 0.15, az: -dir * 0.4, fit: true, hold: 2.6 });
+        cam.shot({ on: [th, kid], y: 0.6, dist: 7, el: 0.15, az: -dir * 0.4, fit: true });
         yield* wait(0.3);
         yield* go(ctx, th, kid.g.position.x - dir * 0.35, kid.g.position.z - 0.5, 2.6);
         mount(kid, th, 0.12);
@@ -171,16 +171,16 @@ export default function (T) {
         // someone has noticed: a balcony, a shop door, a bench or a passer-by, whatever this spot really has
         res = resident(ctx, R, r.x, look, { at: { x: r.x, z: r.z } });
         const noticed = R.run(res.notice('HÉ! MIJN KINDERFIETS!'));
-        cam.track([th, kid], { dist: 8, el: 0.15, az: -dir * 0.5, lead: 1, hold: 3 });
+        cam.track([th, kid], { dist: 8, el: 0.15, az: -dir * 0.5, lead: 1 });
         yield* rideTo(ctx, kid, th, kidEnd.x, kidEnd.z, 2.6, null, 0.12);
         yield* waitUntil(() => noticed.done, 4); // a passer-by needs a moment to walk up and shout; the others are there already
         B('3c noticed: the owner shouts, the thief does a double take', [th, res.owner]);
-        cam.ots(th, res.owner, { hold: 2.8 });
+        cam.ots(th, res.owner);
         yield* wait(0.3);
         th.lookAt = res.owner;
         yield* doubleTake(ctx, th, '?!');
         B('3d too small: the thief is sitting on a toy, he throws it down', [th, kid]);
-        cam.shot({ on: [th, kid], y: 0.6, dist: 7, el: 0.12, az: dir * 0.3, fit: true, hold: 3.2 });
+        cam.shot({ on: [th, kid], y: 0.6, dist: 7, el: 0.12, az: dir * 0.3, fit: true });
         yield* wait(0.3);
         dismount(th, kid.g.position.x - dir * 0.6, kid.g.position.z);
         th.arms = 'up'; th.heading = 0; th.mood = 'shock';
@@ -202,7 +202,7 @@ export default function (T) {
         th.heading = Math.PI; th.mood = 'focus'; th.arms = 'hold';
         yield* go(ctx, th, r.x - dir * 0.4, rz, 3);
         th.heading = Math.PI;
-        cam.dolly([th, realLk], { y: 0.7, dist: 6, el: 0.25, az: -0.5, fit: true, hold: 2.6 });
+        cam.dolly([th, realLk], { y: 0.7, dist: 6, el: 0.25, az: -0.5, fit: true });
         yield* wait(0.3);
         ctx.sfx('snip'); ctx.fx.sparks(realLk.x, 0.45, realLk.z, 12);
         ctx.fx.text('KNIP!', at(r.x, 2.2, r.z), { size: 22, color: '#ffe08a' });
@@ -228,7 +228,7 @@ export default function (T) {
         if (cause === 'chain') {
           causePt = pt(r.x + dir * 1.0, r.z - 0.2);
           B('4a the padlock: a second, thick chain is still locked round the rack', [pt(A.x, A.z), pt(br.x, br.z)]);
-          cam.shot({ on: [pt(A.x, A.z + 0.2), pt(br.x, br.z)], y: 0.3, dist: 4.2, el: 0.2, az: dir * 0.5, fit: true, cut: 0.8, hold: 2 });
+          cam.shot({ on: [pt(A.x, A.z + 0.2), pt(br.x, br.z)], y: 0.3, dist: 4.2, el: 0.2, az: dir * 0.5, fit: true, cut: 0.8 });
           ctx.sfx('clatter'); ctx.sfx('tick');
           yield* wait(0.5);
           ctx.fx.text('*KLINK*', at(A.x, 1.2, A.z), { size: 15, color: '#ffe08a' });
@@ -237,26 +237,26 @@ export default function (T) {
         } else if (cause === 'lamp') {
           causePt = lampPt;
           B('4a ahead: a lamp post stands on his way out', [lampPt, bike]);
-          cam.shot({ on: [lampPt, bike], y: 1.0, dist: 8, el: 0.1, az: -dir * 1.15, fit: true, cut: 0.8, hold: 2 });
+          cam.shot({ on: [lampPt, bike], y: 1.0, dist: 8, el: 0.1, az: -dir * 1.15, fit: true, cut: 0.8 });
           ctx.sfx('tick');
           yield* wait(1.4);
         } else {
           causePt = kid;
           B('4a in his way: the child\'s bike he threw down lies across the lane', [kid, bike]);
-          cam.ground([kid, bike], { dist: 7, az: dir * 0.35, fit: true, cut: 0.8, hold: 2 });
+          cam.ground([kid, bike], { dist: 7, az: dir * 0.35, fit: true, cut: 0.8 });
           ctx.sfx('tick');
           yield* wait(1.4);
         }
         // ---- 4b. he gloats; the owner is coming (rushes in from where the owner really is) and he looks back at him
         B('4b gloat: the thief sniggers on his stolen bike', [th, bike]);
-        cam.hero(th, { dist: 6, hold: 2 });
+        cam.hero(th, { dist: 6 });
         yield* wait(0.3);
         th.lookAt = own2;
         yield* laugh(ctx, th, 1.0, 'he');
 
         // ---- 5. the getaway: he looks back over his shoulder, laughing, and does not watch where he is going
         B('5 the getaway: he rides off looking back', cause === 'lamp' ? [th, bike, lampPt] : cause === 'chain' ? [th, bike, midChain] : [th, bike, kid]);
-        cam.ground(cause === 'chain' ? [bike, midChain] : cause === 'lamp' ? [bike, lampPt] : [bike, kid], { dist: 8, az: -dir * 0.4, fit: true, hold: 3.2 });
+        cam.ground(cause === 'chain' ? [bike, midChain] : cause === 'lamp' ? [bike, lampPt] : [bike, kid], { dist: 8, az: -dir * 0.4, fit: true });
         yield* wait(0.5);
         th.lookAt = own2;
         cackle(ctx, th, 2.2, 'he');
@@ -275,7 +275,7 @@ export default function (T) {
             if (!pre && d - s < v * 0.55) { // the shot for the fall starts about half a second BEFORE it, low, with the cause and the bike in it
               pre = true;
               B('6 the fall: the cause stops the bike dead, the thief does not', fallSubj);
-              cam.ground(fallOn, { dist: 6, az: -dir * 0.5, roll: 0.14, fit: true, quick: true, hold: 3.8 });
+              cam.ground(fallOn, { dist: 6, az: -dir * 0.5, roll: 0.14, fit: true, quick: true });
             }
             bq.x += (dx / d) * s; bq.z += (dz / d) * s; bq.y = 0;
             bike.heading = Math.atan2(dx, dz); bike.moving = v;
@@ -311,7 +311,7 @@ export default function (T) {
         bike.lean = 1.45; // lies on its side
         if (cause === 'kid') kid.lean = 1.45;
         B('6b stars: the thief sits in the dust', [th]);
-        cam.close(th, { dist: 4.5, hold: 2.2 });
+        cam.close(th, { dist: 4.5 });
         yield* wait(0.3);
         say(ctx, th, '★ ★', { size: 16, color: '#ffe066', dur: 1 });
         R.run(seeStars(ctx, th, 1.4));
@@ -319,7 +319,7 @@ export default function (T) {
         // ...and the viewer sees what did it, once more (the cause, with the wreck beside it)
         const reasonPt = cause === 'chain' ? midChain : cause === 'lamp' ? lampPt : kid;
         B('6c the reason: ' + (cause === 'chain' ? 'the chain, still tight round the rack' : cause === 'lamp' ? 'the lamp post' : 'the child\'s bike across the lane'), [reasonPt, bike]);
-        cam.ground([reasonPt, bike], { dist: 7, az: dir * 0.35, fit: true, hold: 1.8 });
+        cam.ground([reasonPt, bike], { dist: 7, az: dir * 0.35, fit: true });
         yield* wait(1.3);
 
         // ---- 7. comeuppance, scaled by level (or forced by the audit)
@@ -337,7 +337,7 @@ export default function (T) {
           if (lv >= 5 && L.kind !== 'ped') R.run(R.police(dir, L.chaseZ, 11, 0.4));
         }
         B('7 the owner arrives: DAT WORDT 60 EURO', [th]);
-        cam.two(own2, th, { az: -dir * 0.2, hold: 3.4 });
+        cam.two(own2, th, { az: -dir * 0.2 });
         yield* waitUntil(() => Math.abs(own2.g.position.x - lx) < 3.4 && !own2.offstage, 8);
         yield* wait(0.3);
         faceTo(own2, lx, lz);
@@ -378,7 +378,7 @@ export default function (T) {
         if (cop) {
           yield* waitUntil(() => copHere, 14);
           B('8 busted: the cop is standing over him', [cop, th]);
-          cam.two(cop, th, { az: dir * 0.25, hold: 3.6 });
+          cam.two(cop, th, { az: dir * 0.25 });
           yield* wait(0.3);
           cop.arms = 'hips'; cop.mood = 'smug';
           yield* getUp(th, 'scared');

@@ -24,10 +24,19 @@ export function makeAudit(H) {
    * opts: locale (which spot of the street), cols (4), rows (3) per sheet page; at = seconds into each beat for its picture (0.7); also = further
    * pictures every `also` seconds within long beats (0 = none); maxT = give up after this many scene seconds.
    */
-  async function audit(name, { cols = 4, rows = 3, at = 0.7, also = 0, maxT = 90, w = 480, locale = null } = {}) {
+  async function audit(name, opts = {}) {
     const st = H.stage;
     if (!st.W) return 'no street open';
+    // the audit steps the stage itself; the page's own render loop and what the audit set on the stage are put back when it ends,
+    // however it ends (st.last: the audit's clock ran ahead of real time)
+    const was = st.running, cutEnd = st.cutEnd;
     st.running = false;
+    try { return await play(st, name, opts); } finally {
+      st.audit = false; st.cutEnd = cutEnd;
+      if (was) { st.running = true; st.last = performance.now(); cancelAnimationFrame(st._raf); st._raf = requestAnimationFrame(st._tick); }
+    }
+  }
+  async function play(st, name, { cols = 4, rows = 3, at = 0.7, also = 0, maxT = 90, w = 480, locale = null } = {}) {
     let now = performance.now();
     const step = () => st._frame((now += 33.3));
     let guard = 0;
