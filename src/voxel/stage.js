@@ -7,8 +7,8 @@ import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, 
 import { localeL, ambientL } from './street.js';
 import { Fx, fadeOut } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
-import { makePerson, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
-import { litShare } from './props.js';
+import { makePerson, makeDog, makeCat, makeBird, item, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
+import { litShare, makeCar, makeBike, makeScooter, makeFatbike, makeHeli, makeBoat } from './props.js';
 import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
 import { Overhead } from './overhead.js';
@@ -238,6 +238,22 @@ function warp(obj, ctx, path, hAt) {
   };
 }
 
+// ---- warm-up: the programs of what scenes bring on (people, animals, vehicles, items), compiled once for the page after the
+// first drop has landed, so a scene's first frames do not link them. One object is made per frame (one per fourth frame on a
+// phone), never while a cutscene holds the camera; then `compileAsync` (KHR_parallel_shader_compile: it does not block) runs
+// over them with the scene's own lights, so the program keys are the ones the frames will ask for (the sun casts its shadow by
+// then). The objects are never shown and are kept for the page: a kept material keeps its program.
+const ZOO = [
+  (r) => makePerson(r, { kind: 'civ' }).g, (r) => makePerson(r, { kind: 'cop' }).g, (r) => makePerson(r, { kind: 'kid' }).g,
+  (r) => makeCar(r, 'car').g, (r) => makeCar(r, 'police').g, (r) => makeCar(r, 'van').g,
+  (r) => makeBike(r).g, (r) => makeScooter(r).g, (r) => makeFatbike(r).g, (r) => makeHeli().g, (r) => makeBoat(r).g,
+  (r) => makeDog(r).g, (r) => makeCat(r).g, (r) => makeBird(r, 'gull').g, (r) => makeBird(r, 'pigeon').g, (r) => makeBird(r, 'stork').g,
+  () => { const g = new THREE.Group(); for (const f of Object.values(item)) { try { const o = f(); if (o && o.isObject3D) g.add(o); } catch (e) { /* an item that needs arguments */ } } return g; },
+];
+const _zoo = new THREE.Group();
+let _zooAt = 0, _zooDone = false, _zooTick = 0;
+const _zooRnd = makeRng(97);
+
 export class Stage {
   constructor(root) {
     this.root = root;
@@ -328,9 +344,24 @@ export class Stage {
   get _own() { return this.mode === 'free' || this.mode === 'walk'; }
   /** The Follow button pressed while following: stop following, the camera stays exactly where it is. */
   takeCamera() { this._take(); }
+  /** One step of the warm-up (see ZOO), after the frame has been drawn. */
+  _warmStep() {
+    if (this.cine || this.mode === 'drop' || this.mode === 'leave' || document.hidden) return; // never during a cutscene (its first beat included)
+    if (this.lite && (_zooTick++ & 3)) return;
+    if (_zooAt < ZOO.length) {
+      try { const o = ZOO[_zooAt](_zooRnd); if (o && o.isObject3D) _zoo.add(o); } catch (e) { /* a maker that changed: skip it */ }
+      _zooAt++;
+      return;
+    }
+    _zooDone = true;
+    this._warmFrom = null;
+    _zoo.updateMatrixWorld(true);
+    try { this.renderer.compileAsync(_zoo, this.camera, this.scene).catch(() => {}); } catch (e) { /* compile is only a head start */ }
+  }
   /** The drop is over: follow the action (nobody touched the camera) or stay exactly where the viewer took it. */
   _land(follow) {
     const g = this.goal, r = this.rig;
+    if (!_zooDone) this._warmFrom = this.time; // the shaders scenes use are compiled from now on, in the background (see _warmStep)
     this.drop = null;
     if (follow) {
       U.uGrow.value = 1;
@@ -2073,6 +2104,7 @@ export class Stage {
     this._pins();
     if (this.audit) this._beatTick();
     this.renderer.render(this.scene, this.camera);
+    if (!_zooDone && this._warmFrom != null) this._warmStep();
   }
 }
 export { preload };
