@@ -661,6 +661,27 @@ function stallCheap(v, r, kind, w) {
  * Optional (tolerated when missing): ps (flat [cat, nameIdx, flags] per poi, see poicats.js), rails, tile (the tile's raw data).
  * Returns { props }: what the cutscenes may want to use, in tile coordinates; after it, what only stands in the way (`inTheWay`).
  */
+/**
+ * Every spot where the tram catenary pass below may stand a mast, for world.js shelterPlaces (a shelter keeps clear of
+ * them all): the same rails, the same dice, the same stations and offsets, both sides, whichever the pass then takes.
+ * Flat [x, z, ...] in tile coordinates.
+ */
+export function catenarySpots(key, rails) {
+  const out = [];
+  (rails || []).forEach((rl, ri) => {
+    if (rl.kind !== 1 || rl.flags & 4 || !rl.a || rl.a.length < 4) return;
+    const pl = prep(rl.a);
+    if (pl.len < 20) return;
+    const r = makeRng(hashStr(key + '|mast|' + ri));
+    r(); r.range(5.7, 6.4); // (vr and h, as in the pass)
+    for (let s = r.range(4, 14); s < pl.len - 3; s += r.range(26, 34)) {
+      const f = frameAt(pl, s);
+      for (const side of [-1, 1]) for (const off of [2.5, 3.4, 4.8, 6.5]) out.push(f.x - f.tz * side * off, f.z + f.tx * side * off);
+    }
+  });
+  return out;
+}
+
 export function furnishTile(o) {
   const { key, grid, C, trees, pois, yAt, v, gl, group, night, lite } = o;
   const ps = o.ps && o.ps.length >= (pois ? pois.length * 3 : 0) && o.ps.length ? o.ps : null;
@@ -720,7 +741,39 @@ export function furnishTile(o) {
     }
     return false;
   };
-  const stand = (kind, x, z, r) => taken.push({ kind, x, z, r });
+  // What would stand on or against the roof of a map shelter (roofs: 4.2 x 1.8 m, open side local +z, at the place
+  // world.js shelterPlaces gave it), or of a stop of the loop below moved to its own line (3.4 x 1.2 m), is not shown: its boxes go back out of the builders into the counting ghost, its sign
+  // planes are let go, and its `props` and `inTheWay` entries are dropped in finish(). Its room, its dice and its count
+  // stay, so the cap, the budget and every later choice are the same as if it stood there. Only kinds that draw all of
+  // themselves between their `aim` and their `stand` (HIDE_HALF: half their size along the street, metres) can be hidden.
+  const roofs = [], hidden = new Set();
+  // (never a catenary mast or a quay post: wires and chains hang from them; map shelters keep clear of their spots instead)
+  const HIDE_HALF = { bench: 1.05, bin: 0.4, mailbox: 0.4, box: 0.7, rack: 1.3, sign: 0.3, tlight: 0.3, orac: 0.75, column: 0.5,
+    mupi: 0.6, meter: 0.3, charger: 0.5, planter: 1.3, bigrack: 1.7, pbench: 1.05, trolleys: 1.7, flags: 1.8, stall: 1.4, kiosk: 2.4, yard: 2 };
+  let mark = null, hiding = false;
+  const hideIf = (kind, x, z) => {
+    hiding = false;
+    const half = HIDE_HALF[kind];
+    if (!roofs.length || !mark || half === undefined) return false;
+    const d = Math.max(0.65, half + 0.15);
+    for (const q of roofs) {
+      const dx = x - q.x, dz = z - q.z, lx = dx * q.c - dz * q.s, lz = dx * q.s + dz * q.c;
+      if (Math.hypot(Math.max(Math.abs(lx) - q.hx, 0), Math.max(Math.abs(lz) - q.hz, 0)) >= d) continue;
+      ghost.n += v.n - mark.v + gl.n - mark.gl;
+      v.n = mark.v; gl.n = mark.gl;
+      while (group.children.length > mark.g) {
+        const g = group.children[group.children.length - 1];
+        group.remove(g);
+        g.traverse((m) => { if (m.userData && m.userData.texKey !== undefined) P.releaseSign(m); else if (m.geometry) m.geometry.dispose(); });
+      }
+      for (let i = mark.p; i < props.length; i++) hidden.add(props[i]);
+      for (let i = mark.w; i < inTheWay.length; i++) hidden.add(inTheWay[i]);
+      hiding = true;
+      return true;
+    }
+    return false;
+  };
+  const stand = (kind, x, z, r) => { const hid = hideIf(kind, x, z); return taken.push(hid ? { kind, x, z, r, hid } : { kind, x, z, r }); };
   /** Do the sample points (in the prop's frame, +z towards the road) all lie on open ground, clear of trunks and others? */
   const fits = (kind, x, z, n, pts, treeR, r, same = 0) => {
     if (x < EDGE || z < EDGE || x > TILE - EDGE || z > TILE - EDGE) return false;
@@ -734,28 +787,39 @@ export function furnishTile(o) {
     return !crowded(kind, x, z, r, same);
   };
   const frameOf = (nx, nz) => { const th = Math.atan2(nx, nz); return [Math.sin(th), Math.cos(th), th]; };
-  const aim = (th, x, z) => { const y = yAt(x, z); v.setT(th, x, z, y); gl.setT(th, x, z, y); return y; };
+  const aim = (th, x, z) => { mark = { v: v.n, gl: gl.n, g: group.children.length, p: props.length, w: inTheWay.length }; hiding = false; const y = yAt(x, z); v.setT(th, x, z, y); gl.setT(th, x, z, y); return y; };
   const holder = (th, x, z) => { const g = new THREE.Group(); g.position.set(x, yAt(x, z), z); g.rotation.y = th; group.add(g); return g; };
   const toMap = (x, z) => [ox + x, oy + TILE - z];
 
   // free-standing things of the tile (statues, fountains, playgrounds ...) and fences: terraces keep clear of them
   const fences = [];
   if (raw) {
-    for (const e of raw.f || []) {
-      const x = e[1] / 10, z = TILE - e[2] / 10, t = e[0];
+    // the map's shelters stand where world.js shelterPlaces put them, beside their street or track (o.shelters: feature
+    // index -> place). Each keeps its room at its map node, as before the shelters were moved, so every choice `fits`
+    // makes, and with it every die cast after it, is what it was; the roof where it now stands is kept clear by hiding
+    // what would stand on it (`roofs`, `hideIf` below), and its `props` entry is at that place. One left out there (no
+    // place beside its line) keeps its room too, and the stop it belongs to gets no shelter of its own (`featured`), but
+    // it is no obstacle in `props`.
+    const shel = o.shelters || null;
+    (raw.f || []).forEach((e, fi) => {
+      const x = e[1] / 10, z = TILE - e[2] / 10, t = e[0], sp = t === 10 && shel ? shel.get(fi) : null;
       if (t === 8) stand('statue', x, z, 3.2);
       else if (t === 9) stand('fountain', x, z, clamp(e[4] / 10 * 0.5 + 1.8, 3, 14));
       else if (t === 11) stand('playground', x, z, 5.5);
-      else if (t === 10) stand('shelterf', x, z, 2.4);
+      else if (t === 10) {
+        stand('shelterf', x, z, 2.4);
+        if (sp && !sp.drop) { taken[taken.length - 1].rx = sp.x; taken[taken.length - 1].rz = sp.z; roofs.push({ x: sp.x, z: sp.z, c: Math.cos(sp.rot), s: Math.sin(sp.rot), hx: 2.1, hz: 0.9 }); }
+      }
       else if (t === 1) stand('fuel', x, z, 9);
       else stand('feature', x, z, 1.6);
-      // drawn by world.js / landmarks.js `drawFeature`; a shelter there turns by the feature's own direction (the same `rot`)
+      // drawn by world.js / landmarks.js `drawFeature`, a shelter at its place and heading from shelterPlaces (the same `rot`)
       if (t === 8 || t === 9) inTheWay.push({ kind: t === 8 ? 'statue' : 'fountain', x, z, ax: 1, az: 0, nx: 0, nz: 1 });
-      else if (t === 10) {
-        const rot = Number.isFinite(e[3]) ? Math.PI / 2 - (e[3] * Math.PI) / 180 : 0;
-        inTheWay.push({ kind: 'stop', x, z, ax: Math.cos(rot), az: -Math.sin(rot), nx: Math.sin(rot), nz: Math.cos(rot) });
+      else if (t === 10 && !(sp && sp.drop)) {
+        const rot = sp ? sp.rot : Number.isFinite(e[3]) ? Math.PI / 2 - (e[3] * Math.PI) / 180 : 0;
+        // (hl, hw: half the roof of landmarks.js shelter, for the ground raster: bigger than a stop's of props.js)
+        inTheWay.push({ kind: 'stop', x: sp ? sp.x : x, z: sp ? sp.z : z, ax: Math.cos(rot), az: -Math.sin(rot), nx: Math.sin(rot), nz: Math.cos(rot), hl: 2.1, hw: 0.9 });
       }
-    }
+    });
     for (const e of raw.x || []) {
       const a = [];
       for (let i = 2; i + 1 < e.length; i += 2) a.push(e[i] / 10, TILE - e[i + 1] / 10);
@@ -819,7 +883,13 @@ export function furnishTile(o) {
     const ck = (pi * 2 + (side < 0 ? 0 : 1)) * 100000 + Math.round(s * 2);
     let r = cache.get(ck);
     if (r) return r;
-    const pl = pieces[pi], f = frameAt(pl, s), nx = -f.tz * side, nz = f.tx * side;
+    r = scanLine(pieces[pi], side, s);
+    cache.set(ck, r);
+    return r;
+  };
+  /** The same look across, from any line (a track or a busway too, for the stops), uncached. */
+  const scanLine = (pl, side, s) => {
+    const f = frameAt(pl, s), nx = -f.tz * side, nz = f.tx * side;
     let e = -1, end = -1, bd = Infinity, soft = -1, sand = false;
     for (let d = 0.5; d <= 14; d += 0.3) {
       const x = f.x + nx * d, z = f.z + nz * d, c = grid.get(x, z);
@@ -832,13 +902,12 @@ export function furnishTile(o) {
     if (e >= 0 && pl.cls === 8) e = Math.max(e, 1.8); // keep the middle of a pedestrian street open for walking
     const ok = e >= 0 && end > e;
     const back = Number.isFinite(bd) && (!ok || bd - end <= 1.0) ? bd : end;
-    r = { ok, e, end, bd, back, hasB: Number.isFinite(bd) && (!ok || bd - end <= 1.0), w: ok ? back - e : 0, soft, sand, nx, nz, f };
-    cache.set(ck, r);
-    return r;
+    return { ok, e, end, bd, back, hasB: Number.isFinite(bd) && (!ok || bd - end <= 1.0), w: ok ? back - e : 0, soft, sand, nx, nz, f };
   };
 
   const add = (kind, x, z, f, nx, nz, extra) => {
     props.push({ kind, x, z, ax: f.tx, az: f.tz, nx, nz, ...extra });
+    if (hiding) hidden.add(props[props.length - 1]);
   };
 
   // ---- nearest real street to a point (for shelters and terraces)
@@ -1689,7 +1758,7 @@ export function furnishTile(o) {
               q.draw();
               stand(kind, p.x, p.z, q.r);
               if (q.rec) add(q.rec, p.x, p.z, sc.f, p.nx, p.nz, q.extra);
-              else if (q.obst) q.obst(p, sc.f, fr);
+              else if (q.obst && !hiding) q.obst(p, sc.f, fr);
               return true;
             }
             return false;
@@ -1715,10 +1784,62 @@ export function furnishTile(o) {
 
   // ---- tram and bus shelters (the old kind-9 points of interest)
   // A stop the map also has as a shelter feature (`f` type 10, drawn by landmarks.js `shelter`) gets no second shelter.
-  // The feature stands on the stop's own point, and the stop is moved from there to the pavement, so both points are
-  // compared with the feature at the same distance: the moved one by `fits` (its room 2.2 m and the feature's 2.4 m),
-  // the stop's own point by `featured`. (A feature in a neighbouring tile is not seen here.)
-  const featured = (x, z) => taken.some((t) => t.kind === 'shelterf' && Math.hypot(t.x - x, t.z - z) < 2.2 + t.r);
+  // The feature's room is at its map node, on the stop's own point; the feature itself now stands beside its street or
+  // track (world.js shelterPlaces), and the stop is moved from its point to the pavement. The moved stop meets the room at
+  // the node in `fits` (its room 2.2 m and the feature's 2.4 m), as before; and a stop within that reach of the feature at
+  // either of the feature's two places, from either of the stop's own two points, is not drawn (`featured`; its room and
+  // its count stay, as for every stop that is not drawn). (A feature in a neighbouring tile is not seen here.)
+  const featured = (x, z) => taken.some((t) => t.kind === 'shelterf' && (Math.hypot(t.x - x, t.z - z) < 2.2 + t.r || (t.rx !== undefined && Math.hypot(t.rx - x, t.rz - z) < 2.2 + t.r)));
+  // The line a stop belongs to: the street, busway or track whose surface edge is nearest its point (a bus stop's point
+  // lies on the edge of the carriageway, a tram stop's on the track), not only the streets the furniture walks along.
+  const stopLines = [];
+  pieces.forEach((pl, pi) => stopLines.push({ pl, pi, hw: pl.w / 2 }));
+  for (const r of o.roads || []) {
+    if ((r.cls !== 9 && r.cls !== 13) || r.flags & 6 || !r.a || r.a.length < 4) continue;
+    const pl = prep(r.a);
+    if (pl.len < 8) continue;
+    pl.cls = r.cls; pl.w = r.w; pl.name = r.name || '';
+    stopLines.push({ pl, pi: -1, hw: r.w / 2 });
+  }
+  for (const rl of rails) {
+    if (!rl.a || rl.a.length < 4 || rl.flags & 4) continue;
+    const pl = prep(rl.a);
+    if (pl.len < 8) continue;
+    pl.cls = 100 + rl.kind; pl.w = rl.kind === 2 ? 3.2 : 2.5; pl.name = '';
+    stopLines.push({ pl, pi: -1, hw: pl.w / 2 });
+  }
+  const ownLine = (x, z) => {
+    let best = null;
+    for (const L of stopLines) {
+      const { a, n } = L.pl;
+      for (let i = 0; i + 1 < n; i++) {
+        const ax = a[i * 2], az = a[i * 2 + 1], dx = a[i * 2 + 2] - ax, dz = a[i * 2 + 3] - az, l2 = dx * dx + dz * dz || 1e-9;
+        const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), d = Math.hypot(x - ax - dx * t, z - az - dz * t);
+        if (d > 16) continue;
+        const e = Math.max(0, d - L.hw);
+        if (!best || e < best.e - 0.05 || (Math.abs(e - best.e) <= 0.05 && d < best.d)) best = { L, e, d, s: L.pl.cum[i] + t * Math.sqrt(l2) };
+      }
+    }
+    return best;
+  };
+  const STOP_PTS = [[-1.7, 0], [0, 0], [1.7, 0], [0, 0.7]];
+  const roofFree = (at) => {
+    const sn = at.fr[0], cs = at.fr[1];
+    let good = 0, n = 0;
+    for (let i = 0; i < 14; i++) for (let j = 0; j < 5; j++) { // (cell centres of a 14 x 5 grid over the roof)
+      const lx = -1.7 + ((i + 0.5) * 3.4) / 14, lz = -0.6 + ((j + 0.5) * 1.2) / 5, px = at.x + lx * cs + lz * sn, pz = at.z - lx * sn + lz * cs;
+      n++;
+      if (GOOD[grid.get(px, pz)]) good++;
+      if (barrierNear(px, pz, 0.3)) return false;
+    }
+    // nor over a lamp post (world.js lampsOf, o.lamps)
+    const la = o.lamps && o.lamps.a;
+    if (la) for (let i = 0; i + 1 < la.length; i += 5) {
+      const dx = la[i] - at.x, dz = la[i + 1] - at.z, lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+      if (Math.abs(lx) < 1.7 + 0.35 && Math.abs(lz) < 0.6 + 0.35) return false;
+    }
+    return good >= 0.8 * n;
+  };
   for (const p of pois || []) {
     const kind = p[0], px = p[1] / 10, pz = TILE - p[2] / 10;
     if (kind !== 9) continue;
@@ -1730,17 +1851,48 @@ export function furnishTile(o) {
     const sc = scan(q.pi, side, q.s);
     if (!sc.ok || sc.w < 1.6) continue;
     const off = sc.e + clamp(sc.w - 0.7, 0.8, 1.9), x = f.x - f.tz * side * off, z = f.z + f.tx * side * off, nx = f.tz * side, nz = -f.tx * side, fr = frameOf(nx, nz);
-    if (!fits('stop', x, z, fr, [[-1.7, 0], [0, 0], [1.7, 0], [0, 0.7]], 1.3, 2.2, 30)) continue;
-    if (featured(px, pz)) {
+    if (!fits('stop', x, z, fr, STOP_PTS, 1.3, 2.2, 30)) continue;
+    if (featured(px, pz) || featured(x, z)) {
       // not drawn, but its room and its count stay, so nothing after it moves
       P.tramStop(ghost, ghost, 0, 0, night, 0);
       stand('stop', x, z, 2.2);
       continue;
     }
-    aim(fr[2], x, z);
+    // the street it was put beside is not the line it belongs to (a track, a busway, the main road at a corner): stand it
+    // beside that line by the same rule, or, if it does not fit there, leave it out (its room and its count stay)
+    let at = { x, z, fr, f, nx, nz };
+    const own = ownLine(px, pz);
+    if (own && own.L.pi !== q.pi) {
+      const pl = own.L.pl, g = frameAt(pl, own.s), w2 = (px - g.x) * -g.tz + (pz - g.z) * g.tx;
+      let sd = w2 < 0 ? -1 : 1;
+      if (Math.abs(w2) < 1.0) { const a = scanLine(pl, -1, own.s), b = scanLine(pl, 1, own.s); sd = (b.ok ? b.w : 0) >= (a.ok ? a.w : 0) ? 1 : -1; }
+      const s2 = scanLine(pl, sd, own.s);
+      let alt = null;
+      if (s2.ok && s2.w >= 1.6) {
+        const o2 = s2.e + clamp(s2.w - 0.7, 0.8, 1.9), x2 = g.x - g.tz * sd * o2, z2 = g.z + g.tx * sd * o2, nx2 = g.tz * sd, nz2 = -g.tx * sd, fr2 = frameOf(nx2, nz2);
+        if (fits('stop', x2, z2, fr2, STOP_PTS, 1.3, 2.2, 30) && !featured(x2, z2)) alt = { x: x2, z: z2, fr: fr2, f: g, nx: nx2, nz: nz2 };
+      }
+      if (!alt) {
+        P.tramStop(ghost, ghost, 0, 0, night, 0);
+        stand('stop', x, z, 2.2);
+        continue;
+      }
+      at = alt;
+    }
+    // the whole roof (props.js tramStop: 3.4 x 1.2 m) on walkable ground and clear of walls and fences, or it is left out
+    // (its room and its count stay): the four test points of `fits` allow grass and miss a fence between them
+    if (!roofFree(at)) {
+      P.tramStop(ghost, ghost, 0, 0, night, 0);
+      stand('stop', x, z, 2.2);
+      continue;
+    }
+    aim(at.fr[2], at.x, at.z);
     P.tramStop(v, gl, 0, 0, night, 0);
+    // its room stays where the old rule put it, so every later choice is the same; what would stand on its moved roof
+    // is hidden like what would stand on a map shelter's
     stand('stop', x, z, 2.2);
-    inTheWay.push({ kind: 'stop', x, z, ax: f.tx, az: f.tz, nx, nz }); // (the one not drawn above is the map's shelter, listed with the features)
+    if (at.x !== x || at.z !== z) roofs.push({ x: at.x, z: at.z, c: Math.cos(at.fr[2]), s: Math.sin(at.fr[2]), hx: 1.7, hz: 0.6 });
+    inTheWay.push({ kind: 'stop', x: at.x, z: at.z, ax: at.f.tx, az: at.f.tz, nx: at.nx, nz: at.nz }); // (the one not drawn above is the map's shelter, listed with the features)
   }
 
   // ================================================================ whole-area passes (see DETAIL.md)
@@ -2122,8 +2274,9 @@ export function furnishTile(o) {
     v.setT(); gl.setT();
     for (const s of inTheWay) props.push(s);
     // every table of every terrace (props has one anchor per pair of tables): what the ground raster blocks (ground.js)
+    // (a piece hidden under a shelter's roof is not drawn: it is in neither list)
     const cells = [];
-    for (const q of taken) if (q.kind === 'terrace') cells.push(q.x, q.z);
-    return { props, cells };
+    for (const q of taken) if (q.kind === 'terrace' && !q.hid) cells.push(q.x, q.z);
+    return { props: hidden.size ? props.filter((q) => !hidden.has(q)) : props, cells };
   }
 }

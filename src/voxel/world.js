@@ -8,7 +8,7 @@ import { crossSection, dress } from './street.js';
 import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } from './landmarks.js';
 import { faceNearestRoad } from './statues/kit.js';
 import { SPECIAL_PARTS } from './special-parts.js';
-import { furnishTile } from './furnish.js';
+import { furnishTile, catenarySpots } from './furnish.js';
 import { buildOcc, spillOf, joinOcc, makeGround } from './ground.js';
 import { signFor, lookOf as shopLook } from './brands.js';
 import { POI_CATS, POI_FLAG } from './poicats.js';
@@ -1127,7 +1127,7 @@ function frontInfo(u, night) {
   _dry.v.setT(); _dry.gl.setT(); _dry.v.setB(); _dry.gl.setB(); _dry.v.n = 0; _dry.gl.n = 0;
   return hi; // a dry run makes no sign plane (and so no texture)
 }
-export { frontsOf, drawHero, frontInfo, unitRng, buildTile, loadCity }; // for the node checks in test/
+export { frontsOf, drawHero, frontInfo, unitRng, buildTile, loadCity, shelterPlaces }; // for the node checks in test/
 /** Is a tree trunk within r metres of this point (map metres)? Only knows the tiles that are built. */
 function treeNearMap(mx, my, r) {
   const t0x = Math.floor((mx - r) / TILE), t1x = Math.floor((mx + r) / TILE), t0y = Math.floor((my - r) / TILE), t1y = Math.floor((my + r) / TILE);
@@ -1313,6 +1313,14 @@ function paintMarks(grid, r) {
     s += l;
   }
 }
+/** Draw for the side effects only: into throwaway builders that take over vx/glx's state and give it back. */
+function shadowDraw(vx, glx, draw) {
+  const dv = new Vox(1, true), dg = new Vox(1, true);
+  dv.dry = dg.dry = true; // (throwaways: nothing drawn into them is shown)
+  for (const [d, s] of [[dv, vx], [dg, glx]]) { d._s = s._s; d.B = s.B; d.T = s.T; d.Wm = s.Wm; }
+  draw(dv, dg);
+  for (const [d, s] of [[dv, vx], [dg, glx]]) { s._s = d._s; s.B = d.B; s.T = d.T; s.Wm = d.Wm; }
+}
 /** Rails and building footprints go on last. */
 function paintTop(grid, rails, footprints) {
   for (const r of rails) {
@@ -1322,6 +1330,271 @@ function paintTop(grid, rails, footprints) {
     grid.stroke(r.a, grid.cell, C.RAIL, null, -0.72);
   }
   for (const fp of footprints) grid.fill([fp], C.BUILDING);
+}
+
+// ---------------------------------------------------------------- the map's stop shelters
+// A map shelter (tile `f` type 10) is a bare node: tram stop nodes lie on the track, bus stop nodes on the edge of the
+// carriageway, and none has a direction of its own (a = 0 in every tile). shelterPlaces() gives each one a place and a
+// heading from the tile's own data, once per tile, for the drawer (buildTile) and for furnish.js (the shelter's room among
+// the furniture and its `props` entry), so both put it at the same spot:
+//  - the line it belongs to is a street centre line (classes 2-7, 9, 13: no motorway, no pedestrian street) or a track, no
+//    tunnel, within SHEL.REACH of the node;
+//  - it stands beside that line with its long side along it and its open side towards it, across the kerb (or beside the
+//    rail bed): the roof's open edge SHEL.GAP_MIN..GAP_MAX from the edge of the road surface or the bed;
+//  - every point under the roof is walkable ground (WALK, CURB, PLAZA, PED, FOOT, or LAND: the grid paints only 1.8 m of
+//    pavement beyond a kerb, and plain urban ground beyond it), at least SHEL.WALK_MIN of it, and no carriageway, cycle
+//    path, rail bed, water or building cell lies within SHEL.CLEAR of the roof, and no water within SHEL.QUAY (where
+//    furnish.js puts quay posts and mooring bollards); it keeps clear of trunks (mapped, and the ones buildTile sprinkles
+//    on grass, woods and dunes), walls and fences, building outlines, the other point features, the street lamps
+//    (lampsOf), every spot where furnish.js may stand a tram catenary mast (catenarySpots) and the shelters placed before it;
+//  - the line nearest to where it ends up runs within SHEL.PARALLEL degrees of the one it faces, in front of it;
+//  - of all such places the cheapest wins: distance from the node, plus SHEL.SIDE for the far side of the line from the
+//    node, plus SHEL.LAND per share of plain ground under the roof, plus a little per metre of gap.
+// Two nodes within SHEL.PAIR of each other are one stop: a shelter on each side of the line is real and both stay; one that
+// would stand on the same side as an earlier one is a double and is left out. A node with no such place within SHEL.MOVE
+// gets the next-best honest place if it lies between two tracks with room for an island platform (SHEL.ISLAND: the
+// platform is not in the ground data, but the strip between the rail beds is): parallel to the tracks, its open side to
+// the nearer one, its roof SHEL.ISLAND.TRACK from either track's centre line; otherwise it is left out as well (a shelter
+// on the track is worse than none). Pure function of the tile: the ground comes from a private half-metre grid around
+// each group of nodes, painted once by the same paintBase/paintTop as the tile itself, so the place is the same at every
+// level of detail and on the phone, and no neighbouring tile is read.
+// Returns a Map: feature index -> { x, z, rot, rx, rz, ... } or { drop: why, rx, rz }.
+const SHEL = {
+  HX: 2.1, HZ: 0.9, // half the roof of landmarks.js shelter(): 4.2 x 1.8 m; long axis local x, open side local +z
+  REACH: 16, MOVE: 12, ALONG: 8, ALONG_STEP: 0.5,
+  GAP_MIN: 0.3, GAP_MAX: 3.0, GAP_STEP: 0.25,
+  PARALLEL: 12, WALK_MIN: 0.9, CLEAR: 0.45, TREE: 0.6, BARRIER: 0.3, PAIR: 4.6, WIN: 18,
+  SIDE: 1.5, LAND: 3, GAP_COST: 0.3, STEP: 0.25, LINES: 6,
+  QUAY: 2.0, // quay posts stand on walkable ground within 1.3 m (and half a cell) of water
+  LAMP: 0.4, MAST: 0.7, // clearance from a lamp post and from a catenary mast's spot (its pole and foot)
+  // an island platform: a tram is 2.4-2.65 m wide (half 1.33 m) and sways a little; the rail bed is 2.5 m (half 1.25 m).
+  // The roof keeps 1.6 m from each track's centre line, so the strip must be 2 x 1.6 + 1.8 = 5 m between the centre lines.
+  ISLAND: { TRACK: 1.6, REACH: 6, CLEAR: 0.3 },
+};
+const SHEL_WALK = mask(C.WALK, C.CURB, C.PLAZA, C.PED, C.FOOT, C.LAND);
+const SHEL_PAVE = mask(C.WALK, C.CURB, C.PLAZA, C.PED, C.FOOT);
+const SHEL_HARD = mask(C.ASPHALT, C.KLINKER, C.SERVICE, C.MARK, C.BIKELANE, C.CYCLE, C.RAILBED, C.RAIL, C.WATER, C.SEA, C.BUILDING, 255);
+const BAR_THICK = { 1: 0.3, 2: 0.08, 3: 0.8, 4: 0.6 }; // as drawBarriers draws them
+const FEAT_ROOM = { 1: 7, 8: 2, 11: 5 }; // how far the roof keeps from another point feature (fountains by their size, the rest 1.2 m)
+const _shelters = new WeakMap();
+function shelterPlaces(city, key, t, gnd, roads, rails, flats, mt, lamps) {
+  let out = _shelters.get(t);
+  if (out) return out;
+  out = new Map();
+  try { placeShelters(out, city, key, t, gnd, roads, rails, flats, mt, lamps); } catch (err) {
+    // (cached only when complete: on a failure every shelter of the tile is left out, the same way every time)
+    out = new Map();
+    (t.f || []).forEach((e, fi) => { if (e[0] === 10) out.set(fi, { drop: 'error', rx: e[1] / 10, rz: TILE - e[2] / 10 }); });
+  }
+  _shelters.set(t, out);
+  return out;
+}
+function placeShelters(out, city, key, t, gnd, roads, rails, flats, mt, lamps) {
+  const feats = t.f || [];
+  if (!feats.some((e) => e[0] === 10)) return;
+  // the lines: street centre lines and tracks, each with its half width of surface (as paintBase / paintTop stroke them)
+  const lines = [];
+  const addLine = (a, hw, rail, cls) => {
+    const n = a.length >> 1, cum = new Float64Array(n);
+    for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + Math.hypot(a[i * 2] - a[i * 2 - 2], a[i * 2 + 1] - a[i * 2 - 1]);
+    lines.push({ a, n, cum, len: cum[n - 1], hw, rail, cls });
+  };
+  for (const r of roads) if (!(r.flags & 4) && r.a.length >= 4 && ((r.cls >= 1 && r.cls <= 9) || r.cls === 13)) addLine(r.a, r.w / 2, false, r.cls);
+  for (const r of rails) if (!(r.flags & 4) && r.a && r.a.length >= 4) addLine(r.a, (r.kind === 2 ? 3.2 : 2.5) / 2, true, 100 + r.kind);
+  const project = (L, x, z) => { // nearest point of a line: distance, arc length, point, unit tangent
+    let best = null;
+    for (let i = 0; i + 1 < L.n; i++) {
+      const ax = L.a[i * 2], az = L.a[i * 2 + 1], dx = L.a[i * 2 + 2] - ax, dz = L.a[i * 2 + 3] - az, l2 = dx * dx + dz * dz;
+      if (l2 < 1e-9) continue;
+      const u = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), qx = ax + dx * u, qz = az + dz * u, d = Math.hypot(x - qx, z - qz);
+      if (!best || d < best.d) { const l = Math.sqrt(l2); best = { d, s: L.cum[i] + u * l, x: qx, z: qz, tx: dx / l, tz: dz / l }; }
+    }
+    return best;
+  };
+  const pointAt = (L, s) => {
+    if (s < 0 || s > L.len) return null;
+    let i = 0;
+    while (i < L.n - 2 && L.cum[i + 1] < s) i++;
+    const l = L.cum[i + 1] - L.cum[i];
+    if (l < 1e-9) return null;
+    const u = (s - L.cum[i]) / l, ax = L.a[i * 2], az = L.a[i * 2 + 1], dx = L.a[i * 2 + 2] - ax, dz = L.a[i * 2 + 3] - az;
+    return { x: ax + dx * u, z: az + dz * u, tx: dx / l, tz: dz / l };
+  };
+  const nearestLine = (x, z) => {
+    let best = null;
+    for (const L of lines) { const q = project(L, x, z); if (q && (!best || q.d < best.d)) best = { L, ...q }; }
+    return best;
+  };
+  // what the roof must keep clear of: the mapped trees, and the trees buildTile sprinkles on woods, grass and dunes (the
+  // same dice in the same order as there; whether one stands is decided below by the ground of the node's own grid)
+  const trees = [], sprinkle = [], tr = makeRng(hashStr('trees|' + key));
+  for (let i = 0; t.t && i + 1 < t.t.length; i += 2) { trees.push(t.t[i] / 10, TILE - t.t[i + 1] / 10); tr(); }
+  for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
+    const jx = x + tr.range(-2.6, 2.6), jz = z + tr.range(-2.6, 2.6), r1 = tr();
+    tr();
+    if (r1 < 0.9) sprinkle.push(jx, jz, r1);
+  }
+  const bars = (t.x || []).map((e) => { const a = []; for (let i = 2; i + 1 < e.length; i += 2) a.push(e[i] / 10, TILE - e[i + 1] / 10); return { a, r: (BAR_THICK[e[0]] || 0.3) / 2 + SHEL.BARRIER }; });
+  const rings = flats.map((f) => { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (let i = 0; i + 1 < f.length; i += 2) { x0 = Math.min(x0, f[i]); x1 = Math.max(x1, f[i]); z0 = Math.min(z0, f[i + 1]); z1 = Math.max(z1, f[i + 1]); } return { f, x0, x1, z0, z1 }; }).filter((q) => q.f.length >= 6);
+  const others = [];
+  feats.forEach((e) => { if (e[0] !== 10) others.push(e[1] / 10, TILE - e[2] / 10, e[0] === 9 ? clamp((e[4] / 10) * 0.5 + 0.6, 1.5, 12) : FEAT_ROOM[e[0]] || 1.2); });
+  const posts = [];
+  const la = lamps && lamps.a; // (lampsOf: { a: [x, z, dx, dz, kind, ...], ghosts })
+  for (let i = 0; la && i + 1 < la.length; i += 5) posts.push(la[i], la[i + 1], SHEL.LAMP);
+  const spots = catenarySpots(key, rails);
+  for (let i = 0; i + 1 < spots.length; i += 2) posts.push(spots[i], spots[i + 1], SHEL.MAST);
+  const placed = []; // { x, z, nx, nz, rx, rz, fi }
+  const { HX, HZ, STEP } = SHEL, NX = Math.round((2 * HX) / STEP), NZ = Math.round((2 * HZ) / STEP);
+  // the nodes in groups whose windows overlap: one painted grid per group
+  const nodes = [];
+  feats.forEach((e, fi) => { if (e[0] === 10) nodes.push({ fi, x: e[1] / 10, z: TILE - e[2] / 10 }); });
+  const up = nodes.map((q, i) => i), top = (i) => (up[i] === i ? i : (up[i] = top(up[i])));
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (Math.abs(nodes[i].x - nodes[j].x) < 2 * SHEL.WIN && Math.abs(nodes[i].z - nodes[j].z) < 2 * SHEL.WIN) up[top(j)] = top(i);
+  const grids = new Map(), byFi = new Map();
+  nodes.forEach((q, i) => {
+    const k = top(i);
+    let G = grids.get(k);
+    if (!G) grids.set(k, (G = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity }));
+    G.x0 = Math.min(G.x0, q.x); G.x1 = Math.max(G.x1, q.x); G.z0 = Math.min(G.z0, q.z); G.z1 = Math.max(G.z1, q.z);
+    byFi.set(q.fi, G);
+  });
+  for (const G of grids.values()) {
+    const gx0 = Math.floor((G.x0 - SHEL.WIN) / 4) * 4, gz0 = Math.floor((G.z0 - SHEL.WIN) / 4) * 4;
+    const gw = Math.ceil((G.x1 + SHEL.WIN + 4 - gx0) / 4) * 8, gh = Math.ceil((G.z1 + SHEL.WIN + 4 - gz0) / 4) * 8;
+    G.g = new Grid(gx0, gz0, gw, gh, 0.5);
+    paintBase(city, G.g, mt, gnd.slice(), roads);
+    paintTop(G.g, rails, flats);
+    G.near = trees.slice();
+    for (let i = 0; i < sprinkle.length; i += 3) {
+      const x = sprinkle[i], z = sprinkle[i + 1], r1 = sprinkle[i + 2];
+      if (x < gx0 || z < gz0 || x > gx0 + gw * 0.5 || z > gz0 + gh * 0.5) continue;
+      const cl = G.g.get(x, z);
+      if (cl === C.FOREST || (cl === C.GRASS && r1 < 0.07) || (cl === C.DUNE && r1 < 0.06)) G.near.push(x, z);
+    }
+  }
+  const QUICK = [[0, 0], [-HX + 0.1, -HZ + 0.1], [HX - 0.1, -HZ + 0.1], [-HX + 0.1, HZ - 0.1], [HX - 0.1, HZ - 0.1], [0, HZ - 0.1], [0, -HZ + 0.1]];
+  feats.forEach((e, fi) => {
+    if (e[0] !== 10) return;
+    const rx = e[1] / 10, rz = TILE - e[2] / 10, { g, near } = byFi.get(fi);
+    // c, s: cos and sin of the frame's turn; null if the roof cannot stand there, else its pavement share. An island
+    // platform (isl) may stand on any ground that is not hard (the platform itself is not in the data) and keeps its
+    // clearance from the rail beds' cells only
+    const fit = (cx, cz, c, s, isl = false) => {
+      const CL = isl ? SHEL.ISLAND.CLEAR : SHEL.CLEAR, ex = HX + Math.max(CL, SHEL.QUAY);
+      if (cx - HX - CL < 0.25 || cz - HX - CL < 0.25 || cx + HX + CL > TILE - 0.25 || cz + HX + CL > TILE - 0.25) return null;
+      for (const [lx, lz] of QUICK) if (SHEL_HARD[g.get(cx + lx * c + lz * s, cz - lx * s + lz * c)]) return null; // a quick look first
+      let walk = 0, pave = 0;
+      for (let i = 0; i < NX; i++) for (let j = 0; j < NZ; j++) {
+        const lx = -HX + (i + 0.5) * STEP, lz = -HZ + (j + 0.5) * STEP, px = cx + lx * c + lz * s, pz = cz - lx * s + lz * c, k = g.get(px, pz);
+        if (SHEL_HARD[k]) return null;
+        if (SHEL_WALK[k]) walk++;
+        if (SHEL_PAVE[k]) pave++;
+      }
+      if (!isl && walk < SHEL.WALK_MIN * NX * NZ) return null;
+      const dist = (px, pz) => { const dx = px - cx, dz = pz - cz, lx = dx * c - dz * s, lz = dx * s + dz * c; return Math.hypot(Math.max(Math.abs(lx) - HX, 0), Math.max(Math.abs(lz) - HZ, 0)); };
+      // hard cells near the roof (cell centres, as the check measures the kerb), and water further off (quay posts)
+      const R = ex + 0.5, i0 = Math.floor((cx - R - g.x0) / 0.5), i1 = Math.floor((cx + R - g.x0) / 0.5), j0 = Math.floor((cz - R - g.z0) / 0.5), j1 = Math.floor((cz + R - g.z0) / 0.5);
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const k = i < 0 || j < 0 || i >= g.w || j >= g.h ? 255 : g.a[j * g.w + i];
+        if (!SHEL_HARD[k]) continue;
+        const d = dist(g.x0 + (i + 0.5) * 0.5, g.z0 + (j + 0.5) * 0.5);
+        if (d < CL || (d < SHEL.QUAY && (k === C.WATER || k === C.SEA))) return null;
+      }
+      for (let i = 0; i < posts.length; i += 3) if (Math.abs(posts[i] - cx) < 3 && Math.abs(posts[i + 1] - cz) < 3 && dist(posts[i], posts[i + 1]) < posts[i + 2]) return null;
+      for (let i = 0; i < near.length; i += 2) if (Math.abs(near[i] - cx) < 4 && Math.abs(near[i + 1] - cz) < 4 && dist(near[i], near[i + 1]) < SHEL.TREE) return null;
+      for (let i = 0; i < others.length; i += 3) if (Math.hypot(others[i] - cx, others[i + 1] - cz) < others[i + 2] + 3 && dist(others[i], others[i + 1]) < others[i + 2]) return null;
+      for (const q of placed) if (Math.hypot(q.x - cx, q.z - cz) < SHEL.PAIR) return null;
+      for (const b of bars) {
+        const a = b.a;
+        for (let i = 0; i + 3 < a.length; i += 2) {
+          if (Math.min(a[i], a[i + 2]) > cx + 4 || Math.max(a[i], a[i + 2]) < cx - 4 || Math.min(a[i + 1], a[i + 3]) > cz + 4 || Math.max(a[i + 1], a[i + 3]) < cz - 4) continue;
+          const dx = a[i + 2] - a[i], dz = a[i + 3] - a[i + 1], m = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.2));
+          for (let q = 0; q <= m; q++) if (dist(a[i] + (dx * q) / m, a[i + 1] + (dz * q) / m) < b.r) return null;
+        }
+      }
+      for (const q of rings) {
+        if (q.x1 < cx - 3 || q.x0 > cx + 3 || q.z1 < cz - 3 || q.z0 > cz + 3) continue;
+        for (let i = 0; i < NX; i += 2) for (let j = 0; j < NZ; j += 2) {
+          const lx = -HX + (i + 0.5) * STEP, lz = -HZ + (j + 0.5) * STEP;
+          if (inFlat(cx + lx * c + lz * s, cz - lx * s + lz * c, q.f)) return null;
+        }
+      }
+      return pave / (NX * NZ);
+    };
+    const own = [];
+    for (const L of lines) { if (L.cls === 1 || L.cls === 8) continue; const q = project(L, rx, rz); if (q && q.d <= SHEL.REACH) own.push({ L, ...q }); }
+    own.sort((p, q) => p.d - q.d);
+    // every candidate with its cost before the ground is looked at (the ground can only add to it), cheapest first
+    const cands = [];
+    for (const q of own.slice(0, SHEL.LINES)) {
+      const vv = (rx - q.x) * -q.tz + (rz - q.z) * q.tx; // which side of the line the node lies on
+      for (const side of [1, -1]) {
+        const pref = Math.abs(vv) < 1 || Math.sign(vv) === side ? 0 : SHEL.SIDE;
+        for (let k = 0; k <= (2 * SHEL.ALONG) / SHEL.ALONG_STEP; k++) {
+          const along = (k & 1 ? 1 : -1) * Math.ceil(k / 2) * SHEL.ALONG_STEP, P = pointAt(q.L, q.s + along);
+          if (!P) continue;
+          const sx = -P.tz * side, sz = P.tx * side;
+          for (let gi = 0; SHEL.GAP_MIN + gi * SHEL.GAP_STEP <= SHEL.GAP_MAX + 1e-9; gi++) {
+            const gap = SHEL.GAP_MIN + gi * SHEL.GAP_STEP, dd = q.L.hw + gap + HZ, cx = P.x + sx * dd, cz = P.z + sz * dd, move = Math.hypot(cx - rx, cz - rz);
+            if (move <= SHEL.MOVE) cands.push({ cost0: move + pref + SHEL.GAP_COST * gap, cx, cz, sx, sz, P, q, move, gap, n: cands.length });
+          }
+        }
+      }
+    }
+    cands.sort((p, q) => p.cost0 - q.cost0 || p.n - q.n);
+    let best = null;
+    for (const k of cands) {
+      if (best && k.cost0 >= best.cost) break;
+      const { cx, cz, sx, sz, P, q } = k, rot = Math.atan2(-sx, -sz);
+      const pave = fit(cx, cz, Math.cos(rot), Math.sin(rot));
+      if (pave === null) continue;
+      const cost = k.cost0 + SHEL.LAND * (1 - pave);
+      if (best && cost >= best.cost) continue;
+      // the line nearest the roof must be the one it faces, or run alongside it in front of the open side
+      const nl = nearestLine(cx, cz);
+      if (nl && nl.L !== q.L) {
+        const par = Math.abs(nl.tx * P.tx + nl.tz * P.tz) >= Math.cos((SHEL.PARALLEL * Math.PI) / 180);
+        if (!par || -sx * (nl.x - cx) - sz * (nl.z - cz) <= 0) continue;
+      }
+      best = { cost, x: cx, z: cz, rot, nx: -sx, nz: -sz, move: k.move, gap: k.gap, pave, line: q.L.rail ? 'rail' : 'road', cls: q.L.cls };
+    }
+    // no place beside a line: an island platform between two tracks, if the strip between them is wide enough
+    const pair0 = placed.find((p) => Math.hypot(p.rx - rx, p.rz - rz) < SHEL.PAIR);
+    if (!best && !pair0) {
+      const rl = own.filter((q) => q.L.rail && q.d <= SHEL.ISLAND.REACH);
+      for (let a = 0; a < rl.length && !best; a++) for (let b = 0; b < rl.length && !best; b++) {
+        const A = rl[a], B = rl[b];
+        if (A.L === B.L || Math.abs(A.tx * B.tx + A.tz * B.tz) < Math.cos((SHEL.PARALLEL * Math.PI) / 180)) continue;
+        // the node between the two (a tram stop's node lies on its own track: up to 1 m outside A counts)
+        const bx = B.x - A.x, bz = B.z - A.z, bl = Math.hypot(bx, bz) || 1;
+        if ((bx * (rx - A.x) + bz * (rz - A.z)) / bl < -1 || (B.x - rx) * bx + (B.z - rz) * bz <= 0) continue;
+        if (A.d > B.d) continue; // A: the nearer track, the one it faces
+        for (let k = 0; k <= (2 * SHEL.ALONG) / SHEL.ALONG_STEP && !best; k++) {
+          const along = (k & 1 ? 1 : -1) * Math.ceil(k / 2) * SHEL.ALONG_STEP, P = pointAt(A.L, A.s + along);
+          if (!P) continue;
+          const toB = project(B.L, P.x, P.z);
+          if (!toB) continue;
+          let sx = toB.x - P.x, sz = toB.z - P.z; const w = Math.hypot(sx, sz);
+          if (w < 2 * SHEL.ISLAND.TRACK + 2 * HZ) continue;
+          sx /= w; sz /= w;
+          const dd = SHEL.ISLAND.TRACK + HZ, cx = P.x + sx * dd, cz = P.z + sz * dd, move = Math.hypot(cx - rx, cz - rz);
+          if (move > SHEL.MOVE) continue;
+          const toB2 = project(B.L, cx, cz);
+          if (!toB2 || toB2.d < SHEL.ISLAND.TRACK + HZ - 1e-6) continue;
+          const rot = Math.atan2(-sx, -sz), pave = fit(cx, cz, Math.cos(rot), Math.sin(rot), true);
+          if (pave === null) continue;
+          const nl = nearestLine(cx, cz);
+          if (nl && nl.L !== A.L && nl.L !== B.L && Math.abs(nl.tx * P.tx + nl.tz * P.tz) < Math.cos((SHEL.PARALLEL * Math.PI) / 180)) continue;
+          best = { cost: move, x: cx, z: cz, rot, nx: -sx, nz: -sz, move, gap: SHEL.ISLAND.TRACK - A.L.hw, pave, line: 'rail', cls: A.L.cls, island: +w.toFixed(2) };
+        }
+      }
+    }
+    const pair = pair0;
+    if (pair && (!best || best.nx * pair.nx + best.nz * pair.nz > 0)) { out.set(fi, { drop: 'double', of: pair.fi, rx, rz }); return; }
+    if (!best) { out.set(fi, { drop: 'noPlace', rx, rz }); return; }
+    placed.push({ x: best.x, z: best.z, nx: best.nx, nz: best.nz, rx, rz, fi });
+    out.set(fi, { x: best.x, z: best.z, rot: best.rot, rx, rz, move: best.move, gap: best.gap, pave: best.pave, line: best.line, cls: best.cls, pairOf: pair ? pair.fi : undefined, island: best.island });
+  });
 }
 // How far each kind of ground stands above the road surface, in metres. Pavements sit on kerbs, grass and
 // woodland lie higher and uneven, dunes roll: the ground is a stepped surface, not one flat sheet.
@@ -2352,22 +2625,31 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     try { drawParts(vx, glx, [{ ring, h: e[0] / 10, min: e[1] / 10, roof: e[2], roofH: e[3] / 10, wall: e[4], roofCol: e[5] }], { wall: '#b9a58f', roof: '#5d646d' }, cx, cz, e[0] / 10, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
   });
-  for (const e of t.f || []) {
+  // the lamps of this tile: the crowd stands its posts there and the ground gets their pools of light (a pure function of
+  // the tile's data, worked out here because the shelters keep clear of the posts)
+  const lamps = lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
+  // the map's stop shelters: where each stands and which way it looks (the same for furnish.js below; see shelterPlaces)
+  const shel = lod < 2 ? shelterPlaces(city, key, t, gnd, roads, rails, flats, mt, lamps) : null;
+  (t.f || []).forEach((e, fi) => {
     // free-standing things: fuel station canopies, windmills, masts, statues, fountains, shelters
-    if (lod === 2 && !(e[0] >= 2 && e[0] <= 9)) continue; // from far away only the tall ones matter (statues and fountains as a few boxes)
+    if (lod === 2 && !(e[0] >= 2 && e[0] <= 9)) return; // from far away only the tall ones matter (statues and fountains as a few boxes)
+    const sp = e[0] === 10 ? shel.get(fi) : null;
+    const old = { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180, lod };
+    // a feature left out is still drawn as before, into throwaway builders that take over vx/glx's state and hand it back
+    // (the jitter dice of a lighthouse's tower, the tag and frame), so what vx/glx draw after it comes out as it did
+    const skip = () => shadowDraw(vx, glx, (dv, dg) => { try { drawFeature(dv, dg, old, xr, night); } catch (err) { /* as below */ } });
+    if (sp && sp.drop) return skip(); // no place for it beside its street or track: left out
     const n0 = vx.n, g0 = glx.n;
     // a compass direction (degrees clockwise from north) as a turn of the builder's frame, in the tile's east/south axes
-    try { drawFeature(vx, glx, { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180, lod, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
+    try { drawFeature(vx, glx, { type: e[0], x: sp ? sp.x : e[1] / 10, z: sp ? sp.z : TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: sp ? sp.rot : Math.PI / 2 - (e[3] * Math.PI) / 180, lod, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
-  }
+  });
   if (lod < 2 && t.x && t.x.length) {
     const n0 = vx.n;
     try { drawBarriers(vx, t.x.map((e) => ({ kind: e[0], h: e[1] / 10, a: loc(e, 2) })), xr); } catch (err) { vx.n = n0; }
     vx.setT(); vx.setW(0);
   }
   paintTop(grid, rails, flats);
-  // the lamps of this tile: the crowd stands its posts there and the ground gets their pools of light
-  const lamps = lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
   const G = buildGround(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
   g.add(...G.meshes);
   v.setT(); gl.setT();
@@ -2400,7 +2682,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   if (lod === 0) {
     const fv = new Vox(rnd.int(1, 9999)), fgl = new Vox(rnd.int(1, 9999)), fg = new THREE.Group();
     try {
-      const fr = furnishTile({ key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite });
+      const fr = furnishTile({ key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite, shelters: shel, lamps });
       props = fr.props || []; tCells = fr.cells || null;
       fv.setT(); fgl.setT();
       if (!fv.empty) g.add(fv.mesh());

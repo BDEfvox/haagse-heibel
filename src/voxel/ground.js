@@ -119,7 +119,7 @@ export function buildOcc(o) {
   for (const q of o.props || []) {
     if (q.kind === 'terrace') { fillDisc(occ, w, h, cell, q.x, q.z, 0.85, FURN); continue; } // (an anchor between two tables: the chairs meet there)
     if (NOT.has(q.kind)) continue;
-    const f = FOOT[q.kind], bit = FEAT.has(q.kind) ? FEATURE : POSTK.has(q.kind) ? POST : FURN;
+    const f = q.hl > 0 ? [q.hl, q.hw] : FOOT[q.kind], bit = FEAT.has(q.kind) ? FEATURE : POSTK.has(q.kind) ? POST : FURN; // (hl, hw: a size of its own: a map shelter)
     if (!f) { fillDisc(occ, w, h, cell, q.x, q.z, 0.4, bit); continue; } // (an unknown kind: a small round thing)
     if (!f[1]) { fillDisc(occ, w, h, cell, q.x, q.z, f[0], bit); continue; }
     let ax = q.ax, az = q.az;
