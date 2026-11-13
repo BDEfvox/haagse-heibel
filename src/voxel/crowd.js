@@ -1403,6 +1403,25 @@ export class Crowd {
     return best;
   }
 
+  /**
+   * For the walking character (walker.js): fn(x, z, kind, agent) for whatever the collision grid holds in the 3 x 3 cells (24 m) round
+   * scene (x, z): the visible agents (kind PED, BIKE_, CAR_, TRAM_; a tram by its first section), and the members and bikes of the
+   * groups on show (kind -1, agent null). The grid of the last update: last frame's places. No allocation.
+   */
+  gridNear(x, z, fn) {
+    if (this.gx0 === undefined) return;
+    const head = this.head, next = this.next, gp = this.gp, A = this.agents, n = this.gn;
+    const ci = Math.floor((x - this.gx0) / CELL), cj = Math.floor((z - this.gz0) / CELL);
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const cc = ci + di, cr = cj + dj;
+      if (cc < 0 || cr < 0 || cc >= GN || cr >= GN) continue;
+      for (let q = head[cr * GN + cc]; q >= 0; q = next[q]) {
+        if (q >= n) fn(gp[(q - n) * 2], gp[(q - n) * 2 + 1], -1, null);
+        else { const a = A[q]; if (a && !a.dead && a.vis) fn(a.x, a.z, a.kind, a); }
+      }
+    }
+  }
+
   // ------------------------------------------------------------ for the gags
   /** Moving figures of one kind within r of a point. */
   near(x, z, r, kind) {
@@ -2038,6 +2057,7 @@ export class Crowd {
       for (const m of g.members) gIn(m.x, m.z);
       for (const b of g.bikes) { const sx = Math.sin(b.hd) * 0.45, sz = Math.cos(b.hd) * 0.45; gIn(b.x + sx, b.z + sz); gIn(b.x - sx, b.z - sz); }
     }
+    this.gx0 = gx0; this.gz0 = gz0; this.gn = n; // (where the grid lies and how many agents it holds: gridNear)
     /** No vehicle (other than agent `self`) within r of (px, pz)? (the grid of this frame) */
     const vFree = (px, pz, self, r, own = null) => { // (own: the asker's lane, whose vehicles are its own queue, left out)
       const ci = Math.floor((px - gx0) / CELL), cj = Math.floor((pz - gz0) / CELL);

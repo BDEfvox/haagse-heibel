@@ -12,6 +12,7 @@ import { litShare } from './props.js';
 import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
 import { Overhead } from './overhead.js';
+import { Walker } from './walker.js';
 import { FURN as STREET_FURN } from './setting.js';
 import { PERSON as G_PERSON, WHEEL as G_WHEEL, ALL as G_ALL } from './ground.js';
 import { sfx } from '../audio.js';
@@ -121,6 +122,11 @@ const SAFETY = 20;         // a scene that asks for nothing new for this long lo
 const STAGE_R = 15;        // metres the crowd keeps clear around the scene that holds the camera
 // a "!" pin is fully there while its spot is within PIN_FULL metres of the point the camera looks at, fades evenly, and is gone at PIN_GONE
 const PIN_FULL = 150, PIN_GONE = 300;
+// A pin laid out at the bottom right must not sit on the Walk button (a press there would start a walk instead). The button's box as
+// style.css lays it out (#btn-walk: right 16, bottom 116 on wide screens; right 8, bottom 118 at max-width 760 px), a little larger
+// than it is drawn, and the pin's own reach (18 px radius and its shadow): a pin whose disc would reach into the box is lifted above it.
+const PIN_R = 22, PIN_NARROW = 760;
+const WALK_BOX = { wide: { right: 16, bottom: 116, w: 100, h: 46 }, narrow: { right: 8, bottom: 114, w: 92, h: 50 } };
 // m: pressing a pin brings the camera this close to the spot if it is further away (a wide view of one spot, about the street's own
 // viewing distance on a wide screen; see flyTo)
 const PIN_VIEW = 80;
@@ -137,6 +143,10 @@ const RECLEAR_FOR = 1.0;   // ...and clear this long before the high fallback is
 const RECONSIDER = 2;      // after any such decision: no new one for this long
 const RESTAND_GLIDE = 0.5; // the move to the new stand takes about this long
 const SAME_AZ = 0.52, SAME_DIST = 0.3; // 'nearly the same shot': within 30 degrees and 30% of the distance
+// the walking character (walker.js, mode 'walk'): the camera's distance and tilt when he is dropped (the viewer's own are kept when
+// they are within these ranges), the height over his feet it aims at, how long a drop may wait for the ground to be ready, how far
+// from the point looked at he may be put, and the height above which the camera first comes down to him
+const WALK_DIST = 20, WALK_D = [20, 60], WALK_EL = 0.35, WALK_E = [0.2, 0.9], WALK_AIM = 1.1, WALK_WAIT = 6, WALK_REACH = 8, WALK_HIGH = 300;
 
 
 // (disposeTree, which frees the GPU buffers of an object that has left the scene for good, lives in kit.js)
@@ -296,9 +306,11 @@ export class Stage {
   //   leave   the rise to the map
   // Once the viewer has touched the camera it stays theirs: only follow() (the Follow the action button) puts it back in follow.
   // Nothing goes from free to follow by itself; the only automatic change is the other way (a follow with nothing left to show).
-  // A third camera of the viewer's own (the walking character, to come) is a mode beside 'free', say 'walk': not being 'follow',
-  // the director is locked out of it in the same way. It plugs in here: _take() returns true without changing mode, the turn and
-  // zoom inputs adjust the walking camera's offsets, and _begin's focus-shift branch keeps it (where it now sets 'free').
+  //   walk    the viewer's too, with the walking character (walker.js) on the street: the camera looks at him (its target follows
+  //           him); the viewer turns, tilts and zooms it as in free, a drag turns it (there is nothing to pan), the movement keys and
+  //           the on-screen stick move him. Not being 'follow', the director is locked out of it as out of free. Everything free does
+  //           for the viewer (lens guard, cutaway, aim height, the look straight down high up, the way out to the map, the focus
+  //           shift: _own) counts for walk too; a focus shift keeps it (_begin). Follow the action from walk ends the walk.
   /** The viewer gives camera input: from here on the camera is theirs. False when input cannot act now. */
   _take() {
     if (!this.W || this.mode === 'leave' || this.exiting) return false;
@@ -312,6 +324,8 @@ export class Stage {
   }
   /** Whether the camera is (or, during the drop, will be) following the action: the Follow button shows it pressed. */
   get following() { return this.mode === 'follow' || (this.mode === 'drop' && !this.landFree); }
+  /** The camera is the viewer's: free, or walk (the walking character's). */
+  get _own() { return this.mode === 'free' || this.mode === 'walk'; }
   /** The Follow button pressed while following: stop following, the camera stays exactly where it is. */
   takeCamera() { this._take(); }
   /** The drop is over: follow the action (nobody touched the camera) or stay exactly where the viewer took it. */
@@ -334,6 +348,8 @@ export class Stage {
     this.hooks.onMode?.(this.mode);
   }
   _pan(dx, dy) {
+    // walking: the target is the character, there is nothing to pan; a drag turns and tilts instead (as a right-drag does)
+    if (this.mode === 'walk') { this.goal.az -= dx * 0.005; this.goal.el = lim(this.goal.el + dy * 0.004, EL_LO, EL_HI, this.goal.el); return; }
     // by the elevation that is on screen (high up the camera tilts towards straight down by itself), so the ground follows the pointer
     const g = this.goal, mpp = (2 * g.dist * TAN) / (this.canvas.clientHeight || 1), kf = (dy * mpp) / Math.max(0.35, Math.sin(this.viewEl ?? g.el)), kr = dx * mpp;
     g.tx += -kr * Math.cos(g.az) - kf * Math.sin(g.az);
@@ -421,7 +437,8 @@ export class Stage {
       if (!this._take()) return;
       const g = this.goal, u = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1; // (lines or pages, as some mice send them)
       let dx = e.deltaX * u, dy = e.deltaY * u;
-      if (e.shiftKey && !dx) { dx = dy; dy = 0; } // Shift + wheel turns (macOS already sends it as a sideways scroll)
+      if (e.shiftKey && !dx && this.mode !== 'walk') { dx = dy; dy = 0; } // Shift + wheel turns (macOS already sends it as a sideways scroll); walking, Shift is the run key and the wheel still zooms
+      if (e.shiftKey && !dy && this.mode === 'walk') { dy = dx; dx = 0; } // (walking: macOS turned the Shift + wheel into a sideways scroll; it is the wheel, it zooms)
       if (e.ctrlKey) { g.dist = lim(g.dist * Math.exp(clamp(dy, -50, 50) * 0.006), DMIN, DMAX, g.dist); return; } // a trackpad pinch
       if (e.altKey) { g.el = lim(g.el - clamp(dy, -240, 240) * 0.003, EL_LO, EL_HI, g.el); return; } // Alt (Option) + scroll tilts
       // one meaning per movement: mostly sideways (two fingers on a trackpad, a tilting wheel) turns, mostly up and down zooms
@@ -441,22 +458,26 @@ export class Stage {
     c.addEventListener('gestureend', (e) => { e.preventDefault(); gz = null; });
     const key = (e, on) => {
       const k = (e.key || '').toLowerCase(), id = e.code || 'key:' + k;
-      if (!on) { this.keys.delete(id); return; } // (always let go)
+      if (k === 'shift') { this.shift = on; return; } // (held: the walking character runs; never a camera key, so it never takes the camera)
+      if (!on) { this.keys.delete(id); this.keyMute?.delete(id); return; } // (always let go)
       // while Cmd is down macOS sends no keyup for the other keys: let go of all of them, and of the pad held by a key (nothing
       // left turning the camera by itself)
-      if (k === 'meta' || k === 'control' || k === 'alt') { this.keys.clear(); this._padStop(); return; }
+      if (k === 'meta' || k === 'control' || k === 'alt') { this.keys.clear(); this._padStop(); this.shift = false; return; }
       if (!this.running) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return; // Cmd/Ctrl/Alt + a key is the browser's or the system's (zoom, bookmark...), not the camera's
       if (e.target.closest?.('input, textarea, select, [contenteditable]')) return; // text fields keep their keys
       const act = KEY_ACT[k];
       if (!act) return;
+      // a key held through a change of who moves what (a walk started or ended, Follow pressed) does nothing until it is let go, its
+      // auto-repeat included: W held when the walk ends must not pan the camera, nor move him the moment he lands (_muteKeys)
+      if (this.keyMute && this.keyMute.has(id)) { e.preventDefault(); return; }
       this.keys.set(id, act);
       e.preventDefault();
       if (this.mode === 'drop') this._take(); // (_keys does not run during the drop: the key takes the camera here)
     };
     window.addEventListener('keydown', (e) => key(e, true));
     window.addEventListener('keyup', (e) => key(e, false));
-    const letGo = () => { this.keys.clear(); this._padStop(); };
+    const letGo = () => { this.keys.clear(); this.keyMute?.clear(); this._padStop(); this.shift = false; if (this.stick) this.stick.x = this.stick.y = 0; };
     window.addEventListener('blur', letGo);
     document.addEventListener('visibilitychange', () => { if (document.hidden) letGo(); });
     this._bindPad();
@@ -511,7 +532,7 @@ export class Stage {
     for (const a in h) h[a] = 0;
     for (const a of K.values()) h[a] = 1;
     const x = (h.right || 0) - (h.left || 0), y = (h.down || 0) - (h.up || 0);
-    if (x || y) this._pan(-x * px, -y * px);
+    if ((x || y) && this.mode !== 'walk') this._pan(-x * px, -y * px); // (walking, these keys move him: _walkStep)
     if (h.turnL) g.az += dt * 1.3;
     if (h.turnR) g.az -= dt * 1.3;
     const tilt = (h.tiltU || 0) - (h.tiltD || 0);
@@ -615,6 +636,8 @@ export class Stage {
   /** Follow the action (the button): the only way into follow, apart from a street's own opening. During the drop: land following. */
   follow() {
     if (!this.W || this.exiting || this.mode === 'leave') return; // (not while the page hands over to the map)
+    if (this.mode === 'walk') this.walkEnd(); // (following the action ends the walk: he is taken away)
+    this._muteKeys(); // (a key still held would take the camera straight back from the director)
     if (this.mode === 'free') this._setMode('follow');
     else if (this.mode === 'drop') this.landFree = false;
   }
@@ -625,10 +648,90 @@ export class Stage {
   flyTo(ctx) {
     if (!this.W || this.mode === 'drop' || this.mode === 'leave' || this.exiting) return;
     if (this.mode === 'follow') this._setMode('free', true);
+    if (this.mode === 'walk') this.walkEnd(); // (no pins are shown while walking; should one be pressed, the camera is free again first)
     const g = this.goal, p = this.W.path.xz(ctx.sc, 0);
     g.tx = p[0]; g.tz = p[1]; g.ty = this.W.landY(p[0], p[1]) + 1.5;
     g.dist = Math.min(g.dist, Math.max(PIN_VIEW, this.fit || 0));
     if (CALM) { const r = this.rig; r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.dist = g.dist; } // (reduced motion: there at once, no flight)
+  }
+  // ------------------------------------------------------------ the walking character (walker.js)
+  /** Is the walking character on the street (or about to be put there)? */
+  get walking() { return this.mode === 'walk'; }
+  /** The keys held now are ignored until they are let go (see the key handler), and the pad lets go. */
+  _muteKeys() { const M = this.keyMute || (this.keyMute = new Set()); this.keys.forEach((a, id) => M.add(id)); this.keys.clear(); this._padStop(); }
+  /** Can a walk start now, as far as the stage knows? (Not during the drop from the map or the rise back to it; the page also holds the
+   * button while it builds the next street at a focus shift, main.js paintWalk.) */
+  get canWalk() { return !!this.W && this.running && !this.exiting && (this.mode === 'free' || this.mode === 'follow' || this.mode === 'walk'); }
+  /**
+   * The Walk button: put the character on the ground at the point the camera looks at (or the nearest place within WALK_REACH metres
+   * where a person may stand). The camera is the viewer's from now on (as with any camera input), keeps its bearing and settles
+   * behind him: he faces away from it. From high up, or where the ground is not ready yet, the camera first comes down over that point
+   * (the viewer asked for the walk) and he is put there once the ground is ready. False when a walk cannot start now.
+   */
+  walkStart() {
+    if (!this.canWalk || this.mode === 'walk') return false;
+    if (!this._take()) return false;
+    this._muteKeys();
+    this.mode = 'walk';
+    this.walkWant = { t: 0 };
+    this.stick = this.stick || { x: 0, y: 0, run: false };
+    this._wb = this._wb || { x: 0, z: 0, r: 0.35 };
+    const g = this.goal, r = this.rig;
+    if (r.dist > WALK_HIGH || !this.W.ground || !this.W.ground.ready(r.tx, r.tz)) { g.dist = WALK_DIST; g.el = WALK_EL; if (CALM) { r.dist = g.dist; r.el = g.el; } } // (the camera comes down first; at once with reduced motion)
+    this.hooks.onMode?.('walk');
+    this._walkPlace(); // (now, or once the ground is ready: _walkStep)
+    return this.mode === 'walk';
+  }
+  /** Take him away: the camera is free again, exactly where it is. `msg`: why, for the page to say. */
+  walkEnd(msg = '') {
+    if (this.walker) { this.walker.dispose(); this.walker = null; }
+    this.walkWant = null;
+    this._muteKeys();
+    if (this.stick) { this.stick.x = this.stick.y = 0; this.stick.run = false; }
+    if (this.mode === 'walk') { this.mode = 'free'; this.hooks.onMode?.('free'); }
+    this.hooks.onWalk?.(false, msg);
+  }
+  /** Waiting to put him down: once the ground under the point looked at is ready (at most WALK_WAIT s), find his spot and put him there. */
+  _walkPlace() {
+    const W = this.W, r = this.rig, G = W.ground, out = this._ws || (this._ws = [0, 0]);
+    if (!G || !(r.dist < WALK_HIGH) || !G.ready(r.tx, r.tz)) return false;
+    if (!Walker.spot(W, r.tx, r.tz, WALK_REACH, out)) { this.walkEnd('Nobody can stand there. Look at the street and try again.'); return false; }
+    const wk = (this.walker = new Walker()), az = r.az;
+    wk.place(W, out[0], out[1], -Math.sin(az), -Math.cos(az)); // facing away from the camera: it is behind him already
+    this.scene.add(wk.g);
+    this.walkWant = null;
+    // the camera settles behind him: the viewer's bearing stays; the distance and tilt too, if they suit walking
+    const g = this.goal, p = wk.g.position;
+    g.tx = p.x; g.tz = p.z; g.ty = wk.y + WALK_AIM; g.roll = 0;
+    if (!(g.dist >= WALK_D[0] && g.dist <= WALK_D[1])) g.dist = WALK_DIST;
+    if (!(g.el >= WALK_E[0] && g.el <= WALK_E[1])) g.el = WALK_EL;
+    if (CALM) Object.assign(r, g); // (reduced motion: there at once, no glide)
+    this._wb.x = p.x; this._wb.z = p.z;
+    this.hooks.onWalk?.(true);
+    return true;
+  }
+  /** One frame of walking: his input (keys and the stick, read every frame so a key let go stops him), his step, his blocker. */
+  _walkStep(dt) {
+    if (this.walkWant) {
+      if ((this.walkWant.t += dt) > WALK_WAIT) { this.walkEnd('The street there is not ready yet. Try again in a moment.'); return; }
+      if (!this._walkPlace()) return;
+    }
+    const wk = this.walker;
+    if (!wk) return;
+    const I = this._win || (this._win = { x: 0, y: 0, f: null });
+    I.x = 0; I.y = 0;
+    this.keys.forEach(I.f || (I.f = (a) => { if (a === 'right') I.x += 1; else if (a === 'left') I.x -= 1; else if (a === 'up') I.y += 1; else if (a === 'down') I.y -= 1; })); // (no iterator per frame)
+    let ix = I.x, iy = I.y;
+    if (ix > 1) ix = 1; else if (ix < -1) ix = -1;
+    if (iy > 1) iy = 1; else if (iy < -1) iy = -1;
+    const kl = Math.hypot(ix, iy);
+    if (kl > 1) { ix /= kl; iy /= kl; } // (a diagonal is no faster)
+    const S = this.stick;
+    if (S && (S.x || S.y)) { ix = S.x; iy = S.y; }
+    wk.step(this.W, dt, ix, iy, this.rig.az, !!(this.shift || (S && S.run)), this.crowd, this.crowd && this.crowd.blockers, this._wb);
+    if (wk.lost) { this.walkEnd('Nobody can stand there. Look at the street and try again.'); return; } // (stuck with no free spot near)
+    const p = wk.g.position;
+    this._wb.x = p.x; this._wb.z = p.z;
   }
   /**
    * Rise straight up to `dist` metres, looking down with north up, so the page can hand over to the map.
@@ -1185,6 +1288,8 @@ export class Stage {
       view.crowd = this.crowd; this.crowd = null;
       // and so does what flies over it (the helicopter): it lives in map metres and is written into whichever frame is open
       view.overhead = this.overhead; this.overhead = null;
+      // and so does the walking character: he lives in map metres too (walker.js); his figure hangs from the scene, not the street
+      view.walker = this.walker; this.walker = null; view.walkWant = this.walkWant; this.walkWant = null;
       if (o.stream) o.stream.onTile = null;
       this._teardown(true);
       dress();
@@ -1196,6 +1301,7 @@ export class Stage {
       // what was handed over and never taken back by _begin is not this stage's any more: hide() would not find it
       if (view && view.overhead && view.overhead !== this.overhead) view.overhead.dispose();
       if (view && view.crowd && view.crowd !== this.crowd) { this.scene.remove(view.crowd.group); view.crowd.dispose(); }
+      if (view && view.walker && view.walker !== this.walker) { view.walker.dispose(); this.hooks.onWalk?.(false); }
       if (!this.W) W.dispose();
       this.hide();
       return false;
@@ -1452,7 +1558,7 @@ export class Stage {
         watched: () => {
           if (this.cine) return this.cine.ctx === ctx;
           if (this.mode === 'follow' || this.mode === 'drop') return this.camCtx === ctx;
-          if (this.mode !== 'free') return false;
+          if (!this._own) return false;
           const c0 = (ctx._c0 ||= path.xz(sc, 0));
           return Math.hypot(c0[0] - this.rig.tx, c0[1] - this.rig.tz) < 60;
         },
@@ -1490,10 +1596,15 @@ export class Stage {
       Object.assign(this.rig, { tx: p[0], tz: p[1], ty: V.ty, az: az(V.d), el: V.el, dist: V.dist, fov: FOV, roll: V.roll || 0 });
       Object.assign(this.goal, { tx: q[0], tz: q[1], ty: V.gty ?? V.ty, az: az(V.gd), el: V.gel, dist: V.gdist, fov: FOV, roll: V.groll || 0 });
       this.drop = null;
-      this.mode = 'free'; // (a camera state of the viewer's own beside free, the walking character's, would be kept here)
+      // the viewer's camera stays the viewer's: free stays free, and a walk goes on with the same character, written into this frame
+      const wv = opts.view && (opts.view.walker || opts.view.walkWant) && was === 'walk';
+      this.mode = wv ? 'walk' : 'free';
+      if (wv && opts.view.walker) { this.walker = opts.view.walker; this.scene.add(this.walker.g); this.walker.rebase(W); }
+      if (wv && opts.view.walkWant) this.walkWant = opts.view.walkWant;
+      if (was === 'walk' && !wv) hooks.onWalk?.(false);
       this.cutEnd = 0; this.lastSwitch = 0; this.idleT = 0; this.autoFree = false;
       U.uGrow.value = 1;
-      if (was !== 'free') hooks.onMode?.('free'); // (a focus shift in free mode stays in free mode: the page's hints are not said again)
+      if (was !== this.mode) hooks.onMode?.(this.mode); // (a focus shift in free or walk mode stays there: the page's hints are not said again)
     } else {
       this.drop = { t: 0, dur, d0, c0, y0: W.landY(c0[0], c0[1]) };
       this.mode = 'drop';
@@ -1555,6 +1666,7 @@ export class Stage {
     }
     if (this.crowd) { this.scene.remove(this.crowd.group); this.crowd.dispose(); this.crowd = null; }
     if (this.overhead) { this.overhead.dispose(); this.overhead = null; } // (on a focus shift it was handed over first: nothing here)
+    if (this.walker || this.walkWant) { if (this.walker) this.walker.dispose(); this.walker = null; this.walkWant = null; this.hooks?.onWalk?.(false); } // (likewise)
     // on a swap the next street's signs are already made and share the cache: only a full close clears it
     if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; if (!swap) clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
@@ -1624,6 +1736,7 @@ export class Stage {
       else { const e = a.g.matrixWorld.elements; x = e[12]; z = e[14]; }
       B.push({ x, z, r: a.vehicle ? Math.max(1, (a.len || 2) / 2) : 0.35 });
     }
+    if (this.walker) B.push(this._wb); // the walking character: the crowd treats him as a person on stage (walkers go round, vehicles brake)
     for (const c of this.locales) if (c.road && c.road.closed > 0) { const p = path.xz(c.sc, 0); Z.push({ x: p[0], z: p[1], r: 26 }); }
     if ((this.pruneT -= 0.016) <= 0) { this.pruneT = 2; C.prune(this.W.stream.live); }
   }
@@ -1693,7 +1806,10 @@ export class Stage {
       }
       x = clamp(x, -0.9, 0.9); y = clamp(y, -0.7, 0.82);
       pin.el.classList.toggle('edge', off);
-      const px = ((x + 1) / 2) * w, py = ((1 - y) / 2) * h;
+      const px = ((x + 1) / 2) * w;
+      let py = ((1 - y) / 2) * h;
+      const wb = w <= PIN_NARROW ? WALK_BOX.narrow : WALK_BOX.wide, top = h - wb.bottom - wb.h; // (the Walk button's top edge, from the top)
+      if (px + PIN_R > w - wb.right - wb.w && py + PIN_R > top && py - PIN_R < h - wb.bottom) py = top - PIN_R;
       if (Math.abs(px - pin.px) > 0.1 || Math.abs(py - pin.py) > 0.1 || pin.px !== pin.px) { pin.px = px; pin.py = py; pin.el.style.transform = `translate(${px}px, ${py}px)`; }
     }
   }
@@ -1745,7 +1861,8 @@ export class Stage {
       if (this.grow) { this.grow.v = Math.min(1, this.grow.v + real * 1.25); U.uGrow.value = this.grow.v; if (this.grow.v >= 1) this.grow = null; }
       else U.uGrow.value = 1;
       this._keys(real);
-      let rate = this.mode === 'free' ? 10 : 3.2, rateT = rate, snap = false;
+      if (this.mode === 'walk') this._walkStep(real * (this.debugSpeed || 1)); // (on the viewer's clock: a scene's slow motion does not slow his feet)
+      let rate = this._own ? 10 : 3.2, rateT = rate, snap = false;
       if (this.mode === 'follow') {
         const busy = [...this.gags].some((q) => q.ctx === this.camCtx);
         this.idleT = busy ? 0 : this.idleT + real;
@@ -1846,10 +1963,12 @@ export class Stage {
         }
         L.on = true; L.tx = g.tx; L.tz = g.tz; L.az = g.az; L.el = g.el;
         g.fov = FOV;
+        // walking: the camera looks at him, a little over his feet (his height is already eased over kerbs and steps)
+        if (this.walker) { const p = this.walker.g.position; g.tx = p.x; g.tz = p.z; g.ty = this.walker.y + WALK_AIM; }
       }
       // high up, the free camera turns to look straight down with north up: the same view as the map it hands over to
       let gel = g.el, gaz = g.az;
-      if (this.mode === 'free') gel = lerp(g.el, TOP, sm(clamp((r.dist - 1500) / 1100)));
+      if (this._own) gel = lerp(g.el, TOP, sm(clamp((r.dist - 1500) / 1100)));
       this.viewEl = gel;
       if (snap) { r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.az = gaz; r.el = gel; r.dist = g.dist; r.fov = g.fov; r.roll = g.roll; }
       else {
@@ -1860,8 +1979,8 @@ export class Stage {
         r.fov += ((g.fov || FOV) - r.fov) * k; r.roll += ((g.roll || 0) - r.roll) * k;
       }
       snapCut = snap;
-      if (this.mode === 'free' && r.dist >= EXIT && !this.exiting) { this.exiting = true; this.hooks.onExit?.(); }
-      if (this.mode === 'free' && !this.exiting && this.hooks.onRoam && (this.roamT -= real) <= 0) {
+      if (this._own && r.dist >= EXIT && !this.exiting) { if (this.mode === 'walk') this.walkEnd(); this.exiting = true; this.hooks.onExit?.(); } // (the walk ends before the way out begins)
+      if (this._own && !this.exiting && this.hooks.onRoam && (this.roamT -= real) <= 0) {
         this.roamT = 0.25;
         const pr = W.path.project(r.tx, r.tz);
         // how far the camera's target is from the street that is open (leaving it past either end counts too)
@@ -1908,7 +2027,7 @@ export class Stage {
       let gy = r.ty + camD * Math.sin(r.el);
       if (!sh) gy = cy; // (no shake: the camera's own position, ground clamp included)
       else gy = Math.max(gy, W.landY(gx, gz) + 0.35); // (the camera's own ground guard above, at every distance; a shake happens only while following)
-      lensGuard(W, real, this.mode === 'free', gx, gy, gz, r.tx, r.ty, r.tz);
+      lensGuard(W, real, this._own, gx, gy, gz, r.tx, r.ty, r.tz);
     }
     U.uFocus.value.set(r.tx, 0, r.tz);
     U.uCamDir.value.set(Math.sin(r.az), Math.cos(r.az));
@@ -1919,7 +2038,7 @@ export class Stage {
     // camera wanders off the streets there is nothing to keep in view, so everything stands up again. Any street counts,
     // not only the open one: crossing onto the next street must not stand everything up until the focus has moved there.
     let need = clamp((1.3 - r.el) / 0.15) * clamp((190 - r.dist) / 80);
-    if (need > 0 && this.mode === 'free') need *= clamp((46 - Math.min(W.path.project(r.tx, r.tz).d, streetNear(W, r.tx, r.tz))) / 26);
+    if (need > 0 && this._own) need *= clamp((46 - Math.min(W.path.project(r.tx, r.tz).d, streetNear(W, r.tx, r.tz))) / 26);
     if (shotOn || shotBlocked) need = Math.max(need, clamp((1.3 - r.el) / 0.15));
     this.cutK = snapCut ? need : (this.cutK ?? need) + (need - (this.cutK ?? need)) * (1 - Math.exp(-real * 6));
     U.uCut.value = this.cutK < 0.004 ? 0 : this.cutK;
