@@ -282,8 +282,8 @@ async function boot() {
     $('#count').textContent = '000';
     $('#news').textContent = `Our reporter has arrived on ${p.name}…`;
   }
-  const stageOpts = (p, lngLat) => ({
-    only: onlyParam, seed: DEV ? (params.get('seed') || '').slice(0, 40) : '', geometry: geomOf(p), lngLat, clock: clockParam,
+  const stageOpts = (p, lngLat, land) => ({
+    land, only: onlyParam, seed: DEV ? (params.get('seed') || '').slice(0, 40) : '', geometry: geomOf(p), lngLat, clock: clockParam,
     crime: { cat: byCode.get(p.buurt)?.properties.cat, cats: meta.cats },
   });
   const touch = matchMedia('(hover: none)').matches;
@@ -375,19 +375,25 @@ async function boot() {
   let zoomedOut = null; // set when the viewer left the city by zooming out: { at, moved }
   api.ready.then(() => api.map.on('dragstart', () => { if (zoomedOut) zoomedOut.moved = true; }));
 
-  async function openStreet(p0, pt, enter = null) {
+  /** `land`: 'free' when the viewer had the camera on the street before (Next street): the drop then lands without following. */
+  let inOpen = false;
+  async function openStreet(p0, pt, enter = null, land = 'follow') {
     if (busy || !p0) return;
     busy = true;
+    inOpen = true;
     try {
-      await doOpen(p0, pt, enter);
+      await doOpen(p0, pt, enter, land);
     } catch (e) {
       console.error(e);
       recover('That street would not load. Try another one.');
     } finally {
       busy = false;
+      inOpen = false;
+      // a way out asked for while the street was still opening (zoomed straight out again, pressed Map or Esc) happens now
+      if (pendingClose) { const z = pendingClose.viaZoom; pendingClose = null; closeStreet(z); }
     }
   }
-  async function doOpen(p0, pt, enter) {
+  async function doOpen(p0, pt, enter, land) {
     const p = withLevel(p0);
     opening = true;
     audioOk = true;
@@ -411,7 +417,7 @@ async function boot() {
     // the world around the street is built while the map waits; the camera then starts from exactly the map's view
     // (and stays there, when the viewer zoomed in rather than picked a street)
     if (enter) lngLat = enter.lngLat;
-    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat), from: swap ? null : entry, enter: enter || null });
+    const ready = stage.show(p, hooks, { ...stageOpts(p, lngLat, land), from: swap ? null : entry, enter: enter || null });
     stage.hold = !enter;
     if (swap) {
       play('whoosh');
@@ -480,7 +486,7 @@ async function boot() {
     }
   }
   async function closeStreet(viaZoom) {
-    if (busy && shifting) { pendingClose = { viaZoom: viaZoom === true }; return; }
+    if (busy && (shifting || inOpen)) { pendingClose = { viaZoom: viaZoom === true }; return; } // (never while closing: nothing stale is left)
     if (busy || !current) return;
     busy = true;
     try { await doClose(viaZoom === true); } catch (e) { console.error(e); recover(); } finally { busy = false; }
@@ -514,7 +520,8 @@ async function boot() {
   $('#btn-back').onclick = closeStreet;
   $('#btn-follow').onclick = () => { play('click'); stage.follow(); };
   $('#btn-skip').onclick = () => { play('click'); stage.skipCine(); };
-  $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null));
+  // the next street keeps who has the camera: dropped into while the viewer had it, it lands without following (stage.js _take)
+  $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null), null, null, stage.following ? 'follow' : 'free');
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('#about').hidden) $('#about').hidden = true;

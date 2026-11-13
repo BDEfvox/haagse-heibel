@@ -113,6 +113,9 @@ const SAFETY = 20;         // a scene that asks for nothing new for this long lo
 const STAGE_R = 15;        // metres the crowd keeps clear around the scene that holds the camera
 // a "!" pin is fully there while its spot is within PIN_FULL metres of the point the camera looks at, fades evenly, and is gone at PIN_GONE
 const PIN_FULL = 150, PIN_GONE = 300;
+// m: pressing a pin brings the camera this close to the spot if it is further away (a wide view of one spot, about the street's own
+// viewing distance on a wide screen; see flyTo)
+const PIN_VIEW = 80;
 const BLOCKED_FOR = 0.7;   // the sight line must stay blocked this long before the stand is reconsidered (once)
 const RECLEAR_FOR = 1.0;   // ...and clear this long before the high fallback is left again
 const RECONSIDER = 2;      // after any such decision: no new one for this long
@@ -268,10 +271,51 @@ export class Stage {
   }
 
   // ------------------------------------------------------------ input
+  // The camera rule: who may write the camera, by mode.
+  //   drop    the drop from the map, until the viewer touches the camera (see _take)
+  //   follow  the director: the spot with the newest scene, its shots (_cam), its punchlines (_focus). Scenes get the camera in
+  //           this mode only: every request they make is gated on mode === 'follow' (can() in _cam, _focus, gagStart)
+  //   free    the viewer, and nothing else that moves the view: a pin the viewer pressed (flyTo), the frame change of a focus
+  //           shift (exact, in map terms), the straight-down look high up, the rise to the map (leave)
+  //   leave   the rise to the map
+  // Once the viewer has touched the camera it stays theirs: only follow() (the Follow the action button) puts it back in follow.
+  // Nothing goes from free to follow by itself; the only automatic change is the other way (a follow with nothing left to show).
+  // A third camera of the viewer's own (the walking character, to come) is a mode beside 'free', say 'walk': not being 'follow',
+  // the director is locked out of it in the same way. It plugs in here: _take() returns true without changing mode, the turn and
+  // zoom inputs adjust the walking camera's offsets, and _begin's focus-shift branch keeps it (where it now sets 'free').
+  /** The viewer gives camera input: from here on the camera is theirs. False when input cannot act now. */
   _take() {
-    if (!this.W || this.mode === 'drop' || this.mode === 'leave' || this.exiting) return false;
-    if (this.mode === 'follow') this._setMode('free');
+    if (!this.W || this.mode === 'leave' || this.exiting) return false;
+    if (this.mode === 'drop') {
+      // still high up (a map click drops from as far as the map was) or not falling yet: the input itself is ignored, since taking
+      // the camera up there would cross the height that hands back to the map, but the drop lands in free instead of follow
+      if (this.hold || this.rig.dist >= EXIT * 0.9) { if (!this.landFree) { this.landFree = true; this.hooks.onMode?.('drop'); } return false; } // (the page repaints Follow)
+      this._land(false);
+    } else if (this.mode === 'follow') this._setMode('free', true);
     return true;
+  }
+  /** Whether the camera is (or, during the drop, will be) following the action: the Follow button shows it pressed. */
+  get following() { return this.mode === 'follow' || (this.mode === 'drop' && !this.landFree); }
+  /** The Follow button pressed while following: stop following, the camera stays exactly where it is. */
+  takeCamera() { this._take(); }
+  /** The drop is over: follow the action (nobody touched the camera) or stay exactly where the viewer took it. */
+  _land(follow) {
+    const g = this.goal, r = this.rig;
+    this.drop = null;
+    if (follow) {
+      U.uGrow.value = 1;
+      this.mode = 'follow';
+      Object.assign(g, this._view(this.camCtx));
+      if (!CALM) this.fx.shake(0.22);
+      if (!document.hidden) sfx.thud?.();
+    } else {
+      this.mode = 'free';
+      Object.assign(g, r); g.fov = FOV; g.roll = 0;
+      this.autoFree = false; this._fl = null;
+      // buildings that were still rising finish rising (at once, for reduced motion)
+      if (CALM || U.uGrow.value >= 1) U.uGrow.value = 1; else this.grow = { v: U.uGrow.value };
+    }
+    this.hooks.onMode?.(this.mode);
   }
   _pan(dx, dy) {
     // by the elevation that is on screen (high up the camera tilts towards straight down by itself), so the ground follows the pointer
@@ -287,12 +331,16 @@ export class Stage {
     const two = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x) }; };
     c.addEventListener('contextmenu', (e) => e.preventDefault());
     c.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.running = false; this.hooks?.onContextLost?.(); });
-    c.addEventListener('pointerdown', (e) => {
+    // a pointer goes down on the canvas, or (`at`: where it went down, with its button and keys) a drag that started on a "!" pin
+    // is handed over once it moves (see _pins)
+    const down = (e, at = e) => {
       c.setPointerCapture(e.pointerId);
-      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pts.size === 1) drag = { x: e.clientX, y: e.clientY, orbit: e.button === 2 || e.shiftKey || e.ctrlKey || e.metaKey, moved: false };
+      pts.set(e.pointerId, { x: at.x, y: at.y }); // (a PointerEvent's x and y are its clientX and clientY)
+      if (pts.size === 1) drag = { x: at.x, y: at.y, orbit: at.button === 2 || at.shiftKey || at.ctrlKey || at.metaKey, moved: false };
       else if (pts.size === 2) { drag = null; pinch = { ...two(), dist: this.goal.dist, az: this.goal.az }; }
-    });
+    };
+    c.addEventListener('pointerdown', (e) => down(e));
+    this._grab = (e, at) => down(e, at); // (the canvas takes the pointer over: its next move pans or turns from where it went down)
     c.addEventListener('pointermove', (e) => {
       const p = pts.get(e.pointerId);
       if (!p) return;
@@ -398,17 +446,29 @@ export class Stage {
     path.at(ctx.sc, _f);
     return { tx: p[0], tz: p[1], ty: this.W.landY(p[0], p[1]) + 1.2, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 56, fov: FOV, roll: 0 };
   }
-  _setMode(mode) {
+  /** `user`: the viewer took the camera (the camera then stays exactly where it is); otherwise the follow ran out by itself. */
+  _setMode(mode, user = false) {
     if (this.mode === mode) return;
     const was = this.mode;
     this.mode = mode;
     if (mode === 'free') {
       if (this.cine) this._cineEnd();
-      Object.assign(this.goal, this.rig);
-      // coming out of a close-up: back off to a sensible height
-      this.goal.el = clamp(this.goal.el, 0.32, 1.5); this.goal.dist = Math.max(this.goal.dist, 42); this.goal.fov = FOV; this.goal.roll = 0;
-      this.focusReq = null;
-      if (was === 'follow' && this.autoFree) { this.goal.dist = Math.max(this.goal.dist, this.fit * 1.45); this.autoFree = false; }
+      // The picture must not change when the viewer takes the camera. A cutscene's lens (22 to 56 degrees, widened further on a
+      // narrow screen, see aspK in _frame) becomes the free camera's own at once, and the distance changes with it so that the
+      // point looked at, and everything at that distance, stays exactly the size it was: camera distance x tan(half the lens)
+      // is what sets that size. (Only depth changes, slightly: things well in front of or behind the aim point.)
+      const r = this.rig, aK = Math.sqrt(this.aspK || 1), half = Math.tan((r.fov * Math.PI) / 360) * aK;
+      r.dist = clamp(r.dist * aK * (half / TAN), 1, DMAX); r.fov = FOV; this.aspK = 1;
+      // the tilted horizon of a shot and its aim height stay as they are; they level out and come down to the free camera's
+      // own only as the viewer turns and moves the camera (see the free branch of _frame)
+      Object.assign(this.goal, r);
+      this.focusReq = null; this._fl = null;
+      if (!user) {
+        // the follow ran out by itself (nobody touched the camera): coming out of a close-up, back off to a sensible height
+        this.goal.el = clamp(this.goal.el, 0.32, 1.5); this.goal.dist = Math.max(this.goal.dist, 42); this.goal.roll = 0;
+        if (was === 'follow' && this.autoFree) this.goal.dist = Math.max(this.goal.dist, this.fit * 1.45);
+      }
+      this.autoFree = false;
     }
     if (mode === 'follow') {
       this.cutEnd = this.time + 30;
@@ -425,13 +485,22 @@ export class Stage {
   /** Debug: play a gag at the spot the camera is on. */
   debugPlay(name) { return this.W ? playGag(this.camCtx, name) : null; }
   get gagNames() { return GAG_NAMES; }
-  /** Resume the directed camera. */
-  follow() { if (this.W && this.mode === 'free') this._setMode('follow'); }
-  /** Fly the free camera to a spot with something going on. */
+  /** Follow the action (the button): the only way into follow, apart from a street's own opening. During the drop: land following. */
+  follow() {
+    if (!this.W || this.exiting || this.mode === 'leave') return; // (not while the page hands over to the map)
+    if (this.mode === 'free') this._setMode('follow');
+    else if (this.mode === 'drop') this.landFree = false;
+  }
+  /**
+   * A "!" pin was pressed: fly to that spot and stay the viewer's camera. The viewer's bearing and tilt are kept; the camera comes
+   * in to PIN_VIEW metres (or the street's own viewing distance on a narrow screen) only if it is further away, never closer.
+   */
   flyTo(ctx) {
-    if (!this.W || this.mode === 'drop') return;
-    if (this.mode === 'follow') this._setMode('free');
-    Object.assign(this.goal, this._view(ctx));
+    if (!this.W || this.mode === 'drop' || this.mode === 'leave' || this.exiting) return;
+    if (this.mode === 'follow') this._setMode('free', true);
+    const g = this.goal, p = this.W.path.xz(ctx.sc, 0);
+    g.tx = p[0]; g.tz = p[1]; g.ty = this.W.landY(p[0], p[1]) + 1.5;
+    g.dist = Math.min(g.dist, Math.max(PIN_VIEW, this.fit || 0));
   }
   /**
    * Rise straight up to `dist` metres, looking down with north up, so the page can hand over to the map.
@@ -975,7 +1044,7 @@ export class Stage {
       if (!o || !this.running || this.mode === 'leave' || this.mode === 'drop' || this.exiting) { W.dispose(); return false; }
       // the camera, in map terms, so it can be put back in the new street's frame
       const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
-      view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
+      view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, gty: g.ty, roll: r.roll, groll: g.roll, sky: this.sky };
       // the city's street life carries on: it is handed to the next street instead of being torn down
       // the scenes playing here end with this street. A scene holding the camera lets the crowd go first (as it always does when it ends:
       // no stage left standing in the crowd), and whoever the scenes borrowed and is standing on the pavement goes back to the crowd where
@@ -1037,6 +1106,9 @@ export class Stage {
     this.fx.watch = (ctx) => (this.cine ? this.cine.ctx === ctx : this.mode === 'follow' && this.camCtx === ctx);
     this.fx.ground = W.hAt;
     this.cine = null; this._stage = null; this.cineSkip = null; this._wasShot = false; this.exiting = false; this.leaveTo = null;
+    // the drop lands in free when the viewer kept the camera from the street before (Next street: opts.land) or touches it on the way
+    // down (_take); a drop cut short lets the buildings finish rising (grow)
+    this.landFree = opts.land === 'free'; this.grow = null; this._fl = null; // (_fl: the free camera's last target, in this street's frame)
     this.runner = new Runner();
     this.actors = this.overhead.carried(); // (a helicopter and the leftovers carried over are still the stage's to animate)
     this.extras = this.overhead.extras; // (the stork: the overhead updates it; scripts/dev-swap.mjs reads stage.extras)
@@ -1285,10 +1357,11 @@ export class Stage {
       // the focus moved here from another street: the camera carries on from exactly where it was
       const F = W.frame, az = (d) => Math.atan2(d[0] * F.dx + d[1] * F.dy, d[0] * F.dy - d[1] * F.dx);
       const p = F.S(V.m[0], V.m[1]), q = F.S(V.gm[0], V.gm[1]);
-      Object.assign(this.rig, { tx: p[0], tz: p[1], ty: V.ty, az: az(V.d), el: V.el, dist: V.dist, fov: FOV, roll: 0 });
-      Object.assign(this.goal, { tx: q[0], tz: q[1], ty: V.ty, az: az(V.gd), el: V.gel, dist: V.gdist, fov: FOV, roll: 0 });
+      // (the horizon too: a cutscene's tilted horizon the viewer took over levels out only as they turn, see the free branch of _frame)
+      Object.assign(this.rig, { tx: p[0], tz: p[1], ty: V.ty, az: az(V.d), el: V.el, dist: V.dist, fov: FOV, roll: V.roll || 0 });
+      Object.assign(this.goal, { tx: q[0], tz: q[1], ty: V.gty ?? V.ty, az: az(V.gd), el: V.gel, dist: V.gdist, fov: FOV, roll: V.groll || 0 });
       this.drop = null;
-      this.mode = 'free';
+      this.mode = 'free'; // (a camera state of the viewer's own beside free, the walking character's, would be kept here)
       this.cutEnd = 0; this.lastSwitch = 0; this.idleT = 0; this.autoFree = false;
       U.uGrow.value = 1;
       if (was !== 'free') hooks.onMode?.('free'); // (a focus shift in free mode stays in free mode: the page's hints are not said again)
@@ -1443,8 +1516,23 @@ export class Stage {
       el.className = 'gag-pin';
       el.setAttribute('aria-label', 'Jump to the action');
       el.innerHTML = '<span>!</span>';
-      const pin = { el, ctx: null, a: 1, q: 50, px: NaN, py: NaN };
-      el.addEventListener('click', () => { if (pin.ctx) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } });
+      const pin = { el, ctx: null, a: 1, q: 50, px: NaN, py: NaN, down: null };
+      const go = () => { if (pin.ctx) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } };
+      // A pin is pressed and let go without moving. A drag that starts on a pin is a drag of the camera: once it has moved 4 px
+      // it is handed to the canvas (which takes the pointer over) and the pin does nothing.
+      el.addEventListener('pointerdown', (e) => {
+        pin.down = { id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey };
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
+      });
+      el.addEventListener('pointermove', (e) => {
+        const d = pin.down;
+        if (!d || d.id !== e.pointerId || Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4) return;
+        pin.down = null;
+        this._grab?.(e, d);
+      });
+      el.addEventListener('pointerup', (e) => { const d = pin.down; pin.down = null; if (d && d.id === e.pointerId) go(); });
+      el.addEventListener('pointercancel', () => { pin.down = null; });
+      el.addEventListener('click', (e) => { if (e.detail === 0) go(); }); // Enter or Space on a focused pin (a pointer press is handled above)
       this.overlay.appendChild(el);
       this.pins.push(pin);
     }
@@ -1507,14 +1595,7 @@ export class Stage {
       r.tx = lerp(D.c0[0], v.tx, k); r.tz = lerp(D.c0[1], v.tz, k); r.ty = lerp(D.y0, v.ty, sm(e));
       U.uGrow.value = 0.02 + 0.98 * ease.outBack(clamp((e - 0.5) / 0.4));
       if (e > 0.55 && !D.whoosh) { D.whoosh = true; if (!document.hidden) sfx.whoosh?.(); }
-      if (e >= 1) {
-        U.uGrow.value = 1;
-        this.mode = 'follow';
-        Object.assign(g, v);
-        if (!CALM) this.fx.shake(0.22);
-        if (!document.hidden) sfx.thud?.();
-        this.hooks.onMode?.('follow');
-      }
+      if (e >= 1) this._land(!this.landFree); // (follow, unless the viewer touched the camera on the way down or kept it from the last street)
     } else if (this.mode === 'leave') {
       const Lv = this.leaveTo;
       Lv.t += real;
@@ -1527,7 +1608,9 @@ export class Stage {
       U.uGrow.value = 1 - 0.98 * sm(clamp((e - 0.3) / 0.55));
       if (e >= 1 && !Lv.done) { Lv.done = true; Lv.resolve(); }
     } else {
-      U.uGrow.value = 1;
+      // (a drop the viewer cut short: the buildings finish rising)
+      if (this.grow) { this.grow.v = Math.min(1, this.grow.v + real * 1.25); U.uGrow.value = this.grow.v; if (this.grow.v >= 1) this.grow = null; }
+      else U.uGrow.value = 1;
       this._keys(real);
       let rate = this.mode === 'free' ? 10 : 3.2, rateT = rate, snap = false;
       if (this.mode === 'follow') {
@@ -1618,7 +1701,18 @@ export class Stage {
           else if (this.time > this.cutEnd && !this.only && !this.cine) this._setMode('free');
         }
       } else {
-        g.ty = W.landY(g.tx, g.tz) + 1.5; g.fov = FOV; g.roll = 0;
+        // The free camera: nothing here moves the view by itself. Its lens is the normal one (a cutscene's was folded into the
+        // distance at the take-over). The aim height and the horizon follow the viewer's own moves: as the target is moved, its
+        // height eases to 1.5 m over the ground under it (fully after 8 m of moving), and as the camera is turned or tilted, the
+        // tilted horizon of a cutscene shot levels out (fully after 0.35 rad). Standing still, both stay exactly as they are.
+        const L = this._fl || (this._fl = { on: false, tx: 0, tz: 0, az: 0, el: 0 });
+        if (L.on) {
+          const moved = Math.hypot(g.tx - L.tx, g.tz - L.tz), turned = Math.abs(angDiff(L.az, g.az)) + Math.abs(g.el - L.el);
+          if (moved > 0) g.ty += (W.landY(g.tx, g.tz) + 1.5 - g.ty) * Math.min(1, moved / 8);
+          if (turned > 0 && g.roll) g.roll *= Math.max(0, 1 - turned / 0.35);
+        }
+        L.on = true; L.tx = g.tx; L.tz = g.tz; L.az = g.az; L.el = g.el;
+        g.fov = FOV;
       }
       // high up, the free camera turns to look straight down with north up: the same view as the map it hands over to
       let gel = g.el, gaz = g.az;
@@ -1641,7 +1735,8 @@ export class Stage {
         this.hooks.onRoam({ lngLat: W.toLngLat(r.tx, r.tz), dist: r.dist, off: pr.d + Math.max(0, W.path.sA - pr.s, pr.s - W.path.sB) });
       }
     }
-    const sh = this.fx.shakeAmt * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
+    // a scene shakes the picture only while the camera follows the action: never the viewer's own camera (free, or walk to come)
+    const sh = (this.mode === 'follow' ? this.fx.shakeAmt : 0) * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
     const tx = r.tx + (Math.random() - 0.5) * sh, ty = r.ty + (Math.random() - 0.5) * sh, tz = r.tz + (Math.random() - 0.5) * sh;
     // Shots are framed for a wide picture. On a tall, narrow screen (a phone held upright) the same shot would cut
     // its subjects off left and right: stand further back and widen the lens until the same width of street fits.
@@ -1650,7 +1745,9 @@ export class Stage {
     const aK = Math.sqrt(this.aspK), camD = r.dist * aK;
     const cx = tx + camD * Math.sin(r.az) * ce, cz = tz + camD * Math.cos(r.az) * ce;
     let cy = ty + camD * Math.sin(r.el);
-    if (r.dist < 80) cy = Math.max(cy, W.landY(cx, cz) + 0.35); // never under the ground
+    // never under the ground, at any distance: the lens is lifted, the point it looks at stays (zooming out from a low angle, the
+    // camera backs off along the ground, 0.35 m over it, still aiming at the same point: the view levels out as it goes)
+    cy = Math.max(cy, W.landY(cx, cz) + 0.35);
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(tx, ty, tz);
     if (r.roll) this.camera.rotateZ(r.roll);
@@ -1677,7 +1774,7 @@ export class Stage {
       const gx = r.tx + camD * Math.sin(r.az) * ce, gz = r.tz + camD * Math.cos(r.az) * ce;
       let gy = r.ty + camD * Math.sin(r.el);
       if (!sh) gy = cy; // (no shake: the camera's own position, ground clamp included)
-      else if (r.dist < 80) gy = Math.max(gy, W.landY(gx, gz) + 0.35);
+      else gy = Math.max(gy, W.landY(gx, gz) + 0.35); // (the camera's own ground guard above, at every distance; a shake happens only while following)
       lensGuard(W, real, this.mode === 'free', gx, gy, gz, r.tx, r.ty, r.tz);
     }
     U.uFocus.value.set(r.tx, 0, r.tz);
