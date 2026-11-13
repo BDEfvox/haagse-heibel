@@ -5,6 +5,43 @@ import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
 
+/**
+ * A finished tag stays on the wall (lasting damage), so it is baked into ONE mesh: the same boxes, colours and places as the
+ * pixel meshes it was sprayed with (each pixel's final transform applied to its vertices), one geometry and one draw call
+ * instead of one per pixel. Pixels that are not visible are left out (none are, once the scene is done).
+ */
+const _v = new THREE.Vector3(), _nm = new THREE.Matrix3();
+function bakeTag(tg) {
+  const ms = tg.children.filter((m) => m.isMesh && m.visible && m.geometry && m.geometry.index);
+  if (ms.length < 2) return;
+  let nv = 0, ni = 0;
+  for (const m of ms) { nv += m.geometry.attributes.position.count; ni += m.geometry.index.count; }
+  const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3), idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let o = 0, k = 0;
+  for (const m of ms) {
+    m.updateMatrix();
+    _nm.getNormalMatrix(m.matrix);
+    const g = m.geometry, P = g.attributes.position, N = g.attributes.normal, Cl = g.attributes.color, I = g.index;
+    for (let i = 0; i < P.count; i++) {
+      const q = (o + i) * 3;
+      _v.fromBufferAttribute(P, i).applyMatrix4(m.matrix); pos[q] = _v.x; pos[q + 1] = _v.y; pos[q + 2] = _v.z;
+      _v.fromBufferAttribute(N, i).applyMatrix3(_nm).normalize(); nor[q] = _v.x; nor[q + 1] = _v.y; nor[q + 2] = _v.z;
+      col[q] = Cl.getX(i); col[q + 1] = Cl.getY(i); col[q + 2] = Cl.getZ(i);
+    }
+    for (let i = 0; i < I.count; i++) idx[k++] = I.getX(i) + o;
+    o += P.count;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  const baked = new THREE.Mesh(geo, ms[0].material); // MAT.glow, shared: never disposed with the tag
+  baked.castShadow = ms[0].castShadow; baked.receiveShadow = ms[0].receiveShadow;
+  for (const m of [...tg.children]) { tg.remove(m); if (m.geometry) m.geometry.dispose(); }
+  tg.add(baked);
+}
+
 /** `T` is the set-piece toolkit of gags.js (see ACTS.md). */
 export default function (T) {
   const {
@@ -320,6 +357,7 @@ export default function (T) {
         for (const f of prints) R.rm(f);
         R.rm(pud);
         R.stay(tg);
+        bakeTag(tg); // it stays: one mesh from here on
         yield* wait(1.4);
         done = true;
       } finally {
