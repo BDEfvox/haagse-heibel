@@ -29,10 +29,38 @@ what the map showed. Zooming all the way out of a street hands back to the map a
 **◀ MAP** rises to the height you came from.
 
 In a street: the camera first follows the action, and every crime plays as a short film scene that
-fills the whole picture (cuts, close-ups, low angles, a title card; **SKIP** or any drag ends it). Drag to take over (drag = move,
-right-drag or two fingers = turn, scroll or pinch = zoom, WASD/arrows also work); you can roam the
-whole city. Red `!` pins mark gags elsewhere on the street; **Follow the action** hands the camera
-back.
+fills the whole picture (cuts, close-ups, low angles, a title card; **SKIP** or any drag ends it). Any camera input takes the
+camera over, also while it is still dropping in, and from then on it stays where you put it until you press **Follow the
+action**: drag = move; right-drag, Shift-drag, a sideways two-finger swipe, a two-finger twist or Q/E = turn; R/F or two
+fingers up and down = tilt; scroll or pinch = zoom; WASD/arrows move; the pad of four buttons at the lower left turns and
+tilts as well. You can roam the whole city. Red `!` pins mark gags nearby (they fade between 150 and 300 m from where you
+look); a click flies you there and leaves the camera yours.
+
+**Walk** puts a character on the ground where you look. WASD or the arrows walk him (Shift runs; on a touch screen a stick
+appears), relative to the camera, which follows him and still turns and zooms. He walks where people can walk, across the
+whole city, and is a bystander: scenes play around him. **Walk** again or Escape takes him away.
+
+### Dev tools
+
+Headless tools that drive the dev site in Chrome on the real graphics chip. They need Google Chrome and the dev server
+without auto-reload on port 5190 (`HEIBEL_NO_HMR=1 npm run dev -- --port 5190 --strictPort`), they use `__heibel`, and
+only one of them, or one browser tab on the site, should render at a time. Each file starts with how to run and read it.
+
+| Tool | What it shows |
+|---|---|
+| `scripts/dev-sweep.mjs`, `dev-avail.mjs` | every scene once on a street; how many spots can host each scene |
+| `scripts/dev-shot.mjs` | a picture of a street from a given camera position and time of day |
+| `scripts/dev-sheet.mjs` | contact sheets: fat bike against bike, the niffo, every hand-held item in a hand |
+| `scripts/dev-swap.mjs` | the frames on both sides of street switches: what jumps, appears or vanishes, and a flash detector |
+| `scripts/dev-lens.mjs` | frames in which the free camera's lens is inside a standing building |
+| `scripts/dev-count.mjs` | people and vehicles overlapping each other, inside buildings, furniture or water, or off the ground |
+| `scripts/dev-control.mjs` | one camera input, then two minutes of scenes: the camera must not move |
+| `scripts/dev-walk.mjs` | a recorded walk of the walking character with its checks, and the phone layout |
+| `scripts/dev-bench.mjs` | frame times on a fixed flight, a street switch, the day/night change, a scene, a walk, ten streets |
+
+Without a browser: `scripts/check-stops.mjs` (where every stop shelter stands against its road, kerb and surroundings),
+`scripts/dev-crowd-sim.mjs` (the crowd alone under Node, with the counter's definitions) and `scripts/dev-walk-sim.mjs`
+(the walking character's route on real tiles).
 
 ### Tests
 
@@ -154,7 +182,14 @@ Data licences are listed in `public/data/LICENSE.txt` and in the site's About bo
   measures, beat by beat, whether what the storyboard says must be seen is in the picture
 - `src/voxel/stage.js` — renderer, lighting that follows the real clock (`skyAt`), or a forced day or night, the drop from map height, the
   follow-the-action camera, the cinematic shots a gag can direct (`ctx.cam(name)`), free roam, the
-  hand-over back to the map, and the cutaway that flattens buildings in the camera's way
+  hand-over back to the map, and the cutaway that flattens buildings in the camera's way: in free roam it is at full strength
+  while the point you look at is within about 20 m of any street surface and gone by 46 m, it fades with height (full
+  below about 110 m, gone by 190 m), and a building the lens is in or about to enter lies down whatever the cutaway decided
+- `src/voxel/overhead.js` — what hangs over the city and must not jump when the open street changes: helicopters, clouds,
+  the stork, and boats and birds left over from the street before, all kept in map metres
+- `src/voxel/ground.js` — one answer to "may a person stand here, and how high is the ground" (`W.ground.at`), from a
+  half-metre raster per close tile of what stands on each cell; the crowd, the scenes and the walking character ask it
+- `src/voxel/walker.js` — the walking character
 - `src/voxel/kit.js`, `props.js`, `cast.js` — voxel builder, Dutch row houses, street furniture (the tram stop included), cars on springs
   (they roll in bends, dive under braking; wheels turn and steer), and people with faces (moods, eyes
   that look, mouths that talk and laugh), elbows and knees
