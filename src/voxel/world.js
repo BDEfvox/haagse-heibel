@@ -2000,8 +2000,14 @@ function treeMesh(pts, rnd, cap, yAt, mat = CUT.solid, depth = CUT.depth, far = 
  */
 export async function buildWorld(st, geometry, { night = false, seed = '', lite = false, soft = false } = {}) {
   const city = await loadCity(), ix = city.ix;
-  // a world built while another one is on screen takes breathers, so the picture keeps moving
-  const breathe = soft ? () => new Promise((r) => setTimeout(r, 12)) : () => null;
+  // Every open hands the main thread back at least every BREATHE_MS (pause), so the page keeps moving (the map's flight,
+  // input) while a street is built: the corridor tiles are built in slices (buildTileJob) with a pause whenever the budget
+  // is used up. A world built while another one is on screen (soft: a focus shift) also takes its breathers of 12 ms
+  // between the steps, as before.
+  let lastB = performance.now();
+  const rest = (ms) => new Promise((r) => setTimeout(r, ms)).then(() => { lastB = performance.now(); });
+  const pause = () => (performance.now() - lastB < BREATHE_MS ? null : rest(soft ? 12 : 0));
+  const breathe = soft ? () => rest(12) : pause;
   const t0 = performance.now();
   const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + seed));
   const f = frameFor(ix, geometry);
@@ -2054,6 +2060,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   // ---- decode the rest
   const roads = [], rails = [], pois = [];
   for (const [key, t] of tiles) {
+    { const p = pause(); if (p) await p; }
     if (!t) continue;
     const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
     const flat = (e, from) => {
@@ -2168,7 +2175,12 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       corridor.push(key);
       const had = _built.get(key);
       if (had && had.lod === 0) continue;
-      ensureTile(city, key, t, 0, night, lite);
+      // (the same tile ensureTile builds, in slices: another builder may have registered it meanwhile)
+      const it = buildTileJob(city, key, t, night, lite, 0, SLICED);
+      let r = it.next();
+      while (!r.done) { const p = pause(); if (p) await p; r = it.next(); }
+      const cur = _built.get(key);
+      if (cur && cur.lod <= 0) r.value.dispose(); else installTile(key, r.value);
       await breathe();
     }
   }
@@ -2229,6 +2241,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   {
     const cand = [];
     for (const [key, t] of tiles) {
+      { const p = pause(); if (p) await p; }
       if (!t) continue;
       const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
       const pt = (x, z) => f.S(ox + x, oy + TILE - z);
@@ -2866,6 +2879,8 @@ function installTile(key, c) {
 const WEIGHT = [4, 2, 0.5]; // what a tile of each level costs in memory, roughly
 // milliseconds of tile building per frame and caller (the frame's own work is 3-6 ms: this keeps it inside 16.7 ms)
 const SLICE_MS = 9;
+// the longest stretch a street open keeps the main thread (buildWorld's pause)
+const BREATHE_MS = 8;
 
 class Streamer {
   constructor(W, city) {
