@@ -682,7 +682,19 @@ export function catenarySpots(key, rails) {
   return out;
 }
 
+/** furnishSteps run to the end in one go (Node checks, the snapshot, and every caller that does not slice). */
 export function furnishTile(o) {
+  const it = furnishSteps(o);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+/**
+ * The furniture of one tile as a job: it hands the frame back (a bare `yield`) between its passes, so a caller with a time
+ * budget (world.js buildTileJob, sliced) can spread a tile over frames. What it draws and returns does not depend on where
+ * it is cut: nothing in it reads a clock or anything another tile changes.
+ */
+export function* furnishSteps(o) {
   const { key, grid, C, trees, pois, yAt, v, gl, group, night, lite } = o;
   const ps = o.ps && o.ps.length >= (pois ? pois.length * 3 : 0) && o.ps.length ? o.ps : null;
   const raw = o.tile || null, rails = o.rails || [];
@@ -1236,6 +1248,7 @@ export function furnishTile(o) {
   const dirTh = (dx, dz) => Math.atan2(-dz, dx); // frame whose local +x runs along (dx, dz)
   const placeSeed = (p, tag) => makeRng(hashStr(key + '|' + p.id + '|' + tag));
   for (const pl of places) {
+    yield;
     const R = pl.recipes;
     // ---- strings of lights from facade to facade across the open ground
     if (R.garlands && used() < RESERVE + 4000) {
@@ -1552,6 +1565,7 @@ export function furnishTile(o) {
   // ---- terrace fields: a curated square lays one continuous field of tables out from the cafe fronts into the square,
   // in neat rows with lanes (3 m along the facades, one every ~13 m), clear of statues and of the places' `keep` circles
   for (const pl of places) {
+    yield;
     const R = pl.recipes.field;
     if (!R) continue;
     const T = pl.recipes.terraces || {}, r = placeSeed(pl, 'field');
@@ -1631,7 +1645,7 @@ export function furnishTile(o) {
   // ---- block by block, both sides of every street
   const signs = new Map();
   const later = []; // the rarer kinds of furniture go in after every block has its racks, benches and bins
-  pieces.forEach((pl, pi) => {
+  const onePiece = (pl, pi) => {
     const zebras = [];
     if (pl.len >= 45) for (let s = 20; s < pl.len - 12; s += 80) zebras.push(s);
     const nearZebra = (s, r) => zebras.some((z) => Math.abs(z - s) < r);
@@ -1795,9 +1809,10 @@ export function furnishTile(o) {
         });
       }
     }
-  });
+  };
+  for (let pi = 0; pi < pieces.length; pi++) { yield; onePiece(pieces[pi], pi); } // (block by block: a street at a time)
 
-  for (const job of later) { if (used() > LIMIT) break; job(); }
+  for (let q = 0; q < later.length; q++) { if (used() > LIMIT) break; later[q](); if ((q & 15) === 15) yield; }
 
   // ---- tram and bus shelters (the old kind-9 points of interest)
   // A stop the map also has as a shelter feature (`f` type 10, drawn by landmarks.js `shelter`) gets no second shelter.
@@ -1860,6 +1875,7 @@ export function furnishTile(o) {
   for (const p of pois || []) {
     const kind = p[0], px = p[1] / 10, pz = TILE - p[2] / 10;
     if (kind !== 9) continue;
+    yield;
     const q = nearestRoad(px, pz, 16);
     if (!q) continue;
     const f = frameAt(q.pl, q.s), vv = (px - f.x) * -f.tz + (pz - f.z) * f.tx;
@@ -1913,11 +1929,13 @@ export function furnishTile(o) {
   }
 
   // ================================================================ whole-area passes (see DETAIL.md)
+  yield;
   const zr = makeRng(hashStr('areas|' + key));
   const spare = () => used() < LIMIT;
   const tanTh = (tx, tz) => Math.atan2(-tz, tx); // frame whose local +x runs along (tx, tz)
 
   // ---- bollards across the ends of pedestrian streets
+  yield;
   if (spare()) pieces.forEach((pl) => {
     if (pl.cls !== 8 || pl.len < 22) return;
     for (const s of [1.8, pl.len - 1.8]) {
@@ -1933,6 +1951,7 @@ export function furnishTile(o) {
   });
 
   // ---- traffic lights and signposts where big streets meet
+  yield;
   if (spare()) {
     const big = pieces.filter((p) => p.cls >= 2 && p.cls <= 5 && p.len > 20);
     const ends = [];
@@ -1963,6 +1982,7 @@ export function furnishTile(o) {
   }
 
   // ---- tram catenary masts and wires
+  yield;
   if (spare()) rails.forEach((rl, ri) => {
     if (rl.kind !== 1 || rl.flags & 4 || !rl.a || rl.a.length < 4) return;
     const pl = prep(rl.a);
@@ -2005,6 +2025,7 @@ export function furnishTile(o) {
   });
 
   // ---- hotels fly flags; supermarkets have trolley shelters; big venues get a parking machine
+  yield;
   if (ps && spare()) for (const e of eats) {
     if (!spare()) break;
     if (e.cat !== 'hotel' && e.cat !== 'supermarket') continue;
@@ -2031,6 +2052,7 @@ export function furnishTile(o) {
   }
 
   // ---- quays: chain posts, mooring bollards, moored boats with gangways
+  yield;
   if (spare()) {
     const water = (x, z) => grid.get(x, z) === C.WATER;
     let hasWater = false;
@@ -2039,7 +2061,9 @@ export function furnishTile(o) {
       const posts = [], boats = [];
       const dirs8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.71, 0.71], [-0.71, 0.71], [0.71, -0.71], [-0.71, -0.71]];
       const hashCell = (x, z) => ((Math.imul(Math.floor(x / 22) + 977, 73856093) ^ Math.imul(Math.floor(z / 22) + 331, 19349663)) >>> 0) / 4294967296;
-      for (let z = 2; z < TILE - 2; z += 1) for (let x = 2; x < TILE - 2; x += 1) {
+      for (let z = 2; z < TILE - 2; z += 1) {
+      if (z > 2 && !((z - 2) & 15)) yield; // (the quay scan looks at every metre of the tile: in pieces)
+      for (let x = 2; x < TILE - 2; x += 1) {
         if (!GOOD[grid.get(x, z)]) continue;
         let nx = 0, nz = 0, n = 0;
         for (const [dx, dz] of dirs8) if (water(x + dx * 1.3, z + dz * 1.3)) { nx += dx; nz += dz; n++; }
@@ -2054,6 +2078,7 @@ export function furnishTile(o) {
         if (treeNear(x, z, 0.8) || crowded('quay', x, z, 0.4)) continue;
         posts.push({ x, z, nx, nz, cell, vr: Math.floor(hashCell(x * 3, z * 3) * 3) });
         if (posts.length > (lite ? 40 : 90)) break;
+      }
       }
       posts.forEach((p, i) => {
         if (!spare()) return;
@@ -2104,6 +2129,7 @@ export function furnishTile(o) {
   }
 
   // ---- pitches: football fields with goals and lines, courts with fences and hoops
+  yield;
   if (spare()) {
     const NP = 256, seen = new Uint8Array(NP * NP);
     const pit = (i, j) => i >= 0 && j >= 0 && i < NP && j < NP && grid.get(i + 0.5, j + 0.5) === C.PITCH;
@@ -2190,6 +2216,7 @@ export function furnishTile(o) {
   }
 
   // ---- playgrounds get a fence with a gate, a bench and a bin outside
+  yield;
   if (raw && spare()) for (const e of raw.f || []) {
     if (e[0] !== 11 || !spare()) continue;
     const x = e[1] / 10, z = TILE - e[2] / 10, rot = Math.PI / 2 - (e[3] * Math.PI) / 180;
@@ -2212,6 +2239,7 @@ export function furnishTile(o) {
   }
 
   // ---- park paths: benches, bins and lamps (lit at night) where a footpath runs through grass
+  yield;
   if (spare()) {
     const paths = [];
     for (const rd of o.roads || []) if ((rd.cls === 11 || rd.cls === 12) && !(rd.flags & 6) && rd.a && rd.a.length >= 4) { const pl = prep(rd.a); if (pl.len >= 22) paths.push(pl); }
@@ -2238,6 +2266,7 @@ export function furnishTile(o) {
   }
 
   // ---- industrial yards: containers, pallets
+  yield;
   if (raw && raw.bt && spare()) {
     const IND = set(C.LAND, C.PARKING, C.PLAZA, C.WALK, C.DIRT);
     let made = 0;
