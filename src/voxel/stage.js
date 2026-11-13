@@ -104,6 +104,14 @@ const TOP = 1.5608, EXIT = 2900;
 /** Camera height at which zooming out hands over to the map (and zooming in on the map hands back). */
 export const EXIT_DIST = EXIT;
 const DMIN = 20, DMAX = 3100;
+// the elevations the viewer can tilt the free camera between
+const EL_LO = 0.16, EL_HI = 1.5;
+/**
+ * A camera value the viewer changes, kept within [lo, hi], but never pushed further than it already is: a cutscene shot taken over
+ * at 8 m (or from below 0.16) stays as it is, zooming in from there does not throw the camera back to the 20 m limit, and the
+ * viewer can still move it back into the range.
+ */
+const lim = (v, lo, hi, was) => clamp(v, Math.min(lo, was), Math.max(hi, was));
 const sm = (x) => x * x * (3 - 2 * x);
 const angDiff = (a, b) => { const d = b - a; return Math.atan2(Math.sin(d), Math.cos(d)); };
 const _col = new THREE.Color(), _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
@@ -116,6 +124,14 @@ const PIN_FULL = 150, PIN_GONE = 300;
 // m: pressing a pin brings the camera this close to the spot if it is further away (a wide view of one spot, about the street's own
 // viewing distance on a wide screen; see flyTo)
 const PIN_VIEW = 80;
+// the on-screen turn pad: one step is PAD_AZ radians of turn (15 degrees) or PAD_EL of tilt; held with reduced motion, a step every PAD_REPEAT s
+const PAD_AZ = 0.26, PAD_EL = 0.12, PAD_REPEAT = 0.35;
+// two fingers on the canvas do ONE thing per touch, decided once a finger has moved GESTURE_PX: spread or twist = zoom and turn
+// together, both moving up or down = tilt, both moving the same way otherwise = pan
+const GESTURE_PX = 10;
+// the camera keys, by the key's meaning (so Q is Q on any keyboard layout); a held key is remembered by its physical key (e.code),
+// so a key let go after Shift was pressed or released (= then +, - then _) is still let go
+const KEY_ACT = { w: 'up', arrowup: 'up', s: 'down', arrowdown: 'down', a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right', q: 'turnL', e: 'turnR', r: 'tiltU', f: 'tiltD', '+': 'in', '=': 'in', '-': 'out', _: 'out' };
 const BLOCKED_FOR = 0.7;   // the sight line must stay blocked this long before the stand is reconsidered (once)
 const RECLEAR_FOR = 1.0;   // ...and clear this long before the high fallback is left again
 const RECONSIDER = 2;      // after any such decision: no new one for this long
@@ -251,7 +267,7 @@ export class Stage {
     this.rig = { az: AZ0, el: EL0, dist: 80, tx: 0, ty: 1.5, tz: 0, fov: FOV, roll: 0 };
     this.goal = { ...this.rig };
     this.pins = [];
-    this.keys = new Set();
+    this.keys = new Map(); // held camera keys: physical key (e.code) -> what it does (see KEY_ACT)
     this._bindInput();
     new ResizeObserver(() => this._resize()).observe(root);
     // one bad frame must not kill the page: log it, and bow out cleanly if it keeps happening
@@ -326,18 +342,29 @@ export class Stage {
     g.tx = q[0]; g.tz = q[1];
   }
   _bindInput() {
+    // What each device can do (every one of these is camera input: see _take):
+    //   mouse     drag pans; right-, middle-, Shift-, Ctrl-, Cmd- or Alt-drag turns (sideways) and tilts (up and down); the wheel zooms,
+    //             Shift + wheel turns, Alt + wheel tilts
+    //   trackpad  click-drag pans (with Shift: turns and tilts); two fingers up and down zoom, sideways turn; a pinch zooms (Chrome,
+    //             Edge and Firefox send it as Ctrl + wheel; Safari as gesture events, whose twist also turns)
+    //   touch     one finger pans; two fingers pinch to zoom, twist to turn, and moved up or down together tilt
+    //   keyboard  WASD and the arrows pan, Q/E turn, R/F tilt, + and - zoom (never with Cmd, Ctrl or Alt held: those are the browser's)
+    //   on screen the turn pad (#cam-pad): turn left and right, higher and lower view; held, it keeps going
     const c = this.canvas, pts = new Map();
     let drag = null, pinch = null;
-    const two = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x) }; };
+    const two = () => { const [a, b] = [...pts.values()]; return { ax: a.x, ay: a.y, bx: b.x, by: b.y, d: Math.hypot(b.x - a.x, b.y - a.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; };
+    // a two-finger touch: where the fingers and the camera were when it began (or when its kind was decided), and its kind
+    const base = (kind = null) => { const t = two(); return { ...t, pmx: t.mx, pmy: t.my, dist: this.goal.dist, az: this.goal.az, el: this.goal.el, kind }; };
     c.addEventListener('contextmenu', (e) => e.preventDefault());
     c.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.running = false; this.hooks?.onContextLost?.(); });
     // a pointer goes down on the canvas, or (`at`: where it went down, with its button and keys) a drag that started on a "!" pin
     // is handed over once it moves (see _pins)
     const down = (e, at = e) => {
       c.setPointerCapture(e.pointerId);
+      if (at.button === 1 && e.cancelable) e.preventDefault(); // (a middle-button drag turns: no autoscroll)
       pts.set(e.pointerId, { x: at.x, y: at.y }); // (a PointerEvent's x and y are its clientX and clientY)
-      if (pts.size === 1) drag = { x: at.x, y: at.y, orbit: at.button === 2 || at.shiftKey || at.ctrlKey || at.metaKey, moved: false };
-      else if (pts.size === 2) { drag = null; pinch = { ...two(), dist: this.goal.dist, az: this.goal.az }; }
+      if (pts.size === 1) drag = { x: at.x, y: at.y, orbit: at.button === 2 || at.button === 1 || at.shiftKey || at.ctrlKey || at.metaKey || at.altKey, moved: false };
+      else if (pts.size === 2) { drag = null; pinch = base(); }
     };
     c.addEventListener('pointerdown', (e) => down(e));
     this._grab = (e, at) => down(e, at); // (the canvas takes the pointer over: its next move pans or turns from where it went down)
@@ -347,55 +374,155 @@ export class Stage {
       const dx = e.clientX - p.x, dy = e.clientY - p.y;
       p.x = e.clientX; p.y = e.clientY;
       if (pinch && pts.size === 2) {
-        if (!this._take()) return;
         const t = two();
-        this.goal.dist = clamp((pinch.dist * pinch.d) / t.d, DMIN, DMAX);
-        this.goal.az = pinch.az - (t.ang - pinch.ang);
+        if (!pinch.kind) {
+          // not decided yet: nothing moves until a finger has gone GESTURE_PX, then the touch is one kind until the fingers lift
+          const ax = t.ax - pinch.ax, ay = t.ay - pinch.ay, bx = t.bx - pinch.bx, by = t.by - pinch.by;
+          if (Math.max(Math.hypot(ax, ay), Math.hypot(bx, by)) < GESTURE_PX) return;
+          const spread = Math.abs(t.d - pinch.d), twist = (Math.abs(angDiff(pinch.ang, t.ang)) * pinch.d) / 2, mid = Math.hypot(t.mx - pinch.mx, t.my - pinch.my);
+          let kind = 'zoom'; // spreading or twisting: zoom and turn together, as touch maps do
+          if (ax * bx + ay * by > 0 && mid > spread && mid > twist) {
+            // both fingers the same way: up or down together tilts (it never comes with anything else), any other way pans
+            kind = Math.abs(t.my - pinch.my) > 1.5 * Math.abs(t.mx - pinch.mx) && Math.sign(ay) === Math.sign(by) ? 'tilt' : 'pan';
+          }
+          if (!this._take()) return;
+          pinch = base(kind); // (it starts from here, and from where the camera is now that it is the viewer's)
+          return;
+        }
+        if (!this._take()) return;
+        const g = this.goal;
+        if (pinch.kind === 'zoom') {
+          g.dist = lim((pinch.dist * pinch.d) / t.d, DMIN, DMAX, pinch.dist);
+          g.az = pinch.az - angDiff(pinch.ang, t.ang); // a twist turns
+        } else if (pinch.kind === 'tilt') g.el = lim(pinch.el + (t.my - pinch.my) * 0.005, EL_LO, EL_HI, pinch.el); // (as in map apps)
+        else { this._pan(t.mx - pinch.pmx, t.my - pinch.pmy); pinch.pmx = t.mx; pinch.pmy = t.my; }
         return;
       }
       if (!drag) return;
       if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
       drag.moved = true;
       if (!this._take()) return;
-      if (drag.orbit) { this.goal.az -= dx * 0.005; this.goal.el = clamp(this.goal.el + dy * 0.004, 0.16, 1.5); }
+      if (drag.orbit) { this.goal.az -= dx * 0.005; this.goal.el = lim(this.goal.el + dy * 0.004, EL_LO, EL_HI, this.goal.el); }
       else this._pan(dx, dy);
     });
     const end = (e) => {
-      pts.delete(e.pointerId);
+      if (!pts.delete(e.pointerId)) return; // (pointerup and then lostpointercapture: once)
+      // three fingers down and one lifted: the other two go on as a new two-finger touch; one left: it drags on
+      if (pts.size >= 2) { drag = null; pinch = base(); return; }
       pinch = null;
       drag = pts.size === 1 ? { ...[...pts.values()][0], orbit: false, moved: true } : null;
     };
     c.addEventListener('pointerup', end);
     c.addEventListener('pointercancel', end);
     c.addEventListener('lostpointercapture', end);
-    this._clearPointers = () => { pts.clear(); drag = null; pinch = null; };
+    this._clearPointers = () => { pts.clear(); drag = null; pinch = null; this._padStop(); };
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
       if (!this._take()) return;
-      this.goal.dist = clamp(this.goal.dist * Math.exp(e.deltaY * 0.0012), DMIN, DMAX);
+      const g = this.goal, u = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1; // (lines or pages, as some mice send them)
+      let dx = e.deltaX * u, dy = e.deltaY * u;
+      if (e.shiftKey && !dx) { dx = dy; dy = 0; } // Shift + wheel turns (macOS already sends it as a sideways scroll)
+      if (e.ctrlKey) { g.dist = lim(g.dist * Math.exp(clamp(dy, -50, 50) * 0.006), DMIN, DMAX, g.dist); return; } // a trackpad pinch
+      if (e.altKey) { g.el = lim(g.el - clamp(dy, -240, 240) * 0.003, EL_LO, EL_HI, g.el); return; } // Alt (Option) + scroll tilts
+      // one meaning per movement: mostly sideways (two fingers on a trackpad, a tilting wheel) turns, mostly up and down zooms
+      if (Math.abs(dx) > Math.abs(dy) * 1.5) g.az += clamp(dx, -240, 240) * 0.004;
+      else g.dist = lim(g.dist * Math.exp(clamp(dy, -240, 240) * 0.0012), DMIN, DMAX, g.dist);
     }, { passive: false });
+    // Safari's trackpad pinch and twist come as gesture events (no Ctrl + wheel). On an iPhone or iPad they come as well as the touch
+    // pointers, which already do it: ignored while fingers are down on the canvas
+    let gz = null;
+    c.addEventListener('gesturestart', (e) => { e.preventDefault(); gz = null; if (pts.size || !this._take()) return; gz = { dist: this.goal.dist, az: this.goal.az }; });
+    c.addEventListener('gesturechange', (e) => {
+      e.preventDefault();
+      if (!gz || pts.size) return;
+      this.goal.dist = lim(gz.dist / (e.scale || 1), DMIN, DMAX, gz.dist);
+      this.goal.az = gz.az - ((e.rotation || 0) * Math.PI) / 180;
+    });
+    c.addEventListener('gestureend', (e) => { e.preventDefault(); gz = null; });
     const key = (e, on) => {
-      if (!this.running || e.target.closest?.('input, textarea')) return;
-      const k = e.key.toLowerCase();
-      if (!['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', '+', '-', '='].includes(k)) return;
-      if (on) this.keys.add(k); else this.keys.delete(k);
-      if (on) e.preventDefault();
+      const k = (e.key || '').toLowerCase(), id = e.code || 'key:' + k;
+      if (!on) { this.keys.delete(id); return; } // (always let go)
+      // while Cmd is down macOS sends no keyup for the other keys: let go of all of them, and of the pad held by a key (nothing
+      // left turning the camera by itself)
+      if (k === 'meta' || k === 'control' || k === 'alt') { this.keys.clear(); this._padStop(); return; }
+      if (!this.running) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // Cmd/Ctrl/Alt + a key is the browser's or the system's (zoom, bookmark...), not the camera's
+      if (e.target.closest?.('input, textarea, select, [contenteditable]')) return; // text fields keep their keys
+      const act = KEY_ACT[k];
+      if (!act) return;
+      this.keys.set(id, act);
+      e.preventDefault();
+      if (this.mode === 'drop') this._take(); // (_keys does not run during the drop: the key takes the camera here)
     };
     window.addEventListener('keydown', (e) => key(e, true));
     window.addEventListener('keyup', (e) => key(e, false));
-    window.addEventListener('blur', () => this.keys.clear());
+    const letGo = () => { this.keys.clear(); this._padStop(); };
+    window.addEventListener('blur', letGo);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) letGo(); });
+    this._bindPad();
+  }
+  /**
+   * The on-screen turn pad (#cam-pad in the street view): turn left or right, a higher or lower view. A press turns a little at
+   * once; held (pointer, or Enter / Space with the key held), it keeps going. With reduced motion it goes in steps instead.
+   */
+  _bindPad() {
+    this.pad = { az: 0, el: 0, t: 0 };
+    const pad = this.root.querySelector('#cam-pad');
+    if (!pad) return;
+    const P = this.pad;
+    const go = (b) => {
+      if (!this._take()) return;
+      P.az = +(b.dataset.az || 0); P.el = +(b.dataset.el || 0); P.t = PAD_REPEAT;
+      this._padStep(CALM ? 1 : 0.25);
+    };
+    const stop = () => this._padStop();
+    pad.addEventListener('pointerdown', (e) => {
+      const b = e.target.closest('button');
+      if (!b || e.button > 0) return;
+      e.preventDefault(); // (no focus ring from a pointer, no text selection, no long-press menu)
+      try { b.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
+      go(b);
+    });
+    for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) pad.addEventListener(t, stop);
+    pad.addEventListener('keydown', (e) => {
+      const b = e.target.closest('button');
+      if (!b || (e.key !== 'Enter' && e.key !== ' ') || e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      if (!e.repeat) go(b); // (held, the turn keeps going until the key comes up)
+    });
+    pad.addEventListener('keyup', (e) => { if (e.key === 'Enter' || e.key === ' ') stop(); });
+    pad.addEventListener('focusout', stop);
+    pad.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  /** Let go of the pad (the button came up, lost focus or was hidden, the pointer was cancelled, a modifier went down, the page was left). */
+  _padStop() { if (this.pad) { this.pad.az = 0; this.pad.el = 0; } }
+  /** One step of the pad: `k` of a full step (a full step is PAD_AZ radians of turn or PAD_EL of tilt). */
+  _padStep(k) {
+    const g = this.goal, P = this.pad;
+    if (P.az) g.az += P.az * PAD_AZ * k;
+    if (P.el) g.el = lim(g.el + P.el * PAD_EL * k, EL_LO, EL_HI, g.el);
   }
   _keys(dt) {
-    const K = this.keys;
-    if (!K.size || !this._take()) return;
+    const K = this.keys, P = this.pad;
+    if (!K.size && !P.az && !P.el) return;
+    if (!this._take()) return;
     const g = this.goal, px = 620 * dt;
-    const x = (K.has('d') || K.has('arrowright') ? 1 : 0) - (K.has('a') || K.has('arrowleft') ? 1 : 0);
-    const y = (K.has('s') || K.has('arrowdown') ? 1 : 0) - (K.has('w') || K.has('arrowup') ? 1 : 0);
+    const h = this._held || (this._held = {});
+    for (const a in h) h[a] = 0;
+    for (const a of K.values()) h[a] = 1;
+    const x = (h.right || 0) - (h.left || 0), y = (h.down || 0) - (h.up || 0);
     if (x || y) this._pan(-x * px, -y * px);
-    if (K.has('q')) g.az += dt * 1.3;
-    if (K.has('e')) g.az -= dt * 1.3;
-    if (K.has('+') || K.has('=')) g.dist = clamp(g.dist * Math.exp(-dt * 1.4), DMIN, DMAX);
-    if (K.has('-')) g.dist = clamp(g.dist * Math.exp(dt * 1.4), DMIN, DMAX);
+    if (h.turnL) g.az += dt * 1.3;
+    if (h.turnR) g.az -= dt * 1.3;
+    const tilt = (h.tiltU || 0) - (h.tiltD || 0);
+    if (tilt) g.el = lim(g.el + tilt * dt * 0.8, EL_LO, EL_HI, g.el);
+    if (h.in) g.dist = lim(g.dist * Math.exp(-dt * 1.4), DMIN, DMAX, g.dist);
+    if (h.out) g.dist = lim(g.dist * Math.exp(dt * 1.4), DMIN, DMAX, g.dist);
+    // the pad held down: smoothly (as fast as Q/E and R/F), or with reduced motion a whole step every PAD_REPEAT seconds
+    if (P.az || P.el) {
+      if (!CALM) this._padStep((dt * 1.3) / PAD_AZ);
+      else if ((P.t -= dt) <= 0) { P.t = PAD_REPEAT; this._padStep(1); }
+    }
   }
 
   /** Count late frames in windows of 2.5 s and step the pixel ratio down (quickly) or back up (slowly, backing off when it did not hold). */
@@ -501,6 +628,7 @@ export class Stage {
     const g = this.goal, p = this.W.path.xz(ctx.sc, 0);
     g.tx = p[0]; g.tz = p[1]; g.ty = this.W.landY(p[0], p[1]) + 1.5;
     g.dist = Math.min(g.dist, Math.max(PIN_VIEW, this.fit || 0));
+    if (CALM) { const r = this.rig; r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.dist = g.dist; } // (reduced motion: there at once, no flight)
   }
   /**
    * Rise straight up to `dist` metres, looking down with north up, so the page can hand over to the map.
@@ -517,6 +645,7 @@ export class Stage {
       };
       if (r.dist >= dist * 0.9 || CALM) return resolve(here());
       if (this.cine) this._cineEnd();
+      this._padStop(); this.keys.clear(); // (the pad is hidden now)
       this.mode = 'leave';
       this.leaveTo = { t: 0, dur: clamp(0.45 + 0.4 * Math.log(dist / r.dist), 0.7, 2.1), d0: r.dist, d1: dist, el0: r.el, az0: r.az, done: false, resolve: () => resolve(here()) };
       this.hooks.onMode?.('leave');
@@ -1517,11 +1646,14 @@ export class Stage {
       el.setAttribute('aria-label', 'Jump to the action');
       el.innerHTML = '<span>!</span>';
       const pin = { el, ctx: null, a: 1, q: 50, px: NaN, py: NaN, down: null };
-      const go = () => { if (pin.ctx) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } };
+      // (a pin that has faded (disabled, .faint) or is hidden does not fly, also if it faded while it was being pressed)
+      const go = () => { if (pin.ctx && !el.disabled && !el.hidden) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } };
       // A pin is pressed and let go without moving. A drag that starts on a pin is a drag of the camera: once it has moved 4 px
       // it is handed to the canvas (which takes the pointer over) and the pin does nothing.
       el.addEventListener('pointerdown', (e) => {
-        pin.down = { id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey };
+        if (el.disabled) return; // (a faint pin takes no pointer: .faint, pointer-events none)
+        // (only a press of the primary button flies; any button can start a drag of the camera from here)
+        pin.down = { id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button, primary: e.button === 0, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey };
         try { el.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
       });
       el.addEventListener('pointermove', (e) => {
@@ -1530,7 +1662,8 @@ export class Stage {
         pin.down = null;
         this._grab?.(e, d);
       });
-      el.addEventListener('pointerup', (e) => { const d = pin.down; pin.down = null; if (d && d.id === e.pointerId) go(); });
+      el.addEventListener('pointerup', (e) => { const d = pin.down; pin.down = null; if (d && d.id === e.pointerId && d.primary) go(); });
+      el.addEventListener('contextmenu', (e) => e.preventDefault());
       el.addEventListener('pointercancel', () => { pin.down = null; });
       el.addEventListener('click', (e) => { if (e.detail === 0) go(); }); // Enter or Space on a focused pin (a pointer press is handled above)
       this.overlay.appendChild(el);

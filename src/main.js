@@ -289,8 +289,16 @@ async function boot() {
   const touch = matchMedia('(hover: none)').matches;
   const HINTS = {
     drop: '',
-    follow: touch ? 'drag to take over the camera' : 'drag to take over the camera · scroll to zoom',
-    free: touch ? 'drag to move · pinch to zoom and turn · tap ! to jump to the action' : 'drag to move · right-drag to turn · scroll to zoom · click ! to jump to the action',
+    follow: touch ? 'drag, pinch or press ↺ ↻ to take the camera' : 'drag, scroll or press ↺ ↻ to take the camera',
+    free: touch ? 'drag to move · pinch to zoom · twist to turn · two fingers up or down to tilt · tap ! to jump to the action'
+      : 'drag to move · right- or shift-drag to turn · scroll to zoom, swipe sideways to turn · click ! to jump to the action',
+  };
+  // Follow the action is a toggle that shows whether the camera follows the action (pressed) or is the viewer's (stage.following)
+  const followBtn = $('#btn-follow');
+  const paintFollow = () => {
+    const on = stage.following;
+    followBtn.setAttribute('aria-pressed', String(on));
+    followBtn.title = on ? 'Following the action. Press to keep the camera where it is' : 'Let the camera follow the action';
   };
   hooks.onMode = (mode) => {
     cut.dataset.mode = mode;
@@ -299,7 +307,8 @@ async function boot() {
     dh.classList.remove('old');
     clearTimeout(hintT);
     hintT = setTimeout(() => dh.classList.add('old'), 8000); // said once, then out of the way
-    $('#btn-follow').hidden = mode !== 'free';
+    followBtn.hidden = mode === 'leave';
+    paintFollow();
     if (mode === 'free' && !cut.dataset.roamed) {
       cut.dataset.roamed = '1';
       const t = $('#roam');
@@ -322,7 +331,8 @@ async function boot() {
     if (++candN >= 3) { cand = -1; shiftFocus(S[id], lngLat); } // the camera has rested on it for most of a second
   };
   // zooming all the way out hands over to the map
-  hooks.onExit = () => closeStreet(true);
+  // (Follow the action is inert while the page hands over to the map: stage.follow() refuses then too)
+  hooks.onExit = () => { followBtn.disabled = true; closeStreet(true); };
   hooks.onCine = (on) => { if (on) cut.dataset.cine = '1'; else delete cut.dataset.cine; skyBtn.classList.toggle('away', !!on); }; // (the light button steps aside for the SKIP button)
   hooks.onCard = (title, sub, dur) => {
     const c = $('#cine-card');
@@ -428,6 +438,7 @@ async function boot() {
       mapEl.classList.add('lock');
     }
     const ok = await ready;
+    if (ok && opening) { followBtn.hidden = false; followBtn.disabled = false; paintFollow(); } // (the new street's camera: dropping, following unless told otherwise)
     if (!ok) {
       // could not build the street (also when swapping from another street): back to the map, with a message
       recover('That street would not load. Try another one.');
@@ -486,12 +497,13 @@ async function boot() {
     }
   }
   async function closeStreet(viaZoom) {
-    if (busy && (shifting || inOpen)) { pendingClose = { viaZoom: viaZoom === true }; return; } // (never while closing: nothing stale is left)
+    if (busy && (shifting || inOpen)) { pendingClose = { viaZoom: viaZoom === true }; followBtn.disabled = true; return; } // (never while closing: nothing stale is left)
     if (busy || !current) return;
     busy = true;
     try { await doClose(viaZoom === true); } catch (e) { console.error(e); recover(); } finally { busy = false; }
   }
   async function doClose(viaZoom) {
+    followBtn.disabled = true;
     play('back');
     stopMusic();
     cut.classList.remove('titled');
@@ -518,7 +530,8 @@ async function boot() {
     api.setEnabled(true);
   }
   $('#btn-back').onclick = closeStreet;
-  $('#btn-follow').onclick = () => { play('click'); stage.follow(); };
+  // pressed while following: the camera stays where it is and is the viewer's; else it follows the action again
+  followBtn.onclick = () => { play('click'); if (stage.following) stage.takeCamera(); else stage.follow(); paintFollow(); };
   $('#btn-skip').onclick = () => { play('click'); stage.skipCine(); };
   // the next street keeps who has the camera: dropped into while the viewer had it, it lands without following (stage.js _take)
   $('#btn-next').onclick = () => openStreet(randomStreet(current && Math.random() < 0.5 ? (q) => q.level === current.level : null), null, null, stage.following ? 'follow' : 'free');
