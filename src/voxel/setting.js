@@ -65,13 +65,15 @@ export function builtAt(ctx, x, z) {
  * The city's own answer (W.ground, the same function the crowd and the walking character ask): may a person stand at the street-space
  * point? Only what scenes do not keep in their own picture counts here: buildings as drawn, water, fences and walls (the standing things,
  * furniture, posts and parked cars, are the obstacle picture's, with its wider clearances). True when the world has no W.ground.
+ * at: a stand spot (somebody standing AT a door, a wall, a bench, a rack): within 0.4 m of open ground counts as open. Never for a way
+ * (the walking grid, the stage corridor, a line or a run): a thin fence is drawn about 0.7 m wide, so with the tolerance a way would cross it.
  */
-export function groundFree(ctx, x, z) {
+export function groundFree(ctx, x, z, at = false) {
   const W = world(ctx);
   if (!W || !W.ground) return true;
   const G = W.ground, p = scene(ctx, W, x, z), h = G.at(p[0], p[1], 0, G_PERSON, G_STANDING);
   if (h === h) return true;
-  if (G.bits & G_WATER) return false;
+  if (!at || G.bits & G_WATER) return false;
   // standing AT a wall or a fence (a doorstep, a bench against a front): the raster's half-metre cells reach up to 0.35 m past the drawn
   // face, so a point within 0.4 m of open ground counts as open; only a point deeper inside a drawn wall or fence is refused
   for (let k = 0; k < 4; k++) { const v = G.at(p[0] + (k === 0 ? 0.4 : k === 1 ? -0.4 : 0), p[1] + (k === 2 ? 0.4 : k === 3 ? -0.4 : 0), 0, G_PERSON, G_STANDING); if (v === v) return true; }
@@ -290,6 +292,8 @@ export function roadHere(ctx, z, from = -20, to = 20, need = 0.6, opt = {}) {
  * lamp post, bin, bench, shelter, terrace table... (the obstacle picture). Unknown ground counts as clear.
  * opt.ignore: a list of things the caller is deliberately AT (an anchor { x, z }, an actor, a [x, z] point; `r` widens, default 2 m),
  * so a scene that tips over a bin or breaks into a car does not fail on it. opt.obst === false skips the standing things.
+ * opt.way: the point is on a way somebody walks (the walking grid, lineClear, runway), not a spot to stand at: the ground is asked
+ * strictly (groundFree without its stand-spot tolerance).
  */
 export function clearSpot(ctx, x, z, r = 0.6, opt = {}) {
   const W = world(ctx);
@@ -299,7 +303,7 @@ export function clearSpot(ctx, x, z, r = 0.6, opt = {}) {
   const pts = r > 0 ? [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r]] : [[0, 0]];
   if (r >= 1) pts.push([r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]);
   for (const [dx, dz] of pts) {
-    if (builtAt(ctx, x + dx, z + dz) || !groundFree(ctx, x + dx, z + dz)) return false; // (both: no spot is gained that either forbids)
+    if (builtAt(ctx, x + dx, z + dz) || !groundFree(ctx, x + dx, z + dz, !opt.way)) return false; // (both: no spot is gained that either forbids)
     if (tb) { const c = groundAt(ctx, x + dx, z + dz); if (c !== 255 && !tb[c]) return false; }
   }
   if (opt.trees !== false && treeAt(ctx, x, z, r + 0.3)) return false;
@@ -343,7 +347,7 @@ export function nudge(ctx, x, z, r = 0.5, opt = {}) {
  */
 export function runway(ctx, x, z, dir, max = 24, r = 0.45, opt = {}) {
   const lo = (ctx.L && ctx.L.x0 != null ? ctx.L.x0 : -24) + 0.5, hi = (ctx.L && ctx.L.x1 != null ? ctx.L.x1 : 24) - 0.5;
-  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst, near: { x, z, r: r + 0.1 } };
+  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst, near: { x, z, r: r + 0.1 }, way: true };
   let last = x;
   for (let d = 1; d <= max; d++) {
     const cx = x + dir * d;
@@ -360,7 +364,7 @@ export function runway(ctx, x, z, dir, max = 24, r = 0.45, opt = {}) {
  */
 export function lineClear(ctx, x0, z0, x1, z1, r = 0.45, opt = {}) {
   const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 0.5));
-  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst };
+  const o = { ground: 'open', ignore: opt.ignore, obst: opt.obst, way: true };
   for (let i = 0; i <= n; i++) {
     const t = i / n, x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
     if (!clearSpot(ctx, x, z, r, { ...o, near: i * 2 < n ? { x: x0, z: z0, r } : { x: x1, z: z1, r } })) return false;
@@ -391,7 +395,7 @@ function stamp(pic, inf0, per, out) {
 function groundBlocked(ctx, pic, i, j) {
   const g = pic.gnd || (pic.gnd = new Uint8Array(pic.nx * pic.nz)), k = j * pic.nx + i;
   let v = g[k];
-  if (!v) { v = clearSpot(ctx, pic.lo + (i + 0.5) * CS, pic.z0 + (j + 0.5) * CS, 0.1, { ground: 'open', obst: false }) ? 1 : 2; g[k] = v; }
+  if (!v) { v = clearSpot(ctx, pic.lo + (i + 0.5) * CS, pic.z0 + (j + 0.5) * CS, 0.1, { ground: 'open', obst: false, way: true }) ? 1 : 2; g[k] = v; }
   return v === 2;
 }
 /** A query over the walking grid: q.blk = the standing things, the ground behind it, and a 1.3 m carve-out round the start and goal. */
