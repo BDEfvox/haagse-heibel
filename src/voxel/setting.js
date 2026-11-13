@@ -121,13 +121,14 @@ function newPic(ctx, np) {
   const lo = Math.max(-34, L.sA != null ? L.sA - sc + 0.5 : -34), hi = Math.min(34, L.sB != null ? L.sB - sc - 0.5 : 34);
   const z0 = (L.zB != null ? L.zB : -16) - 2, z1 = (L.zF != null ? L.zF : 16) + 2;
   return {
-    np, asked: 0, n: 0, nStat: 0, X: [], Z: [], HX: [], HZ: [], H: [], T: [], K: [], OX: [], OZ: [], cars: [], lamps: [],
+    np, asked: 0, ver: 0, bk: null, n: 0, nStat: 0, X: [], Z: [], HX: [], HZ: [], H: [], T: [], K: [], OX: [], OZ: [], cars: [], lamps: [],
     lo, hi, z0, z1, nx: Math.max(2, Math.ceil((hi - lo) / CS)), nz: Math.max(2, Math.ceil((z1 - z0) / CS)),
     grids: new Map(), gnd: null, tmp: null, g: null, par: null, mark: null, stamp: 0, heapF: [], heapI: [], out: null,
   };
 }
 function addShape(pic, t, x, z, hx, hz, h, kind, ox = x, oz = z) {
   const i = pic.n++;
+  pic.ver++;
   pic.X[i] = x; pic.Z[i] = z; pic.HX[i] = hx; pic.HZ[i] = hz; pic.H[i] = h; pic.T[i] = t; pic.K[i] = kind; pic.OX[i] = ox; pic.OZ[i] = oz;
 }
 function buildStatic(ctx, pic) {
@@ -172,6 +173,7 @@ function buildStatic(ctx, pic) {
 function crowdShapes(ctx, pic) {
   for (const k of ['X', 'Z', 'HX', 'HZ', 'H', 'T', 'K', 'OX', 'OZ']) pic[k].length = pic.nStat;
   pic.n = pic.nStat;
+  pic.ver++;
   pic.grids.clear();
   const cr = ctx.crowd, W = world(ctx);
   if (!cr || typeof cr.obstacles !== 'function' || !W) return;
@@ -232,16 +234,41 @@ function ignored(pic, i, ign) {
  * lets whatever already touches that point stay as close as it is there but no closer (the place a walker starts from).
  */
 export function hitsObst(ctx, x, z, r = 0.45, ign = null, near = null) {
-  const pic = obstacles(ctx);
-  for (let i = 0; i < pic.n; i++) {
-    let re = pic.HX[i] < 0.35 ? Math.min(r, 0.45) : r; // a thin post (lamp, pole, bollard) only needs a person's width beside it
-    if (pic.H[i] < 0.2 || Math.abs(pic.X[i] - x) > pic.HX[i] + re || Math.abs(pic.Z[i] - z) > pic.HZ[i] + re) continue;
-    if (near) { const gn = gapTo(pic, i, near.x, near.z); if (gn < near.r) re = Math.min(re, gn - 0.05); } // what the start already touches: you may stay as close as you are, not closer
-    if (gapTo(pic, i, x, z) >= re) continue;
-    if (ign && ign.length && ignored(pic, i, ign)) continue;
-    return true;
+  const pic = obstacles(ctx), B = pic.bk && pic.bk.ver === pic.ver ? pic.bk : buckets(pic);
+  // only the shapes whose x-extent reaches within r of x can pass the first test below (re <= r): those of the buckets that
+  // cover [x - r, x + r]; a shape in two of them is tested twice, which changes nothing (the answer is "is there any")
+  for (let k = 0; k < B.odd.length; k++) if (hit1(pic, B.odd[k], x, z, r, ign, near)) return true;
+  if (!(r >= 0 && r < 1e4)) { for (let i = 0; i < pic.n; i++) if (hit1(pic, i, x, z, r, ign, near)) return true; return false; } // (a radius that is not a number: the plain scan)
+  const c1 = Math.floor((x + r + 1e-6) / BKW);
+  for (let c = Math.floor((x - r - 1e-6) / BKW); c <= c1; c++) {
+    const l = B.cols.get(c);
+    if (l) for (let k = 0; k < l.length; k++) if (hit1(pic, l[k], x, z, r, ign, near)) return true;
   }
   return false;
+}
+const BKW = 2; // metres of street per bucket
+/** The shapes by their extent along the street, rebuilt when the picture changes (`ver`). Shapes with a non-finite x go to `odd` (asked every time). */
+function buckets(pic) {
+  const B = pic.bk || (pic.bk = { ver: -1, cols: new Map(), odd: [] });
+  for (const l of B.cols.values()) l.length = 0;
+  B.odd.length = 0;
+  for (let i = 0; i < pic.n; i++) {
+    const X = pic.X[i], HX = pic.HX[i];
+    if (!Number.isFinite(X) || !Number.isFinite(HX) || HX < 0 || HX > 1e4) { B.odd.push(i); continue; }
+    const c1 = Math.floor((X + HX + 1e-6) / BKW); // (a hair wider both ways: rounding can only add a bucket, never miss one)
+    for (let c = Math.floor((X - HX - 1e-6) / BKW); c <= c1; c++) { let l = B.cols.get(c); if (!l) B.cols.set(c, (l = [])); l.push(i); }
+  }
+  B.ver = pic.ver;
+  return B;
+}
+/** The test of one shape (what the full scan did for each). */
+function hit1(pic, i, x, z, r, ign, near) {
+  let re = pic.HX[i] < 0.35 ? Math.min(r, 0.45) : r; // a thin post (lamp, pole, bollard) only needs a person's width beside it
+  if (pic.H[i] < 0.2 || Math.abs(pic.X[i] - x) > pic.HX[i] + re || Math.abs(pic.Z[i] - z) > pic.HZ[i] + re) return false;
+  if (near) { const gn = gapTo(pic, i, near.x, near.z); if (gn < near.r) re = Math.min(re, gn - 0.05); } // what the start already touches: you may stay as close as you are, not closer
+  if (gapTo(pic, i, x, z) >= re) return false;
+  if (ign && ign.length && ignored(pic, i, ign)) return false;
+  return true;
 }
 /** The shapes of the picture that a person could hide behind: [{ x, z, r, h }] (stalls, kiosks, shelters, vans). */
 export function hiders(ctx, minH = 2.0) {

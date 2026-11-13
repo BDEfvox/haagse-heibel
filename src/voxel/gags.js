@@ -1646,8 +1646,22 @@ export function castScene(pool, weightOf, seen, dice, opening = false, C = CASTI
 export const sceneTable = () => Object.fromEntries(Object.keys(G).map((n) => [n, { w: G[n].w, crime: !!G[n].crime }]));
 
 /** The opening scene: drawn from what this neighbourhood's figures point at (crime scenes first), heaviest likeliest. */
-function signatureFor(ctx, dice) {
-  const lv = ctx.level, names = Object.keys(G).filter((n) => G[n].w[lv - 1] > 0 && !PLAYING.get(n) && ready(ctx, n));
+/**
+ * The scenes of `names` that pass `ok`, into `out`, asked over as many frames as it takes: the stage scan of a spot (ready ->
+ * S.stageClear) can take 25 ms when its cache has run out, so the director gives the frame back after every 2 ms of asking.
+ * Nothing is drawn from the dice while it asks; the frame a scene starts in moves by a frame or two at most.
+ */
+function* sweep(names, ok, out) {
+  let t0 = performance.now();
+  for (const n of names) {
+    if (ok(n)) out.push(n);
+    if (performance.now() - t0 > 2) { yield; t0 = performance.now(); }
+  }
+  return out;
+}
+function* signatureFor(ctx, dice) {
+  const lv = ctx.level, names = yield* sweep(Object.keys(G), (n) => G[n].w[lv - 1] > 0 && !PLAYING.get(n) && ready(ctx, n), []);
+  for (let i = names.length - 1; i >= 0; i--) if (PLAYING.get(names[i])) names.splice(i, 1); // (started elsewhere while it asked)
   if (!names.length) return null;
   const crime = names.filter((n) => G[n].crime), pool = lv > 1 && crime.length ? crime : names;
   return castScene(pool, (n) => weight(ctx, n), SEEN, dice, true);
@@ -1670,12 +1684,14 @@ function* director(ctx, delay = 2.4, signature = true) {
     })());
   };
   yield* wait(delay);
-  if (signature) { const sig = signatureFor(ctx, dice); if (sig) launch(sig); }
+  if (signature) { const sig = yield* signatureFor(ctx, dice); if (sig && !PLAYING.get(sig)) launch(sig); }
   for (;;) {
     yield* wait(rnd.range(pace.gap[0], pace.gap[1]));
     if (active >= pace.max) continue;
     if (ctx.cineBusy && ctx.cineBusy()) continue; // a set piece holds the camera here
-    const opts = Object.keys(G).filter((n) => weight(ctx, n) > 0 && !recent.includes(n) && !PLAYING.get(n) && !(G[n].lock && locks.has(G[n].lock)) && ready(ctx, n));
+    const free = (n) => !PLAYING.get(n) && !(G[n].lock && locks.has(G[n].lock));
+    const opts = (yield* sweep(Object.keys(G), (n) => weight(ctx, n) > 0 && !recent.includes(n) && free(n) && ready(ctx, n), [])).filter(free); // (free again: another spot may have started one meanwhile)
+    if (active >= pace.max || (ctx.cineBusy && ctx.cineBusy())) continue; // (the same, after the frames the asking took)
     if (!opts.length) { recent.shift(); continue; }
     launch(castScene(opts, (n) => weight(ctx, n), SEEN, dice));
   }
