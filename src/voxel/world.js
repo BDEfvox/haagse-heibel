@@ -5,7 +5,7 @@ import { Vox, MAT, clamp, makeRng, hashStr, SHARED } from './kit.js';
 import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
-import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } from './landmarks.js';
+import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf, typeOf } from './landmarks.js';
 import { faceNearestRoad } from './statues/kit.js';
 import { SPECIAL_PARTS } from './special-parts.js';
 import { furnishTile, catenarySpots } from './furnish.js';
@@ -812,12 +812,17 @@ function assignShops(key, t, F, dice) {
     if (NO_FRONT.has(cat) && cat !== 'atm') continue;
     // the building it lies in, else the nearest one within a few metres
     let owner = -1, bd = 5.5;
-    for (const [bi, us] of F.byB) {
-      if (!us.some((u) => Math.hypot(u.cx - px, u.cz - pz) < 60)) continue;
-      const ring = F.rings.get(bi);
-      if (inRing(px, pz, ring)) { owner = bi; break; }
-      const d = ringDist(px, pz, ring);
-      if (d < bd) { bd = d; owner = bi; }
+    // (first the buildings that had fronts before, so each place goes where it went; then the late ones, F.late)
+    for (const pass of [false, true]) {
+      if (owner >= 0) break;
+      for (const [bi, us] of F.byB) {
+        if ((F.late && F.late.has(bi)) !== pass) continue;
+        if (!us.some((u) => Math.hypot(u.cx - px, u.cz - pz) < 60)) continue;
+        const ring = F.rings.get(bi);
+        if (inRing(px, pz, ring)) { owner = bi; break; }
+        const d = ringDist(px, pz, ring);
+        if (d < bd) { bd = d; owner = bi; }
+      }
     }
     if (owner < 0) continue;
     let us = F.byB.get(owner);
@@ -1062,15 +1067,20 @@ const _fronts = new WeakMap();
 function frontsOf(key, t) {
   let F = _fronts.get(t);
   if (F) return F;
-  F = { units: [], byB: new Map(), rings: new Map() };
+  F = { units: [], byB: new Map(), rings: new Map(), late: new Set() };
   _fronts.set(t, F);
   if (!t.bf || !t.b) return F;
-  t.b.forEach((e, bi) => {
+  // buildings the data types as a tower or a windmill that are not one (landmarks.js typeOf) get their fronts after all
+  // the others: their units come last in F.units and in every cell, so the close-up fronts drawn before them (one
+  // shared builder per cell, jitter dice in drawing order) are what they were; and they only take a shop no other
+  // building claims (assignShops)
+  const late = [];
+  const one = (e, bi) => {
     const bf = t.bf[bi];
     if (isStore(t, bi)) { if (!(t.bp && t.bp[bi]) && !specialOf(key, t, bi)) storeFronts(key, t, bi, F); return; }
     if (!(bf >= 0) || e[0] < 3.2) return;
     // a church stays a church: buildings with a type or a landmark's own shape keep their own drawer
-    if ((t.bp && t.bp[bi]) || (t.bt && TYPED.has(t.bt[bi])) || specialOf(key, t, bi)) return;
+    if ((t.bp && t.bp[bi]) || TYPED.has(typeOf(t, bi)) || specialOf(key, t, bi)) return;
     const ring = [];
     for (let i = 3; i + 1 < e.length; i += 2) ring.push([e[i] / 10, TILE - e[i + 1] / 10]);
     if (ring.length < 3) return;
@@ -1112,7 +1122,9 @@ function frontsOf(key, t) {
       if (backs.length) mine[0].backs = { list: backs, th: Math.atan2(-o.uz, o.ux), cx: o.cx, cz: o.cz, rad: Math.min(o.w, o.d) / 2, h: b.h, wall: look.wall };
       F.byB.set(bi, mine); F.rings.set(bi, ring); F.units.push(...mine);
     }
-  });
+  };
+  t.b.forEach((e, bi) => { if (t.bt && TYPED.has(t.bt[bi]) && !TYPED.has(typeOf(t, bi))) late.push(bi); else one(e, bi); });
+  for (const bi of late) { F.late.add(bi); one(t.b[bi], bi); }
   const dice = (u, salt) => hashStr(salt + '|' + key + '|' + u.bi + '|' + u.i);
   assignShops(key, t, F, dice);
   return F;
@@ -1313,6 +1325,18 @@ function paintMarks(grid, r) {
     s += l;
   }
 }
+/** The building of tile t (flats: its footprints in tile coordinates) that a point stands in: { bi, h, area } or null. */
+function hostOf(t, flats, x, z) {
+  for (let bi = 0; bi < flats.length; bi++) {
+    const f = flats[bi];
+    if (f.length < 6 || !inFlat(x, z, f)) continue;
+    let a = 0;
+    for (let i = 0, n = f.length >> 1, k = n - 1; i < n; k = i++) a += f[k * 2] * f[i * 2 + 1] - f[i * 2] * f[k * 2 + 1];
+    return { bi, h: t.b[bi][0], area: Math.abs(a) / 2 };
+  }
+  return null;
+}
+const MAST_HUT = { AREA: 30, H: 5 }; // a building smaller and lower than this round a mast's point is its equipment cabin
 /** Draw for the side effects only: into throwaway builders that take over vx/glx's state and give it back. */
 function shadowDraw(vx, glx, draw) {
   const dv = new Vox(1, true), dg = new Vox(1, true);
@@ -1320,6 +1344,15 @@ function shadowDraw(vx, glx, draw) {
   for (const [d, s] of [[dv, vx], [dg, glx]]) { d._s = s._s; d.B = s.B; d.T = s.T; d.Wm = s.Wm; }
   draw(dv, dg);
   for (const [d, s] of [[dv, vx], [dg, glx]]) { s._s = d._s; s.B = d.B; s.T = d.T; s.Wm = d.Wm; }
+}
+/** A typed drawer run for its side effects only (shadowDraw), with the fallback the building loop has. */
+function shadowTyped(vx, glx, b, type, look, night, lod) {
+  shadowDraw(vx, glx, (dv, dg) => {
+    let done = false;
+    try { done = drawTyped(dv, dg, b, type, { wall: look.wall, roof: look.roof }, look.rnd, night, null); } catch (err) { done = false; }
+    dv.setT(); dg.setT(); dv.setW(0);
+    if (!done) drawGeneric(dv, dg, b, look, night, lod === 2);
+  });
 }
 /** Rails and building footprints go on last. */
 function paintTop(grid, rails, footprints) {
@@ -2577,7 +2610,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   // store blocks (storeFronts) are plain blocks at their real height from afar and shop fronts from near; a retail building
   // that found no street to front on stays the supermarket it was. Asked at every level of detail, so nothing changes shape.
   const stores = t.bt && t.bt.some((x, bi) => isStore(t, bi)) ? F || frontsOf(key, t) : null;
-  const occB = [];
+  const occB = [], plainLater = [];
   (t.b || []).forEach((e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
@@ -2590,7 +2623,16 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
     occB.push({ bi, ring, o: b.o, rects: b.rects }); // (as drawn, for the ground raster: ground.js)
-    const look = lookOf(key, bi, b), type = t.bt ? t.bt[bi] : 0;
+    const look = lookOf(key, bi, b), type = typeOf(t, bi), mapped = t.bt ? t.bt[bi] | 0 : 0;
+    if (!sp && mapped !== type && TYPED.has(mapped)) {
+      // typed as a tower or a windmill but not shaped like one (landmarks.js typeOf): an ordinary building, drawn after all
+      // the others (plainLater). Its old drawer still runs here, into throwaway builders that start from the state of
+      // vx/glx and hand it back (the jitter dice, the tag, the frame), so everything drawn into vx/glx after it comes out
+      // as it did; it gets dice of its own (a fresh lookOf), so this building's own look is the one an untyped one gets
+      shadowTyped(vx, glx, b, mapped, lookOf(key, bi, b), night, lod);
+      plainLater.push({ b, look, bi });
+      return;
+    }
     if (sp || (type && TYPED.has(type) && !(stores && isStore(t, bi) && stores.byB.has(bi)))) {
       const n0 = vx.n, g0 = glx.n;
       let done = false;
@@ -2611,6 +2653,16 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     }
     drawGeneric(v, gl, b, look, night, lod === 2);
   });
+  // the buildings typed as a tower or a windmill that are not one, as ordinary buildings: after all the others, so no
+  // builder's dice move for those; a street-front cell that only such a building needs gets dice from its place
+  for (const q of plainLater) {
+    if (cellVox && F.byB.has(q.bi)) {
+      const ci = cellOf(q.b.o.cx, q.b.o.cz);
+      let cv = cellVox.get(ci);
+      if (!cv) cellVox.set(ci, (cv = { v: new Vox((hashStr('cell|' + key + '|' + ci) % 9999) + 1, true), gl: new Vox((hashStr('cellg|' + key + '|' + ci) % 9999) + 1, true) }));
+      drawGeneric(cv.v, cv.gl, q.b, q.look, night, false);
+    } else drawGeneric(v, gl, q.b, q.look, night, lod === 2);
+  }
   const xr = makeRng(hashStr('extras|' + key));
   const hidden = SPECIAL_PARTS[key];
   (t.q || []).forEach((e, qi) => {
@@ -2639,9 +2691,22 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     // (the jitter dice of a lighthouse's tower, the tag and frame), so what vx/glx draw after it comes out as it did
     const skip = () => shadowDraw(vx, glx, (dv, dg) => { try { drawFeature(dv, dg, old, xr, night); } catch (err) { /* as below */ } });
     if (sp && sp.drop) return skip(); // no place for it beside its street or track: left out
+    const host = e[0] === 3 || e[0] === 5 || e[0] === 6 ? hostOf(t, flats, e[1] / 10, TILE - e[2] / 10) : null, extra = {};
+    if (host) {
+      // a mast in a plain building is an antenna on its roof; in a building with a shape of its own (a church, a school, a
+      // stadium, a landmark, one drawn from its parts) it is left out; a hut of a few square metres at its foot is its
+      // equipment cabin, and the mast stands free. A lighthouse in a building is left out. A chimney with no mapped
+      // height rises above the building it stands in.
+      if (e[0] === 5 && !(host.area < MAST_HUT.AREA && host.h < MAST_HUT.H)) {
+        if (typeOf(t, host.bi) || specialOf(key, t, host.bi) || (t.bp && t.bp[host.bi])) return skip();
+        extra.roof = host.h;
+      }
+      if (e[0] === 3) return skip();
+      if (e[0] === 6) extra.base = host.h;
+    }
     const n0 = vx.n, g0 = glx.n;
     // a compass direction (degrees clockwise from north) as a turn of the builder's frame, in the tile's east/south axes
-    try { drawFeature(vx, glx, { type: e[0], x: sp ? sp.x : e[1] / 10, z: sp ? sp.z : TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: sp ? sp.rot : Math.PI / 2 - (e[3] * Math.PI) / 180, lod, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
+    try { drawFeature(vx, glx, { type: e[0], x: sp ? sp.x : e[1] / 10, z: sp ? sp.z : TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: sp ? sp.rot : Math.PI / 2 - (e[3] * Math.PI) / 180, lod, ...extra, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
   });
   if (lod < 2 && t.x && t.x.length) {
