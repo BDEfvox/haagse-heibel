@@ -1217,18 +1217,29 @@ function* needPed(ctx, xr = 13, filter = null) {
   return p || null;
 }
 
+// Ambient life (boats, gulls, pigeons) is marked `ambient`: at a focus shift the stage hands the ones in view to the overhead as
+// leftovers instead of dropping them (overhead.js). On a spot started by a focus shift (`ctx.soft`), where today's script would put one
+// in place in view, or take one off in view, it arrives (ctx.arrive: drawn coming in, the script's timeline untouched) or is retired
+// (ctx.retire: handed to the overhead). None of this draws from ctx.rnd or changes when the script's own draws happen.
+/** A spot started by a focus shift, not watched, with this street-space point in the picture (camera of the last drawn frame). */
+const SOFT_REACH = 600; // m (stage.js SOFT_REACH)
+const softSeen = (ctx, x, z, y = 1) => !!ctx.soft && !watching(ctx) && typeof ctx.seenNow === 'function' && ctx.seenNow(x, z, y, 0.08, SOFT_REACH);
 function* boatSpawner(ctx) {
   const { L, rnd } = ctx;
   if (!L.canal) return;
   yield* wait(rnd.range(1, 5));
   for (;;) {
     const dir = rnd.sign(), boat = makeBoat(rnd);
-    boat.air = true;
-    const z = L.canal.z + (dir > 0 ? -0.9 : 0.9);
-    yield* enter(ctx, boat, dir > 0 ? X0 + 2.4 : X1 - 2.4, z, L.canal.y, { dir, speed: 2.6 });
+    boat.air = true; boat.ambient = true;
+    const z = L.canal.z + (dir > 0 ? -0.9 : 0.9), x0 = dir > 0 ? X0 + 2.4 : X1 - 2.4;
+    const pop = softSeen(ctx, x0, z); // (enterTo puts an unwatched spot's boat straight there: in view, it is drawn sailing in instead)
+    yield* enter(ctx, boat, x0, z, L.canal.y, { dir, speed: 2.6 });
     boat.face(dir > 0 ? E : W);
+    if (pop && boat.alive) ctx.arrive(boat, 'boat', -dir);
     yield* go(ctx, boat, dir > 0 ? X1 - 2.4 : X0 + 2.4, z, 2.6);
-    yield* exitOut(ctx, boat, { speed: 2.6 });
+    // (exitOut takes an unwatched spot's boat off where it is: in view, the overhead sails it on instead)
+    if (boat.alive && softSeen(ctx, boat.g.position.x, boat.g.position.z)) ctx.retire(boat);
+    else yield* exitOut(ctx, boat, { speed: 2.6 });
     yield* wait(rnd.range(5, 14));
   }
 }
@@ -1237,7 +1248,7 @@ function* gullSpawner(ctx) {
   for (;;) {
     yield* wait(L.strip === 'beach' ? rnd.range(1.5, 4) : rnd.range(6, 13));
     const g = makeBird(rnd, 'gull');
-    g.fly = true;
+    g.fly = true; g.ambient = true;
     const dir = rnd.sign(), y = rnd.range(8, 12), z = rnd.range(L.zB, L.zF);
     // it comes in over the edge of the frame and leaves over the other one (never appears or vanishes in view)
     const x0 = outPoint(ctx, 0, z, -dir, 6, y).x, x1 = outPoint(ctx, 0, z, dir, 6, y).x;
@@ -1246,7 +1257,7 @@ function* gullSpawner(ctx) {
     if (rnd.chance(0.3)) ctx.sfx('squawk');
     ctx.run((function* () {
       yield* fly(g, x1, y + rnd.range(-2, 2), z + rnd.range(-5, 5), rnd.range(5, 8));
-      ctx.despawn(g);
+      if (ctx.soft && ctx.retire) ctx.retire(g); else ctx.despawn(g); // (retire: in view after all (the camera moved), it flies on)
     })());
   }
 }
@@ -1255,6 +1266,7 @@ function* pigeons(ctx) {
   const birds = [];
   for (let i = 0; i < 3; i++) {
     const b = makeBird(rnd, 'pigeon'), px = rnd.range(-18, 18), q = spotNear(ctx, px, padZ(ctx, 'walkF0', px) - 0.4 + rnd.range(-0.2, 0.2), 0.3);
+    b.ambient = true;
     birds.push(b);
     if (watching(ctx) && seen(ctx, q.x, q.z, 0.4)) {
       // in view: they flutter down from over the edge of the frame, one after the other
@@ -1262,6 +1274,8 @@ function* pigeons(ctx) {
     } else {
       ctx.spawn(b, q.x, q.z);
       b.face(rnd.range(0, TAU));
+      // a spot started by a focus shift: one that would simply be there in view is drawn fluttering down (it is on the ground for the script)
+      if (ctx.soft && ctx.seenNow && ctx.seenNow(q.x, q.z, 0.4, 0.08, SOFT_REACH)) ctx.arrive(b, 'air'); // (watched or not: the in-view test above used the old street's camera)
     }
   }
   for (;;) {
@@ -1285,12 +1299,14 @@ function* landBird(ctx, b, x, z) {
   b.fly = false;
   b.face(rnd.range(0, TAU));
 }
-function* heli(ctx) {
-  const { L, rnd } = ctx;
+/** A helicopter patrolling the spot in its street space. Only without a stage (tools): the stage flies its own (overhead.js), which
+ * survives a change of street. `phase` is the ctx.rnd draw startLocale makes for it. */
+function* heli(ctx, phase) {
+  const { L } = ctx;
   const h = makeHeli();
   h.air = true;
   ctx.spawn(h, X0 - 10, L.zc, 16);
-  let t = rnd.range(0, 9), chop = 0;
+  let t = phase, chop = 0;
   const aim = new THREE.Vector3(0, 0, 0);
   for (;;) {
     const dt = yield;
@@ -1664,7 +1680,13 @@ export function startLocale(ctx, { only = null, delay = 2.4, signature = true, w
   ctx.run(boatSpawner(ctx));
   ctx.run(gullSpawner(ctx));
   ctx.run(pigeons(ctx));
-  if (withHeli) ctx.run(heli(ctx));
+  if (withHeli) {
+    // the one draw from ctx.rnd the helicopter has always made, at the same point (it was heli()'s first step, which Runner.run takes at
+    // once), so the scenes after it draw the same numbers. The stage's helicopter uses it as its phase when it is new; one carried over
+    // from the last street keeps its own
+    const phase = ctx.rnd.range(0, 9);
+    if (ctx.heli) ctx.heli(phase); else ctx.run(heli(ctx, phase));
+  }
   if (only && Object.hasOwn(G, only)) {
     ctx.run((function* () {
       for (;;) {

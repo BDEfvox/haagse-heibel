@@ -541,7 +541,7 @@ export function makeBird(rnd, kind = 'gull') {
       const mv = this.moving;
       this.moving = 0;
       turnTo(g, this.heading, dt, 8);
-      if (this.fly) {
+      if (this.fly || this.flap) { // (flap: drawn flying while its script has it on the ground, stage.js arrival)
         const f = Math.sin(this.t * 16) * 0.9;
         wings[0].rotation.z = -f; wings[1].rotation.z = f;
         b.position.y = Math.sin(this.t * 5) * 0.08;

@@ -1041,7 +1041,7 @@ export function makeHeli() {
     body.rotation.z = Math.sin(this.t * 1.3) * 0.06;
     blink.visible = Math.floor(this.t * 3) % 2 === 0;
     // beam from heli to aim point on the ground (world space → local)
-    const h = g.position.y;
+    const h = g.position.y - (this.aim.y || 0); // height over the lit ground (gags.js heli() keeps aim.y at 0; the stage's helicopter, overhead.js, flies at map height)
     const lx = this.aim.x - g.position.x, lz = this.aim.z - g.position.z;
     const c = Math.cos(-g.rotation.y), s = Math.sin(-g.rotation.y);
     const ax = lx * c + lz * s, az = -lx * s + lz * c;

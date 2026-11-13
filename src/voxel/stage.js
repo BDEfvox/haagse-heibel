@@ -2,15 +2,16 @@
 // contexts handed to gag scripts. Gag scripts think in "street space" (x along the street, z across it);
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
-import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, wait, disposeTree } from './kit.js';
+import { makeRng, hashStr, Runner, ease, clamp, lerp, clearSigns, wait, disposeTree } from './kit.js';
 import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND } from './world.js';
 import { localeL, ambientL } from './street.js';
-import { Fx } from './fx.js';
+import { Fx, fadeOut } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
-import { makeBird, makePerson, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
+import { makePerson, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
 import { litShare } from './props.js';
 import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
+import { Overhead } from './overhead.js';
 import { FURN as STREET_FURN } from './setting.js';
 import { sfx } from '../audio.js';
 
@@ -132,6 +133,35 @@ const FURN = Object.fromEntries(['bench', 'bin', 'box', 'mailbox', 'parasol', 'r
 const TALL = new Set(['terrace', 'mstall', 'kiosk', 'parasol']);
 
 /** Make an object live in a context's street space: its position is (x along, y up, z across) from that spot. */
+const SOFT_REACH = 600; // m: how far the focus-shift tests of ambient life look (the overhead's SEE_FAR: beyond it a bird is under a pixel)
+/**
+ * An ambient actor drawn arriving at where its script has put it, without touching the script: what it shows is moved into a child
+ * group, which starts offset and glides home. The offset is d metres along the street (side -1 / +1; a bird also 8 m up), kept in the
+ * street's axes and turned into the actor's own every frame, so the actor may turn meanwhile. 'air': a bird flaps (a.flap) and comes
+ * in at landBird's 7.5 m/s (at least 1.6 s); 'boat': it catches up (ease out over d / 2.6 s, 3-10 s). Ends early if the actor is retired.
+ */
+function arrival(a, kind, d, side = 1) {
+  const g = a.g;
+  if (!g || a._wrap) return null;
+  const wr = (a._wrap = new THREE.Group());
+  while (g.children.length) wr.add(g.children[0]);
+  g.add(wr);
+  const T = kind === 'boat' ? clamp(d / 2.6, 3, 10) : Math.max(1.6, d / 7.5), up = kind === 'boat' ? 0 : 8;
+  const at = (u) => {
+    // street-axes offset (dx along, up), into the actor's own turned and scaled axes as it stands now
+    const e = (1 - u) * (1 - u), dx = side * d * e, k = 1 / (g.scale.x || 1), c = Math.cos(g.rotation.y), sn = Math.sin(g.rotation.y);
+    wr.position.set(dx * c * k, up * e * k, dx * sn * k);
+  };
+  at(0);
+  if (kind !== 'boat') a.flap = true;
+  return (function* () {
+    let t = 0;
+    while (t < T && a.alive && !a._left) { t += yield; at(Math.min(1, t / T)); }
+    wr.position.set(0, 0, 0);
+    a.flap = false;
+  })();
+}
+
 function warp(obj, ctx, path, hAt) {
   obj._ctx = ctx;
   obj.updateMatrix = function () {
@@ -929,7 +959,16 @@ export class Stage {
       const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
       view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
       // the city's street life carries on: it is handed to the next street instead of being torn down
+      // the scenes playing here end with this street. A scene holding the camera lets the crowd go first (as it always does when it ends:
+      // no stage left standing in the crowd), and whoever the scenes borrowed and is standing on the pavement goes back to the crowd where
+      // they stand, before the crowd is handed over (later, ctx.demote could no longer reach it)
+      this._cineEnd();
+      this._handBack();
+      // the ambient life in view (boats, gulls, pigeons) is not dropped with the street: the overhead carries it on until out of view
+      for (const a of [...this.actors]) if (a.ambient && a.alive && !a._left && this.overhead.seenActor(a)) this.overhead.adopt(a);
       view.crowd = this.crowd; this.crowd = null;
+      // and so does what flies over it (the helicopter): it lives in map metres and is written into whichever frame is open
+      view.overhead = this.overhead; this.overhead = null;
       if (o.stream) o.stream.onTile = null;
       this._teardown(true);
       dress();
@@ -938,6 +977,9 @@ export class Stage {
       this._begin(W, st, sky, level, { ...opts, view });
     } catch (e) {
       console.error('scene start failed', e);
+      // what was handed over and never taken back by _begin is not this stage's any more: hide() would not find it
+      if (view && view.overhead && view.overhead !== this.overhead) view.overhead.dispose();
+      if (view && view.crowd && view.crowd !== this.crowd) { this.scene.remove(view.crowd.group); view.crowd.dispose(); }
       if (!this.W) W.dispose();
       this.hide();
       return false;
@@ -963,6 +1005,10 @@ export class Stage {
     W.stream.onTile = (c, on) => { if (!this.crowd) return; if (on) this.crowd.addTile(c); }; // (tiles that leave are pruned a little later)
     for (const key of W.corridor) { const c = tileOf(key); if (c) this.crowd.addTile(c); } // this street's own tiles now: its lamp posts and parked cars are needed below
     this.pruneT = 2;
+    // what flies over the city (the helicopter) is the city's too: carried over like the crowd, and moved into this street's frame
+    this.overhead = (opts.view && opts.view.overhead) || new Overhead(this);
+    this.overhead.begin(W);
+    this.scene.add(this.overhead.group);
     this.dyn = new THREE.Group();
     this.scene.add(this.dyn);
 
@@ -974,8 +1020,8 @@ export class Stage {
     this.fx.ground = W.hAt;
     this.cine = null; this._stage = null; this.cineSkip = null; this._wasShot = false; this.exiting = false; this.leaveTo = null;
     this.runner = new Runner();
-    this.actors = [];
-    this.extras = [];
+    this.actors = this.overhead.carried(); // (a helicopter and the leftovers carried over are still the stage's to animate)
+    this.extras = this.overhead.extras; // (the stork: the overhead updates it; scripts/dev-swap.mjs reads stage.extras)
     this.gags = new Set();
     this.time = 0;
     this.timeScale = 1;
@@ -1045,6 +1091,48 @@ export class Stage {
         district: (() => { const p = path.xz(sc, 0), m = W.frame.M(p[0], p[1]), d = spotAt(m[0], m[1]); return { wijk: d.wijk, buurt: d.buurt, level: d.level, pop: d.pop }; })(), // whose neighbourhood this is (wijk and buurt are null off the map); pop = the shares of districts.js here
         world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
+        /** startLocale asks for the spot's helicopter (level 5): the stage flies it (overhead.js). `phase` is startLocale's ctx.rnd draw. */
+        heli: (phase) => this.overhead.want(ctx, phase, !!opts.view),
+        /** This spot was started by a focus shift (its ambient life must not pop in or out in view: gags.js softSeen). */
+        soft: !!opts.view,
+        /**
+         * Like inView, but in the frame the camera was last drawn in: right after a focus shift (startLocale runs before the first frame
+         * of this street) the camera's matrices are still the old street's. Same reach (250 m) and margin.
+         */
+        seenNow: (x, z, y = 1, margin = 0.08, reach = 250) => {
+          const p = path.xz(sc + x, z), F = this._camFrame || W.frame, cam = this.camera;
+          let px = p[0], pz = p[1];
+          if (F !== W.frame) { const m = W.frame.M(px, pz), q = F.S(m[0], m[1]); px = q[0]; pz = q[1]; }
+          _v3.set(px, W.hAt(p[0], p[1]) + y, pz);
+          if (cam.position.distanceToSquared(_v3) > reach * reach) return false;
+          _v3.applyMatrix4(cam.matrixWorldInverse);
+          if (_v3.z >= 0) return false;
+          _v3.applyMatrix4(cam.projectionMatrix);
+          return Math.abs(_v3.x) <= 1 + margin && Math.abs(_v3.y) <= 1 + margin;
+        },
+        /**
+         * Draw an ambient actor arriving where the script has just put it: 'boat' sails in from behind, 'air' (a bird) comes down
+         * from 8 m up. Only drawn: the script has it there already.
+         */
+        arrive: (a, kind, from = 0) => {
+          // where it comes from: the first point along the street on that side that is out of the picture, plus 6 m. A boat only from
+          // behind (`from` = -its direction); a bird from a random side, else the other. No hidden start within 120 m (a high camera sees
+          // it all): no arrival, it is simply there as before (a few pixels from up there). Only drawn either way: no ctx.rnd, no retiming
+          const p = a.g.position, y = kind === 'boat' ? 1 : 8, first = kind === 'boat' ? Math.sign(from) || -1 : Math.random() < 0.5 ? -1 : 1;
+          for (const side of kind === 'boat' ? [first] : [first, -first]) {
+            let d = 0, run = 0;
+            for (; d < 120; d++) if (!ctx.seenNow(p.x + side * d, p.z, y, 0.1, SOFT_REACH)) { if (++run >= 2) break; } else run = 0;
+            if (run < 2) continue;
+            const g = arrival(a, kind, d + 6, side);
+            if (g) this.runner.run(g);
+            return;
+          }
+        },
+        /** Take an ambient actor off: in view, the overhead carries it on until it is out of view (a leftover); else it goes at once. */
+        retire: (a) => {
+          if (a.alive && this.overhead && this._camFrame === W.frame && this.overhead.seenActor(a)) this.overhead.adopt(a);
+          else ctx.despawn(a);
+        },
         spawn(a, x, z, y) {
           a.g.position.set(x, y ?? 0, z);
           a.baseScale = a.g.scale.x;
@@ -1196,39 +1284,24 @@ export class Stage {
       ? { only: opts.only || null, delay: dur + 0.9, signature: true, withHeli: level >= 5 }
       : { delay: dur + rnd.range(6, 24), signature: rnd.chance(0.5) }));
 
-    this._clouds(rnd, sky, mid);
-    // the stork, The Hague's mascot, on a chimney near the action
-    if (A.chimneys.length) {
+    this.overhead.settle(); // (a helicopter the new street does not want flies away out of sight)
+    // the clouds and the stork are made once per visit and carried over from street to street (overhead.js). The stage's rnd draws
+    // for them come after every draw the spots use, so skipping them on a focus shift changes no scene
+    if (!(opts.view && opts.view.overhead)) this.overhead.makeClouds(rnd, this.cur.nk, mid);
+    this.clouds = this.overhead.clouds; this._cloudMat = this.overhead.cloudMat; // (stage.clouds: only scripts/dev-swap.mjs reads it; the overhead moves them)
+    // the stork, The Hague's mascot, on a chimney near the action (one carried over stays on its own chimney; a street opened without
+    // one gets it only where nobody is looking)
+    if (A.chimneys.length && !this.overhead.hasStork) {
       const m = path.xz(main, 0), c = A.chimneys.reduce((a, b) => ((b.x - m[0]) ** 2 + (b.z - m[1]) ** 2 < (a.x - m[0]) ** 2 + (a.z - m[1]) ** 2 ? b : a));
-      const stork = makeBird(rnd, 'stork');
-      stork.g.position.set(c.x, c.y + 0.3, c.z);
-      stork.g.rotation.y = rnd.range(0, 6.28);
-      const nest = sculpt((v) => { v.box(c.x, c.y, c.z, 1.1, 0.3, 1.1, '#9b7653', 0.1); v.box(c.x, c.y + 0.2, c.z, 0.8, 0.14, 0.8, '#7a5a3c'); });
-      this.dyn.add(nest, stork.g);
-      this.extras.push(stork);
+      const cm = W.frame.M(c.x, c.z);
+      if (!opts.view || !this.overhead._inView(cm[0], cm[1], 0.15, c.y + 0.3)) this.overhead.makeStork(rnd, c);
     }
     this.running = true;
-    this.last = performance.now();
+    // (after a focus shift the loop has been running all along: the first frame takes its full step, so whatever was carried over
+    // moves on in the swap frame exactly as in the frame before)
+    if (!opts.view) this.last = performance.now();
     cancelAnimationFrame(this._raf); // never two loops at once
     this._raf = requestAnimationFrame(this._tick);
-  }
-
-  _clouds(rnd, sky, c0) {
-    this.clouds = [];
-    const mat = this._cloudMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: lerp(0.92, 0.42, this.cur.nk), fog: false });
-    for (let i = 0; i < 22; i++) {
-      const v = new Vox(i + 20), n = rnd.int(4, 7), s = rnd.range(16, 34);
-      for (let k = 0; k < n; k++) {
-        const w = rnd.range(2.2, 3.6) * s, h = rnd.range(1.0, 2.0) * s;
-        v.box((k * 1.5 - n * 0.75 + rnd.range(-0.4, 0.4)) * s, (Math.abs(k - n / 2) < 1.2 ? 0.5 : 0) * s + rnd.range(-0.2, 0.2) * s, rnd.range(-0.8, 0.8) * s, w, h, rnd.range(1.8, 3.0) * s, '#ffffff');
-      }
-      const m = v.mesh(mat, false, false);
-      const r = rnd.range(380, 2600), a = rnd.range(0, 6.28);
-      m.position.set(c0[0] + Math.cos(a) * r, rnd.range(700, 1600), c0[1] + Math.sin(a) * r);
-      m.userData.v = rnd.range(4, 12) * rnd.sign();
-      this.dyn.add(m);
-      this.clouds.push(m);
-    }
   }
 
   hide() {
@@ -1247,8 +1320,9 @@ export class Stage {
     if (this.leaveTo && !this.leaveTo.done) { this.leaveTo.done = true; this.leaveTo.resolve(); }
     this.leaveTo = null;
     if (this.runner) this.runner.clear();
-    if (this.fx) { this.fx.dispose(); this.fx = null; }
-    for (const p of this.pins) p.el.remove();
+    // (on a focus shift the scenes' words and the "!" pins fade out where they are instead of vanishing)
+    if (this.fx) { this.fx.dispose(swap); this.fx = null; }
+    for (const p of this.pins) { p.ctx = null; fadeOut(p.el, swap); }
     this.pins = [];
     if (this.dyn) {
       disposeTree(this.dyn);
@@ -1256,6 +1330,7 @@ export class Stage {
       this.dyn = null;
     }
     if (this.crowd) { this.scene.remove(this.crowd.group); this.crowd.dispose(); this.crowd = null; }
+    if (this.overhead) { this.overhead.dispose(); this.overhead = null; } // (on a focus shift it was handed over first: nothing here)
     // on a swap the next street's signs are already made and share the cache: only a full close clears it
     if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; if (!swap) clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
@@ -1263,6 +1338,19 @@ export class Stage {
     this.gags = new Set();
   }
 
+  /**
+   * A focus shift ends the scenes of this street. The walkers they borrowed from the crowd (or made up for it) who stand on the pavement
+   * go back to the crowd where they stand (crowd.adopt), rather than vanish with the scene. Sitting, riding, up high, in a doorway, falling
+   * or shrinking: they go with their scene, as before. adopt can say no (no lane within 3.5 m, too few free figures): then they go too.
+   */
+  _handBack() {
+    for (const a of [...this.actors]) {
+      if (!a.alive || !a.look || a.vehicle || !a.ctx || !a.ctx.demote) continue;
+      if (a.air || a.fly || a.pose || a.offstage || !a.g.visible || a.g.position.y > 0.05) continue;
+      if (Math.abs(a.g.rotation.x) > 0.05 || Math.abs(a.g.rotation.z) > 0.05 || a.g.scale.x < (a.baseScale || a.g.scale.x) * 0.9) continue;
+      a.ctx.demote(a);
+    }
+  }
   _focus(ctx, X, Z, zoom, hold, prio) {
     if (this.mode !== 'follow') return;
     const f = this.focusReq;
@@ -1356,10 +1444,9 @@ export class Stage {
     const W = this.W, r = this.rig, g = this.goal;
 
     this.runner.update(dt);
+    this.overhead.update(dt); // (where the helicopter's script used to run: before the actors, so its beam is drawn from where it is now; also the clouds and the stork)
     for (let i = this.actors.length - 1; i >= 0; i--) this.actors[i].update(dt);
-    for (const e of this.extras) e.update(dt);
     this.fx.update(dt);
-    for (const c of this.clouds) c.position.x += c.userData.v * dt;
 
     // ---- camera
     let shotOn = false, shotBlocked = false, snapCut = false;
@@ -1527,6 +1614,7 @@ export class Stage {
     this.camera.far = r.dist * 7 + 9000;
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
+    this._camFrame = W.frame; // (the frame these camera matrices are in: overhead.js tests what is in view right after a focus shift)
     this._skyFrame(real);
     this.scene.fog.near = r.dist * 1.6 + 180;
     this.scene.fog.far = r.dist * 7 + 2400;

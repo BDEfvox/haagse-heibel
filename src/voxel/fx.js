@@ -82,6 +82,18 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 // popup words are full strength up to TEXT_NEAR metres from the lens and gone by TEXT_FAR
 const TEXT_NEAR = 26, TEXT_FAR = 44;
 
+/** Take an overlay element off the screen: at once, or (fade) over FADE_MS where it stands, unclickable meanwhile. */
+export const FADE_MS = 300;
+export function fadeOut(el, fade) {
+  if (!fade || el.hidden) { el.remove(); return; }
+  // inline, because the frame sets the words' opacity inline (update)
+  el.style.transition = `opacity ${FADE_MS}ms`;
+  el.style.pointerEvents = 'none';
+  if ('disabled' in el) el.disabled = true;
+  requestAnimationFrame(() => { el.style.opacity = '0'; });
+  setTimeout(() => el.remove(), FADE_MS + 50);
+}
+
 export class Fx {
   constructor(scene, camera, overlay) {
     this.camera = camera;
@@ -221,10 +233,11 @@ export class Fx {
       t.el.style.transform = `translate(${((_p.x + 1) / 2) * w}px, ${((1 - _p.y) / 2) * h}px) scale(${k.toFixed(3)})`;
     }
   }
-  dispose() {
+  /** `fade`: the words fade out where they are (a focus shift: the scene that said them is gone) instead of vanishing. */
+  dispose(fade = false) {
     this.solid.dispose();
     this.glow.dispose();
-    this.texts.forEach((t) => t.el.remove());
+    for (const t of this.texts) fadeOut(t.el, fade);
     this.texts = [];
   }
 }
