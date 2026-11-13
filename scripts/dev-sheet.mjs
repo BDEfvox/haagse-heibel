@@ -21,6 +21,7 @@
 // The first thing printed is a self-check of the page internals the tool relies on (window.__heibel.stage, its crowd's pools,
 // the crowd's rider seats parsed from /src/voxel/crowd.js, the modules it imports); a missing one stops the run with its name.
 import fs from 'node:fs';
+import { PNG } from 'pngjs';
 import { launch, args } from './dev-lib.mjs';
 
 const A = args();
@@ -82,6 +83,48 @@ const SETS = {
     ],
   },
 };
+// the hand-held items of cast.js, each in the hand and pose a scene uses for it (scene and line in the label's note)
+const it = (item, o) => ({ label: o.label || item, kind: 'person', person: { kind: o.kind || 'civ', seed: o.seed || 40 }, item, args: o.args, where: o.where || 'hand', arms: o.arms || 'hold', scale: o.scale, y: o.y, turn: 0 });
+SETS.items = {
+  spacing: 1.6,
+  cells: [
+    it('phone', { label: 'phone, hold (phishing, filmIt)' }),
+    { label: 'crowd: filming, pose 7', kind: 'crowdFigure', model: 'person', look: CIV, pose: 7, turn: 0 },
+    it('wallet', { label: 'wallet, cheer (phishing end)', arms: 'cheer' }),
+    it('wallet', { label: 'wallet x1.3 (carBreakIn)', scale: 1.3 }),
+    it('moneybag', { label: 'moneybag(1.1), front carry', kind: 'robber', args: [1.1], where: 'front', arms: 'carry' }),
+    it('moneybag', { label: 'moneybag(1.2), shoulder bag', kind: 'robber', args: [1.2], where: 'shoulder', arms: 'bag' }),
+    it('wad', { label: 'wad x1.6, count (shadyDeal)', kind: 'hoodie', scale: 1.6, arms: 'count' }),
+    it('crowbar', { label: 'crowbar, up (carBreakIn)', kind: 'robber', arms: 'up' }),
+    it('pad', { label: 'pad, write (parkingTicket)', kind: 'cop', arms: 'write' }),
+    it('cuffs', { label: 'cuffs, hold (carBreakIn)', kind: 'cop' }),
+    it('fries', { label: 'fries x1.3 (seagullFries)', scale: 1.3 }),
+    { label: 'balloon, on the body (gags)', kind: 'person', person: { kind: 'kid', seed: 41 }, item: 'balloon', args: ['#ff4d6d'], where: 'body', at: [0.62, 0.8, 0], arms: 'swing', turn: 0 },
+    it('spray', { label: 'spray, spray (graffiti)', kind: 'hoodie', arms: 'spray' }),
+    it('wafel', { label: 'wafel, hold (bennyHill)', kind: 'cop' }),
+    it('purse', { label: 'purse x1.5 hung (scooterSnatch)', kind: 'granny', scale: 1.5, y: -0.9, arms: 'swing' }),
+    it('tv', { label: 'tv x1.25, front carry (shopHeist)', kind: 'robber', scale: 1.25, where: 'front', arms: 'carry' }),
+    it('bomb', { label: 'bomb, front carry (plofkraak)', kind: 'robber', where: 'front', arms: 'carry' }),
+    it('rod', { label: 'rod, fist (phishing)', kind: 'hoodie', arms: 'fist' }),
+    it('cutters', { label: 'cutters, hold (bikeThief)', kind: 'hoodie' }),
+    it('broom', { label: 'broom, fist (bennyHill)', kind: 'chef', arms: 'fist' }),
+    it('bumper', { label: 'bumper, hold (fenderBender)' }),
+    it('paper', { label: 'paper, hold (scuffle)' }),
+    it('radio', { label: 'radio x1.3 (carBreakIn)', scale: 1.3 }),
+    it('shoe', { label: 'shoe, hold (scuffle)' }),
+    it('can', { label: 'can x1.6 (scooterSnatch)', scale: 1.6 }),
+    it('ticket', { label: 'ticket (no scene holds it)' }),
+    it('torch', { label: 'torch (no scene uses it)' }),
+    it('megaphone', { label: 'megaphone (no scene uses it)' }),
+    it('lollipop', { label: 'lollipop (no scene uses it)', kind: 'kid' }),
+  ],
+  // the director's wide (30 m, el 0.42, az 0.45, the 30 degree lens) and close (8 m, el 0.08, face on, 26 degrees: the same
+  // magnification is 8 * tan 13 / tan 15 = 6.89 m with the free camera's 30 degrees, which free mode holds every frame)
+  shots: [
+    { name: 'wide', each: 7, dist: 30, el: 0.42, yaw: 0.45, crop: 'band' },
+    { name: 'close', each: 1, dist: 6.89, el: 0.08, yaw: 0, crop: 'cell' },
+  ],
+};
 const S = SETS[set];
 if (!S) { console.error(`unknown --set "${set}" (one of: ${Object.keys(SETS).join(', ')})`); process.exit(2); }
 if (turnArg !== null) for (const c of S.cells) c.turn = c.turn === Math.PI ? Math.PI + turnArg : turnArg;
@@ -139,7 +182,8 @@ async function pageSetup(spec) {
   const setAnim = (p, i, ph, amp, pose, tip) => { const a = p.anim.array, o = i * 4; a[o] = ph; a[o + 1] = amp; a[o + 2] = pose; a[o + 3] = tip; };
 
   // the row: along the street through the first spot, on the middle of the road; the camera stands on the +v side (as the street view does)
-  const n = spec.cells.length, sc = st.locales[0].sc, f = {};
+  const n = spec.cells.length, sc = st.locales[0].sc, f = {}, half = ((n - 1) / 2) * spec.spacing;
+  if (typeof W.path.sA === 'number' && typeof W.path.sB === 'number') need('the street is long enough for the row (' + (2 * half).toFixed(0) + ' m)', sc - half >= W.path.sA - 20 && sc + half <= W.path.sB + 20, 'spot at s ' + sc.toFixed(1) + ', street from ' + W.path.sA.toFixed(1) + ' to ' + W.path.sB.toFixed(1));
   const cells = [];
   for (let i = 0; i < n; i++) {
     const c = spec.cells[i], s = sc + (i - (n - 1) / 2) * spec.spacing;
@@ -159,7 +203,7 @@ async function pageSetup(spec) {
             const fn = cast.item[c.item];
             if (typeof fn !== 'function') throw new Error('no item.' + c.item);
             const o = fn(...(c.args || []));
-            if (c.where === 'body') { a.b.add(o); o.position.set(...(c.at || [0.62, 0.8, 0])); } else a.hold(o, c.where || 'hand');
+            if (c.where === 'body') { a.b.add(o); o.position.set(...(c.at || [0.62, 0.8, 0])); a.held = o; } else a.hold(o, c.where || 'hand');
             if (c.scale) o.scale.setScalar(c.scale);
             if (c.y !== undefined) o.position.y = c.y;
           }
@@ -326,19 +370,67 @@ try {
     return Buffer.from(r.data, 'base64');
   };
   const all = S.cells.map((c, i) => i);
+  const aimAt = async (shot) => B.ev(`(${pageAim})(${JSON.stringify(shot)})`);
+  const labelsOf = async (shot) => B.ev(`(${pageLabels})(${JSON.stringify(shot)})`);
+  const note = (out, aim, lab, calm) => {
+    const off = lab.rects.filter((q) => q.behind || q.x1 < 0 || q.x0 > lab.vw || q.y1 < 0 || q.y0 > lab.vh).map((q) => q.i);
+    return `${out}: target (${aim.tx}, ${aim.tz}) az ${aim.az} fov ${lab.fov}${lab.camErr > 0.05 ? ' CAMERA NOT WHERE ASKED (err ' + lab.camErr + ')' : ''}; streamer ${calm ? 'settled' : 'NOT settled'}${off.length ? '; cells out of the picture: ' + off.join(', ') : ''}`;
+  };
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const rectOf = (rs, m, vw, vh) => { // the union of the cells' screen boxes plus a margin, in whole pixels inside the viewport
+    const x0 = clamp(Math.min(...rs.map((q) => q.x0)) - m, 0, vw - 1), y0 = clamp(Math.min(...rs.map((q) => q.y0)) - m, 0, vh - 1);
+    const x1 = clamp(Math.max(...rs.map((q) => q.x1)) + m, x0 + 1, vw), y1 = clamp(Math.max(...rs.map((q) => q.y1)) + m, y0 + 1, vh);
+    return { x: Math.floor(x0), y: Math.floor(y0), width: Math.ceil(x1 - x0), height: Math.ceil(y1 - y0) };
+  };
+  /** Many crops on one sheet: `cols` per row, white gaps. */
+  const compose = (bufs, cols, gap = 6) => {
+    const imgs = bufs.map((b) => PNG.sync.read(b)), rows = Math.ceil(imgs.length / cols);
+    const cw = Math.max(...imgs.map((i) => i.width)), chh = Math.max(...imgs.map((i) => i.height));
+    const out = new PNG({ width: cols * cw + (cols + 1) * gap, height: rows * chh + (rows + 1) * gap });
+    out.data.fill(255);
+    imgs.forEach((im, k) => PNG.bitblt(im, out, 0, 0, im.width, im.height, gap + (k % cols) * (cw + gap), gap + Math.floor(k / cols) * (chh + gap)));
+    return PNG.sync.write(out);
+  };
   let first = true;
   for (const sh of S.shots) {
-    const on = sh.on === 'all' ? all : sh.on;
-    const shot = { ...sh, on, title: `${set} ${sh.name} - ${sh.dist} m, el ${sh.el}, ${time} - ${street}` };
-    const aim = await B.ev(`(${pageAim})(${JSON.stringify(shot)})`);
-    const calm = await waitCalm(first); first = false;
-    await raf();
-    const lab = await B.ev(`(${pageLabels})(${JSON.stringify(shot)})`);
-    await raf();
-    const out = file(sh.name);
-    fs.writeFileSync(out, await clipShot(null));
-    const off = lab.rects.filter((q) => q.behind || q.x1 < 0 || q.x0 > lab.vw || q.y1 < 0 || q.y0 > lab.vh).map((q) => q.i);
-    console.log(`${out}: target (${aim.tx}, ${aim.tz}) az ${aim.az} fov ${lab.fov}${lab.camErr > 0.05 ? ' CAMERA NOT WHERE ASKED (err ' + lab.camErr + ')' : ''}; streamer ${calm ? 'settled' : 'NOT settled'}${off.length ? '; cells out of the picture: ' + off.join(', ') : ''}`);
+    const title = `${set} ${sh.name} - ${sh.dist} m, el ${sh.el}, ${time} - ${street}`, out = file(sh.name);
+    if (!sh.each) { // one picture of the cells `on`
+      const shot = { ...sh, on: sh.on === 'all' ? all : sh.on, title };
+      const aim = await aimAt(shot), calm = await waitCalm(first); first = false;
+      await raf();
+      const lab = await labelsOf(shot);
+      await raf();
+      fs.writeFileSync(out, await clipShot(null));
+      console.log(note(out, aim, lab, calm));
+      continue;
+    }
+    // groups of `each` cells, one picture each, cropped to the cells: bands stacked (crop 'band') or cells in a grid (crop 'cell')
+    const groups = [];
+    for (let i = 0; i < all.length; i += sh.each) groups.push(all.slice(i, i + sh.each));
+    let size = null;
+    if (sh.crop === 'cell') { // a first pass for one crop size that holds every cell
+      let w = 0, h = 0;
+      for (const on of groups) {
+        await aimAt({ ...sh, on, title }); await raf(); await raf();
+        const lab = await labelsOf({ ...sh, on, title });
+        const r = rectOf(lab.rects, 14, lab.vw, lab.vh); w = Math.max(w, r.width); h = Math.max(h, r.height);
+      }
+      size = { width: Math.min(w, width), height: Math.min(h, height) };
+    }
+    const bufs = [], notes = [];
+    for (const on of groups) {
+      const shot = { ...sh, on, title };
+      const aim = await aimAt(shot), calm = await waitCalm(first); first = false;
+      await raf();
+      const lab = await labelsOf(shot);
+      await raf();
+      let r = rectOf(lab.rects, 14, lab.vw, lab.vh);
+      if (size) { const cx = r.x + r.width / 2, cy = r.y + r.height / 2; r = { x: Math.round(clamp(cx - size.width / 2, 0, lab.vw - size.width)), y: Math.round(clamp(cy - size.height / 2, 0, lab.vh - size.height)), ...size }; }
+      bufs.push(await clipShot(r));
+      notes.push(note(`  cells ${on.join(',')}`, aim, lab, calm));
+    }
+    fs.writeFileSync(out, compose(bufs, sh.crop === 'cell' ? 6 : 1));
+    console.log(`${out}: ${bufs.length} crops\n${notes.join('\n')}`);
   }
   console.log('console errors: ' + (B.errs.length ? '\n  ' + [...new Set(B.errs)].slice(0, 10).join('\n  ') : 'none'));
 } catch (e) {

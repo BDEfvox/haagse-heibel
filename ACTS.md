@@ -228,7 +228,7 @@ kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a
 - `a.squash(0.25)` one bounce of squash and stretch. `a.heading`, `a.face(h)` (instant).
 - `say(ctx, a, 'TEKST', { size, color, dur })`, `yell(ctx, a, 'TEKST', color, size)`; text at a point: `ctx.fx.text('BONK!', at(x, y, z), { size, color })`. Size 20+ is a punchline (the camera nudges to it).
 - Holding: `a.hold(obj)` right hand, `a.hold(obj, 'handL' | 'front' | 'back' | 'head' | 'shoulder')`, `a.drop()` returns it (to put it somewhere else); `R.discard(a)` lets go and frees it for good, for a thing nothing uses again (a new `hold` frees the old thing the same way). `shoulder(a, item.moneybag())` slings a bag and raises the arm.
-- `item.*`: `moneybag(scale)` (the € swag bag) `wad` `crowbar` `torch` `pad` `megaphone` `lollipop` `cuffs` `fries` `balloon(col)` `spray` `wafel` `purse` `tv` `wallet` `ticket` `bomb` `can` `phone` `rod` `cutters` `broom` `nightcap` `bumper` `paper` `radio` `shoe`.
+- `item.*`: `moneybag(scale)` (the € swag bag) `wad` `crowbar` `torch` `pad` `megaphone` `lollipop` `cuffs` `fries` `balloon(col)` `spray` `wafel` `purse` `tv` `wallet` `ticket` `bomb` `can` `phone` (twice real size, glowing screen towards the holder) `rod` `cutters` `broom` `nightcap` `bumper` `paper` `radio` `shoe`.
   Your own props: `sculpt((v) => { v.box(x, yBottom, z, w, h, d, '#colour'); })`, glowing: `sculpt(fn, MAT.glow)`, both: `piece((v, gl) => {...})`.
 - Animals: `makeDog(rnd)`, `makeCat(rnd)`, `makeBird(rnd, 'gull' | 'pigeon')` (`a.fly = true`, move with a tween).
 

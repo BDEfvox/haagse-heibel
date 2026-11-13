@@ -296,7 +296,11 @@ export function makePerson(rnd, o = {}) {
     emote(m, dur = 1.2) { emoteM = m; emoteT = dur; return this; },
     /** One squash-and-stretch bounce (landings, jolts). */
     squash(k = 0.28) { sqv -= k * 9; return this; },
-    /** Attach an object to the right hand, or 'handL' | 'back' | 'shoulder' | 'head' | 'front'. */
+    /**
+     * Attach an object to the right hand, or 'handL' | 'back' | 'shoulder' | 'head' | 'front'. In a hand the object's origin
+     * sits just beyond the fingertips and it runs back into the fist; an item that would mostly vanish in the fist carries
+     * `userData.grip`, how much further out of the hand to hold it (the wallet, the cuffs, the shoe).
+     */
     hold(obj, where = 'hand') {
       if (this.held) { const old = this.drop(); if (old !== obj) disposeTree(old); } // whatever was held before is gone for good (to keep it, drop() it first)
       this.held = obj;
@@ -304,8 +308,8 @@ export function makePerson(rnd, o = {}) {
       else if (where === 'shoulder') { obj.position.set(0.22, 0.92, -0.5); obj.rotation.set(0.18, 0, -0.12); b.add(obj); } // slung over the right shoulder (use arms 'bag')
       else if (where === 'head') { obj.position.set(0, 0.7, 0); head.add(obj); }
       else if (where === 'front') { obj.position.set(0, 0.9, 0.55); b.add(obj); }
-      else if (where === 'handL') { obj.position.set(0, -0.42, 0.1); handL.add(obj); }
-      else { obj.position.set(0, -0.42, 0.1); handR.add(obj); }
+      else if (where === 'handL') { obj.position.set(0, -0.42 - (obj.userData.grip || 0), 0.1); handL.add(obj); }
+      else { obj.position.set(0, -0.42 - (obj.userData.grip || 0), 0.1); handR.add(obj); }
       return obj;
     },
     drop() {
@@ -576,13 +580,20 @@ export const item = {
   sack: () => item.moneybag(),
   /** A bundle of banknotes with a paper band. */
   wad: () => sculpt((v) => { v.box(0, 0, 0, 0.3, 0.1, 0.16, '#6ab04c'); v.box(0, -0.005, 0, 0.08, 0.11, 0.17, '#f4f1e6'); }),
-  crowbar: () => sculpt((v) => { v.box(0, -0.7, 0, 0.06, 0.7, 0.06, '#3d4651'); v.box(0, -0.76, 0.06, 0.06, 0.08, 0.18, '#3d4651'); v.box(0, -0.04, -0.05, 0.06, 0.06, 0.14, '#3d4651'); }),
+  /** A crowbar, real size; a painted red shaft with steel ends, so the thin bar reads against dark clothes. */
+  crowbar: () => sculpt((v) => { v.box(0, -0.7, 0, 0.06, 0.7, 0.06, '#c0262d'); v.box(0, -0.76, 0.06, 0.06, 0.08, 0.18, '#aeb6bd'); v.box(0, -0.04, -0.05, 0.06, 0.06, 0.14, '#aeb6bd'); }),
   torch: () => piece((v, gl) => { v.box(0, -0.3, 0, 0.1, 0.3, 0.1, '#2b2b2b'); v.box(0, -0.38, 0, 0.14, 0.08, 0.14, '#555'); gl.box(0, -0.4, 0, 0.1, 0.03, 0.1, '#fff6c9'); }),
   /** A ticket book and pen for the warden. */
   pad: () => sculpt((v) => { v.box(0, 0, 0, 0.22, 0.03, 0.3, '#ffe066'); v.box(0, 0.03, 0, 0.2, 0.01, 0.28, '#fffdf2'); v.box(0.08, 0.04, 0.05, 0.03, 0.03, 0.2, '#1d3557'); }),
   megaphone: () => sculpt((v) => { v.box(0, 0, 0, 0.12, 0.12, 0.2, '#e63946'); v.box(0, -0.04, 0.2, 0.22, 0.2, 0.12, '#f1faee'); v.box(0, -0.16, 0, 0.06, 0.16, 0.08, '#333'); }),
   lollipop: () => sculpt((v) => { v.box(0, -0.25, 0, 0.03, 0.25, 0.03, '#fff'); v.box(0, 0, 0, 0.16, 0.16, 0.05, '#ff4d6d'); }),
-  cuffs: () => sculpt((v) => { v.box(-0.07, 0, 0, 0.1, 0.1, 0.03, '#b8c0c6'); v.box(0.07, 0, 0, 0.1, 0.1, 0.03, '#b8c0c6'); v.box(0, 0.035, 0, 0.06, 0.03, 0.03, '#8a9299'); }),
+  /** Handcuffs, half as big again as real ones and polished bright, so they read in a hand from across the street. */
+  cuffs: () => {
+    const m = sculpt((v) => { v.box(-0.07, 0, 0, 0.1, 0.1, 0.03, '#e3e8ec'); v.box(0.07, 0, 0, 0.1, 0.1, 0.03, '#e3e8ec'); v.box(0, 0.035, 0, 0.06, 0.03, 0.03, '#9aa3aa'); });
+    m.scale.setScalar(1.5);
+    m.userData.grip = 0.03; // (gripped by one cuff's edge: see hold)
+    return m;
+  },
   fries: () => sculpt((v) => {
     v.box(0, 0, 0, 0.26, 0.3, 0.2, '#e63946');
     for (let i = -1; i <= 1; i++) v.box(i * 0.07, 0.3, 0, 0.05, 0.16 + (i ? 0 : 0.05), 0.05, '#ffd166');
@@ -605,7 +616,16 @@ export const item = {
     v.box(0, 0, 0, 0.9, 0.56, 0.12, '#222');
     v.box(0, 0.05, 0.06, 0.8, 0.46, 0.02, '#4cc9f0');
   }),
-  wallet: () => sculpt((v) => v.box(0, 0, 0, 0.2, 0.14, 0.06, '#6f4e37')),
+  /**
+   * A wallet: a lighter tan with a yellow card sticking out of the top, and a quarter bigger (about twice real size) when it
+   * is simply held; scenes that throw it about set their own scale, which replaces this one.
+   */
+  wallet: () => {
+    const m = sculpt((v) => { v.box(0, 0, 0, 0.2, 0.14, 0.06, '#a8642e'); v.box(0.025, 0.1, 0, 0.11, 0.06, 0.062, '#f4d35e'); });
+    m.scale.setScalar(1.25);
+    m.userData.grip = 0.07; // (gripped by its top edge, the body out of the fist: see hold)
+    return m;
+  },
   ticket: () => sculpt((v) => v.box(0, 0, 0, 0.2, 0.02, 0.3, '#ffe066')),
   bomb: () => sculpt((v) => {
     v.box(0, 0, 0, 0.5, 0.5, 0.5, '#1b1b1b');
@@ -613,10 +633,23 @@ export const item = {
     v.box(0, 0.6, 0, 0.05, 0.2, 0.05, '#d9b382');
   }),
   can: () => sculpt((v) => v.box(0, 0, 0, 0.3, 0.4, 0.3, '#9aa')),
-  phone: () => sculpt((v) => {
-    v.box(0, 0, 0, 0.14, 0.24, 0.03, '#1b1b1b');
-    v.box(0, 0.02, 0.016, 0.11, 0.18, 0.01, '#8fd3f4');
-  }),
+  /**
+   * A phone, about twice real size (0.15 x 0.29 m on an adult) so it reads in a wide shot: a light case with a dark camera
+   * and a screen that glows (the glow material, lit day and night). Held in a hand it stands just beyond the fingertips,
+   * leaning away from the holder with the screen towards them (the inner group is turned for that; drop() leaves it so):
+   * a camera in front of them sees the light back, one behind them the lit screen.
+   */
+  phone: () => {
+    const g = new THREE.Group(), p = piece((v, gl) => {
+      v.box(0, -0.06, 0, 0.17, 0.32, 0.045, '#e9edf0');
+      v.box(0.045, 0.19, -0.031, 0.045, 0.045, 0.02, '#2b2b2b'); // the camera, on the back
+      gl.box(0, -0.035, 0.028, 0.14, 0.27, 0.012, '#9fe4ff'); // the screen
+    });
+    p.rotation.set(Math.PI / 2 + 1.0, Math.PI, 0); // its length along the hand's +z, the screen towards the wrist, then leaning 1 rad away
+    p.position.y = 0.03; // (its lower edge 2 cm into the fist: gripped, not floating)
+    g.add(p);
+    return g;
+  },
   /** fishing rod; the pole runs along the arm, away from the shoulder */
   rod: () => sculpt((v) => {
     v.box(0, -1.5, 0, 0.05, 1.5, 0.05, '#8d6e4c');
@@ -647,8 +680,13 @@ export const item = {
     v.box(0, 0, 0, 0.4, 0.22, 0.22, '#2b2b2b');
     v.box(0, 0.04, 0.115, 0.28, 0.1, 0.01, '#ffb000');
   }),
-  shoe: () => sculpt((v) => {
-    v.box(0, 0, 0, 0.18, 0.12, 0.34, '#7a4a21');
-    v.box(0, 0.12, -0.08, 0.16, 0.14, 0.16, '#7a4a21');
-  }),
+  /** A shoe, held by its heel: it would sit mostly inside the fist otherwise (see hold). */
+  shoe: () => {
+    const m = sculpt((v) => {
+      v.box(0, 0, 0, 0.18, 0.12, 0.34, '#7a4a21');
+      v.box(0, 0.12, -0.08, 0.16, 0.14, 0.16, '#7a4a21');
+    });
+    m.userData.grip = 0.12; // (the heel in the fist)
+    return m;
+  },
 };

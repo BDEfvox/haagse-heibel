@@ -60,7 +60,8 @@ function model(list, sx = 1, sy = 1, sz = 1) {
 const W_ = '#ffffff';
 // the same figure the cast module builds, as one mesh: shirt = colour 1, trousers 2, skin 3, hair 4.
 // Written as pieces so the archetypes can swap some of them: [0..3] legs and shoes, [4] torso, [5..8] arms, [9] head,
-// [10, 11] eyes, [12, 13] hair. Figures face +z; their left arm is the one at +x.
+// [10, 11] eyes, [12, 13] hair, the archetype's extras, and last the phone (two boxes, see PHONE). Figures face +z; their
+// left arm is the one at +x.
 const SHOE = '#2a2a2a';
 const legs = (shorts, shoe = SHOE) => [-1, 1].flatMap((sd, i) => (shorts
   ? [[sd * 0.2, 0.38, 0, 0.3, 0.32, 0.32, W_, 2, i + 1, 0.7], [sd * 0.2, 0, 0, 0.28, 0.38, 0.3, W_, 3, i + 1, 0.7]]
@@ -69,8 +70,19 @@ const arms = (bare) => [-1, 1].flatMap((sd, i) => [[sd * 0.51, 0.96, 0, 0.24, 0.
 const TORSO = [0, 0.7, 0, 0.78, 0.8, 0.46, W_, 1];
 const HEAD = [[0, 1.5, 0, 0.66, 0.62, 0.62, W_, 3], [-0.16, 1.8, 0.31, 0.11, 0.13, 0.03, '#1b1b1b'], [0.16, 1.8, 0.31, 0.11, 0.13, 0.03, '#1b1b1b']];
 const HAIR = [[0, 2.06, -0.02, 0.7, 0.14, 0.66, W_, 4], [0, 1.7, -0.3, 0.7, 0.4, 0.08, W_, 4]];
+// The phone a filming bystander holds up in the left hand (pose 7): drawn twice real size, a light case and a screen that
+// faces the filmer and is lit day and night (parts 9 and 10). Every figure carries it, shrunk out of sight inside its left hand
+// (PH_REST, the hand's middle); in pose 7 only, the shader moves it out to PH_AT and stretches it by PH_K (crowdMat), so
+// it costs two boxes per figure and no draw call or attribute. PH_SHOW is the shape it is shown in: boxes in the arm's
+// hanging frame (centres), it swings up with the arm (limb 4, pivot 1.46).
+const PH_REST = [0.51, 0.86, 0.0], PH_AT = [0.51, 0.72, 0.22], PH_K = [1, 0.5, 2];
+const PH_SHOW = [[0.51, 0.72, 0.22, 0.17, 0.05, 0.32, '#eef2f4', 9], [0.51, 0.749, 0.225, 0.14, 0.014, 0.27, '#9fe4ff', 10]]; // case, screen
+const PHONE = PH_SHOW.map(([x, y, z, w, h, d, c, pt]) => {
+  const at = (v, i) => PH_REST[i] + (v - PH_AT[i]) / PH_K[i];
+  return [at(x, 0), at(y, 1) - h / PH_K[1] / 2, at(z, 2), w / PH_K[0], h / PH_K[1], d / PH_K[2], c, pt, 4, 1.46];
+});
 /** The standard figure with optional changes: { shorts, bare, shoe, hair: false, extra: [boxes] }. */
-const figure = (o = {}) => [...legs(o.shorts, o.shoe), TORSO, ...arms(o.bare), ...HEAD, ...(o.hair === false ? [] : HAIR), ...(o.extra || [])];
+const figure = (o = {}) => [...legs(o.shorts, o.shoe), TORSO, ...arms(o.bare), ...HEAD, ...(o.hair === false ? [] : HAIR), ...(o.extra || []), ...PHONE];
 const PERSON = () => model(figure());
 // Boxes on a limb swing with it: pass the limb number and pivot (arms 3 = right, 4 = left at +x, pivot 1.46; legs 1/2, pivot 0.7).
 const onArm = (x, y, z, w, h, d, c, limb = 4) => [x, y, z, w, h, d, c, 0, limb, 1.46];
@@ -183,15 +195,19 @@ const TRAM = () => model([
 ]);
 const TRAM_SEG = 5.5, TRAM_N = 5;
 
+const v3 = (a) => `vec3(${a.map((x) => x.toFixed(4)).join(', ')})`;
+const PH_GLSL = `\nconst vec3 PH_REST = ${v3(PH_REST)};\nconst vec3 PH_AT = ${v3(PH_AT)};\nconst vec3 PH_K = ${v3(PH_K)};\n`;
 function crowdMat() {
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
   mat.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 aPart;\nattribute vec4 iAnim;\nattribute vec3 iC1;\nattribute vec3 iC2;\nattribute vec3 iC3;\nattribute vec3 iC4;\nvarying float vGlow;\nvarying vec3 vLit;\nvarying vec3 vLamp;\nuniform float uNight;' + LAMP_GLSL)
+      .replace('#include <common>', '#include <common>\nattribute vec3 aPart;\nattribute vec4 iAnim;\nattribute vec3 iC1;\nattribute vec3 iC2;\nattribute vec3 iC3;\nattribute vec3 iC4;\nvarying float vGlow;\nvarying vec3 vLit;\nvarying vec3 vLamp;\nuniform float uNight;' + LAMP_GLSL + PH_GLSL)
       .replace('#include <color_vertex>', `#include <color_vertex>
-        // parts 5 (vehicle lights: on when the instance's flag iC2.x is set), 6 (lamp heads) and 7 (tram windows) glow at night
-        vGlow = aPart.x > 7.5 ? iC2.y : aPart.x > 4.5 ? uNight * (aPart.x < 5.5 ? iC2.x : 1.0) : 0.0;
-        vLit = aPart.x > 7.5 ? vec3(1.0, 0.62, 0.08) : aPart.x > 6.5 ? vec3(1.0, 0.8, 0.42) : aPart.x > 5.5 ? vec3(1.0, 0.82, 0.45) : vColor.rgb;
+        // parts 5 (vehicle lights: on when the instance's flag iC2.x is set), 6 (lamp heads) and 7 (tram windows) glow at night,
+        // 8 (hazard lights) when iC2.y says so; 9 and 10 are the filming phone (see PHONE): its screen (10) is lit day and
+        // night, as the acted phone's screen (the glow material): bright by day, glowing at night
+        vGlow = aPart.x > 9.5 ? 1.0 : aPart.x > 8.5 ? 0.0 : aPart.x > 7.5 ? iC2.y : aPart.x > 4.5 ? uNight * (aPart.x < 5.5 ? iC2.x : 1.0) : 0.0;
+        vLit = aPart.x > 8.5 ? vColor.rgb : aPart.x > 7.5 ? vec3(1.0, 0.62, 0.08) : aPart.x > 6.5 ? vec3(1.0, 0.8, 0.42) : aPart.x > 5.5 ? vec3(1.0, 0.82, 0.45) : vColor.rgb;
         vColor.rgb *= aPart.x < 0.5 || aPart.x > 4.5 ? vec3(1.0) : aPart.x < 1.5 ? iC1 : aPart.x < 2.5 ? iC2 : aPart.x < 3.5 ? iC3 : iC4;`)
       .replace('#include <project_vertex>', `#include <project_vertex>
         // a little warm light on whoever stands near a lamp (the lamps nearest to what the camera looks at: see U.uLampA)
@@ -199,6 +215,8 @@ function crowdMat() {
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         {
           float limb = aPart.y, ride = iAnim.z;
+          // the phone (parts 9, 10) comes out of the hand only while filming (pose 7)
+          if (aPart.x > 8.5 && ride > 6.5 && ride < 7.5) transformed = PH_AT + (transformed - PH_REST) * PH_K;
           if (limb > 0.5) {
             float sgn = (limb < 1.5 || limb > 3.5) ? 1.0 : -1.0;
             bool leg = limb < 2.5;
