@@ -77,13 +77,30 @@ function* go(ctx, a, x, z, speed = a.speed, stop = 0.06, o = null) {
   if (!pts.length) { yield; return; }
   yield* followRoute(ctx, a, pts, speed, stop, null);
 }
+/** The highest roof (plus a bird's clearance) under street-space (x, z) and 1.5 and 3 m on along (dx, dz), above the ground there; 0 where none. */
+function roofAhead(a, x, z, dx, dz) {
+  const c = a.ctx, W = c && c.W;
+  if (!W || !W.solid || !W.path || typeof W.hAt !== 'function') return 0;
+  const l = Math.hypot(dx, dz) || 1;
+  let top = 0;
+  for (const t of [0, 1.5, 3]) {
+    const q = W.path.xz(c.sc + x + (dx / l) * t, z + (dz / l) * t), v = W.solid.get(q[0], q[1]);
+    if (v > 0 && v < 255) top = Math.max(top, W.solid.y0 + v / 2 - W.hAt(q[0], q[1]) + 0.6);
+  }
+  return top;
+}
 function* fly(a, x, y, z, speed) {
   for (;;) {
     const p = a.g.position, dx = x - p.x, dy = y - p.y, dz = z - p.z, d = Math.hypot(dx, dy, dz);
     if (d <= 0.1) return;
     const dt = yield;
     const s = Math.min(d, speed * dt);
-    p.x += (dx / d) * s; p.y += (dy / d) * s; p.z += (dz / d) * s;
+    // over the houses, not through them: a roof on the way ahead is climbed over first (the bird slows down while it climbs)
+    let ny = p.y + (dy / d) * s, k = 1;
+    // (not in the last 4 m before a goal that is itself over a roof: the scene put it there, and the bird must arrive)
+    const top = Math.hypot(dx, dz) < 4 && roofAhead(a, x, z, 0, 0) > y ? 0 : roofAhead(a, p.x, p.z, dx, dz);
+    if (top > ny) { ny = Math.min(top, p.y + speed * dt); if (ny < top - 0.05) k = 0.25; }
+    p.x += (dx / d) * s * k; p.y = ny; p.z += (dz / d) * s * k;
     if (Math.hypot(dx, dz) > 0.2) a.heading = Math.atan2(dx, dz);
     a.moving = speed;
   }

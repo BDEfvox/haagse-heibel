@@ -13,6 +13,7 @@ import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
 import { Overhead } from './overhead.js';
 import { FURN as STREET_FURN } from './setting.js';
+import { PERSON as G_PERSON, WHEEL as G_WHEEL, ALL as G_ALL } from './ground.js';
 import { sfx } from '../audio.js';
 
 // Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open. The owner can
@@ -134,6 +135,7 @@ const FURN = Object.fromEntries(['bench', 'bin', 'box', 'mailbox', 'parasol', 'r
 /** Furniture the camera must never stand under or inside (parasols, market stalls, kiosks): see _clear. */
 const TALL = new Set(['terrace', 'mstall', 'kiosk', 'parasol']);
 
+let _wT = 0; // the stage's clock, for easing heights in warp (set at the start of every frame)
 /** Make an object live in a context's street space: its position is (x along, y up, z across) from that spot. */
 const SOFT_REACH = 600; // m: how far the focus-shift tests of ambient life look (the overhead's SEE_FAR: beyond it a bird is under a pixel)
 /**
@@ -179,12 +181,26 @@ function warp(obj, ctx, path, hAt) {
     this.matrix.compose(p, this.quaternion, this.scale);
     _W.makeRotationY(Math.atan2(-_f.tz, _f.tx));
     const X = _f.x - _f.tz * az, Z = _f.z + _f.tx * az;
-    let Y = hAt(X, Z);
-    const V = this._veh;
+    const V = this._veh, G = ctx.W && ctx.W.ground;
+    let Y;
     if (V && V.len) {
       // a long vehicle sits on the highest ground under its axles and sides, so a kerb step or a slope never buries a wheel
+      // (W.ground for a wheel: a rail bar counts as the road it lies in, so a car crossing tram tracks is not lifted onto one corner)
       const h = this.rotation.y, sh = Math.sin(h), ch = Math.cos(h), fx = _f.tx * sh - _f.tz * ch, fz = _f.tz * sh + _f.tx * ch, a = V.len * 0.36, w = (V.wid || 1.8) * 0.42;
-      for (const k of [-1, 1]) for (const q of [-1, 1]) Y = Math.max(Y, hAt(X + fx * a * k - fz * w * q, Z + fz * a * k + fx * w * q));
+      Y = G ? -Infinity : hAt(X, Z);
+      for (const k of [-1, 1]) for (const q of [-1, 1]) { const px = X + fx * a * k - fz * w * q, pz = Z + fz * a * k + fx * w * q; Y = Math.max(Y, G ? G.at(px, pz, 0, G_WHEEL, G_ALL) : hAt(px, pz)); }
+    } else {
+      Y = hAt(X, Z);
+      if (this._feet && G) {
+        // a person: the highest ground under the corners of the two shoes (x +-0.36, z -0.17..0.27 in the figure's units), turned with it
+        const h = this.rotation.y, sh = Math.sin(h), ch = Math.cos(h), fx = _f.tx * sh - _f.tz * ch, fz = _f.tz * sh + _f.tx * ch, sc = this.scale.x;
+        for (let k = 0; k < 4; k++) { const lx = (k & 1 ? 0.36 : -0.36) * sc, lz = (k & 2 ? 0.27 : -0.17) * sc; Y = Math.max(Y, G.at(X + fx * lz + fz * lx, Z + fz * lz - fx * lx, 0, G_PERSON, G_ALL)); }
+      }
+    }
+    if (V || this._feet) {
+      // eased on the stage's clock (a step onto a kerb is quick, a step down a little slower); a jump of more than 1.5 m is not eased
+      if (this._gy !== undefined && Math.hypot(X - this._gx, Z - this._gz) < 1.5) { const dt = Math.min(0.1, Math.max(0, _wT - this._gt)); Y = this._gy + clamp(Y - this._gy, -2.5 * dt, 4 * dt); }
+      this._gy = Y; this._gx = X; this._gz = Z; this._gt = _wT;
     }
     _W.setPosition(X, Y, Z); // it stands (or floats) on whatever is there
     _W.multiply(_T.makeTranslation(-ax, 0, -az));
@@ -1141,6 +1157,7 @@ export class Stage {
           a.alive = true;
           a.ctx = ctx;
           if (a.vehicle) a.g._veh = a;
+          else if (a.legL && a.head) a.g._feet = true; // (a person: stands on the highest ground under the feet, see warp)
           warp(a.g, ctx, path, W.hAt);
           stage.dyn.add(a.g);
           stage.actors.push(a);
@@ -1398,8 +1415,12 @@ export class Stage {
     B.length = 0; Z.length = 0;
     for (const a of this.actors) {
       if (!a.alive || a.air || a.fly) continue;
-      const e = a.g.matrixWorld.elements; // where it was drawn last frame
-      B.push({ x: e[12], z: e[14], r: a.vehicle ? Math.max(1, (a.len || 2) / 2) : 0.35 });
+      // where it stands now (the scripts have moved it this frame; matrixWorld is still last frame's): as warp maps it
+      const p = a.g.position, c = a.g._ctx || a.ctx;
+      let x, z;
+      if (c && c.sc !== undefined && path && a.g.parent === this.dyn) { path.at(c.sc + p.x, _f); x = _f.x - _f.tz * p.z; z = _f.z + _f.tx * p.z; } // (only an actor standing in the street itself, not one carried by another)
+      else { const e = a.g.matrixWorld.elements; x = e[12]; z = e[14]; }
+      B.push({ x, z, r: a.vehicle ? Math.max(1, (a.len || 2) / 2) : 0.35 });
     }
     for (const c of this.locales) if (c.road && c.road.closed > 0) { const p = path.xz(c.sc, 0); Z.push({ x: p[0], z: p[1], r: 26 }); }
     if ((this.pruneT -= 0.016) <= 0) { this.pruneT = 2; C.prune(this.W.stream.live); }
@@ -1465,6 +1486,7 @@ export class Stage {
     this.timeScale += (target - this.timeScale) * Math.min(1, real * 14);
     const dt = real * this.timeScale * (this.debugSpeed || 1);
     this.time += dt;
+    _wT = this.time;
     const W = this.W, r = this.rig, g = this.goal;
 
     this.runner.update(dt);

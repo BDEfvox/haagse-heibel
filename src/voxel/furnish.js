@@ -2121,6 +2121,9 @@ export function furnishTile(o) {
   function finish() {
     v.setT(); gl.setT();
     for (const s of inTheWay) props.push(s);
-    return { props };
+    // every table of every terrace (props has one anchor per pair of tables): what the ground raster blocks (ground.js)
+    const cells = [];
+    for (const q of taken) if (q.kind === 'terrace') cells.push(q.x, q.z);
+    return { props, cells };
   }
 }

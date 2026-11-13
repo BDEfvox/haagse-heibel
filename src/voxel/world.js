@@ -9,6 +9,7 @@ import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } fro
 import { faceNearestRoad } from './statues/kit.js';
 import { SPECIAL_PARTS } from './special-parts.js';
 import { furnishTile } from './furnish.js';
+import { buildOcc, spillOf, joinOcc, makeGround } from './ground.js';
 import { signFor, lookOf as shopLook } from './brands.js';
 import { POI_CATS, POI_FLAG } from './poicats.js';
 
@@ -1962,6 +1963,8 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     /** Is a tree trunk within r metres of this scene position? */
     treeNear: (x, z, r = 1.2) => { const m = f.M(x, z); return treeNearMap(m[0], m[1], r); },
     anchors: { houses: [], shops: [], racks: [], benches: [], bins: [], parked: [], lamps: [], stalls: [], chimneys: [], atms: [], boxes: [] },
+    /** May something stand at a scene position, and how high is the ground there: see ground.js. */
+    ground: makeGround({ frame: f, city, tileAt: (mx, my) => _byNum.get(tileNum(Math.floor(mx / TILE), Math.floor(my / TILE))) || null, C, WET }),
     northAz: Math.atan2(-f.dy, f.dx),
     toScene: (lon, lat) => f.S((lon - ix.proj.lon0) * ix.proj.kx, (lat - ix.proj.lat0) * ix.proj.ky),
     toLngLat: (x, z) => { const m = f.M(x, z); return [ix.proj.lon0 + m[0] / ix.proj.kx, ix.proj.lat0 + m[1] / ix.proj.ky]; },
@@ -2301,6 +2304,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   // store blocks (storeFronts) are plain blocks at their real height from afar and shop fronts from near; a retail building
   // that found no street to front on stays the supermarket it was. Asked at every level of detail, so nothing changes shape.
   const stores = t.bt && t.bt.some((x, bi) => isStore(t, bi)) ? F || frontsOf(key, t) : null;
+  const occB = [];
   (t.b || []).forEach((e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
@@ -2312,6 +2316,7 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     b.o = obbOf(ring);
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
+    occB.push({ bi, ring, o: b.o, rects: b.rects }); // (as drawn, for the ground raster: ground.js)
     const look = lookOf(key, bi, b), type = t.bt ? t.bt[bi] : 0;
     if (sp || (type && TYPED.has(type) && !(stores && isStore(t, bi) && stores.byB.has(bi)))) {
       const n0 = vx.n, g0 = glx.n;
@@ -2391,11 +2396,12 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   const trees = treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
   if (trees) g.add(trees);
   // street furniture: every street has it, placed by the same rules from the tile's own data (see furnish.js)
-  let props = null;
+  let props = null, tCells = null;
   if (lod === 0) {
     const fv = new Vox(rnd.int(1, 9999)), fgl = new Vox(rnd.int(1, 9999)), fg = new THREE.Group();
     try {
-      props = furnishTile({ key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite }).props || [];
+      const fr = furnishTile({ key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite });
+      props = fr.props || []; tCells = fr.cells || null;
       fv.setT(); fgl.setT();
       if (!fv.empty) g.add(fv.mesh());
       if (!fgl.empty) g.add(fgl.mesh(MAT.glow));
@@ -2413,7 +2419,10 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     if (!cv.gl.empty) { const m = snug(new THREE.Mesh(cv.gl.geometry(), CUTT.glow)); g.add(m); plain.push(m); }
     cells.push({ ci, cx: ccx, cz: ccz, plain, units: F.units.filter((u) => u.ci === ci), detail: null, job: null });
   }
+  // what stands on each ground cell (finest level only) and the buildings that reach into the neighbours: see ground.js
+  const O = lod === 0 ? buildOcc({ grid, C, buildings: occB, fronts: F, props, cells: tCells, trees: pts, lamps, barriers: t.x }) : null;
   return {
+    occ: O ? O.occ : null, spill: O ? O.spill : spillOf(occB, F),
     key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t,
     dispose() {
       for (const cell of cells) { dropJob(cell); if (cell.detail) for (const sg of cell.detail.signs) P.releaseSign(sg.m); }
@@ -2443,6 +2452,8 @@ function syncNight(night) {
   for (const k of [..._built.keys()]) dropTile(k);
   _builtNight = night;
 }
+/** A tile was registered: its ground raster and its neighbours' share the buildings that reach across the edge (ground.js). */
+const joinTile = (c) => joinOcc(c, (tx, ty) => _byNum.get(tileNum(tx, ty)) || null);
 /** Make sure a tile exists at `lod` or finer; a coarser one is replaced on the spot, also if it is on screen. */
 function ensureTile(city, key, t, lod, night, lite) {
   const old = _built.get(key);
@@ -2455,7 +2466,7 @@ function ensureTile(city, key, t, lod, night, lite) {
     if (on) { placeTile(c, _stream.W.frame); _stream.group.add(c.g); _stream.group.remove(old.g); _stream.live.set(key, c); }
     old.dispose();
   }
-  _built.set(key, c); _byNum.set(c.num, c);
+  _built.set(key, c); _byNum.set(c.num, c); joinTile(c);
   if (on && _stream.onTile) _stream.onTile(c, true); // (the crowd learns the furniture the finer tile brought; told once the new tile is the registered one)
   return c;
 }
@@ -2708,7 +2719,7 @@ class Streamer {
     placeTile(c, this.W.frame);
     this.group.add(c.g); this.group.remove(old.g);
     this.live.set(key, c);
-    _built.set(key, c); _byNum.set(c.num, c);
+    _built.set(key, c); _byNum.set(c.num, c); joinTile(c);
     old.dispose();
   }
   /**

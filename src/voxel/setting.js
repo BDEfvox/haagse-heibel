@@ -9,9 +9,12 @@
 //   ctx.W.treeNear(x, z, r) a tree trunk within r metres
 //   ctx.W.props             furniture { kind, x, z } in scene coordinates (kinds and sizes: FURN below)
 //   ctx.W.anchors.parked / .lamps   the whole street's parked cars and lamp posts { s, z }
+//   ctx.W.ground.at(x, z, r, who, ignore)   may a person stand there, and how high is the ground (ground.js; see groundFree)
 //   ctx.crowd.obstacles(x, z, r, out)   optional: standing groups, waiting vehicles... [x, z, radius, height, ...] in scene coordinates
 // Besides ground, buildings and trees, a spot has an OBSTACLE PICTURE (`obstacles(ctx)`): everything that stands there. The
 // placement helpers, the walking route, the lane finder and the stage scan (`findStage`) all read it.
+
+import { PERSON as G_PERSON, STANDING as G_STANDING } from './ground.js';
 
 const X0 = -23.5, X1 = 23.5;
 
@@ -57,6 +60,17 @@ export function builtAt(ctx, x, z) {
   const p = scene(ctx, W, x, z);
   if (W.solid && typeof W.solid.get === 'function') { const v = W.solid.get(p[0], p[1]); if (v > 0 && v < 255) return true; }
   return !!(W.C && typeof W.clsAt === 'function' && W.clsAt(p[0], p[1]) === W.C.BUILDING);
+}
+/**
+ * The city's own answer (W.ground, the same function the crowd and the walking character ask): may a person stand at the street-space
+ * point? Only what scenes do not keep in their own picture counts here: buildings as drawn, water, fences and walls (the standing things,
+ * furniture, posts and parked cars, are the obstacle picture's, with its wider clearances). True when the world has no W.ground.
+ */
+export function groundFree(ctx, x, z) {
+  const W = world(ctx);
+  if (!W || !W.ground) return true;
+  const p = scene(ctx, W, x, z), h = W.ground.at(p[0], p[1], 0, G_PERSON, G_STANDING);
+  return h === h;
 }
 /** True when something is known to be there to stand in: a trunk within r metres. */
 export function treeAt(ctx, x, z, r = 0.8) {
@@ -253,7 +267,7 @@ export function clearSpot(ctx, x, z, r = 0.6, opt = {}) {
   const pts = r > 0 ? [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r]] : [[0, 0]];
   if (r >= 1) pts.push([r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]);
   for (const [dx, dz] of pts) {
-    if (builtAt(ctx, x + dx, z + dz)) return false;
+    if (builtAt(ctx, x + dx, z + dz) || !groundFree(ctx, x + dx, z + dz)) return false; // (both: no spot is gained that either forbids)
     if (tb) { const c = groundAt(ctx, x + dx, z + dz); if (c !== 255 && !tb[c]) return false; }
   }
   if (opt.trees !== false && treeAt(ctx, x, z, r + 0.3)) return false;
@@ -718,7 +732,7 @@ function padLine(ctx, sgn, x) {
 function walkable(ctx, x, z) {
   const W = world(ctx);
   if (!W) return true;
-  if (builtAt(ctx, x, z)) return false;
+  if (builtAt(ctx, x, z) || !groundFree(ctx, x, z)) return false;
   const c = groundAt(ctx, x, z);
   return c === 255 || !W.C || tables(W.C).walk[c] === 1;
 }
