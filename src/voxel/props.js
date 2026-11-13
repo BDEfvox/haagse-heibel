@@ -905,56 +905,67 @@ function disc(v, cx, cy, cz, r, d, col) {
   v.box(cx, cy - r * 0.75, cz, r * 1.5, r * 1.5, d, col);
 }
 
+const FB_DARK = '#202226'; // the fat-bike's dark parts, the same as the crowd's FB_DARK
+/** The fat-bike's frame colours (its battery block, nose and fenders): the same six as the niffo's `bikeCols` in districts.js. */
+const FAT_COLS = ['#ff6b00', '#ffd400', '#00c389', '#f2f2f2', '#e5173f', '#151515'];
 /**
- * Electric fat-bike, forward +z, about 1.75 m long. 20 x 4 inch tyres (0.71 m across, 0.12 m wide), a long flat bench
- * for two, upright bars, a big round headlight. Same conventions as makeScooter: riders passed in sit on it as part of
- * the vehicle (`a.riders`, [0] drives, [1] is the passenger holding on), the wheels turn and the front one steers with
- * the bars. For a rider that is a separate actor use `mount(bike, rider)` (it reads `a.seatY`).
+ * Electric fat-bike, forward +z, about 1.75 m long, drawn larger than life where it counts so it reads as one from far
+ * off (the same numbers as the crowd's FATBIKE in crowd.js): fat tyres 0.60 m across and 0.28 m wide (three times a
+ * real 4 inch tyre), a solid battery block in a strong frame colour where a bike has an open frame, one long flat dark
+ * bench for two, tall upright bars and a big round headlight (0.46 m). Same conventions as makeScooter: riders passed in
+ * sit on it as part of the vehicle (`a.riders`, [0] drives, [1] is the passenger holding on), the wheels turn and the
+ * front one steers with the bars. For a rider that is a separate actor use `mount(bike, rider)` (it reads `a.seatY`).
  */
 export function makeFatbike(rnd, riders = []) {
   const g = new THREE.Group(), body = new THREE.Group();
   g.add(body);
-  const main = rnd.chance(0.8) ? '#1c1d20' : rnd.pick(['#2b3a55', '#3b3f32', '#4a2b2b']);
-  const acc = rnd.pick(['#e63946', '#ffd60a', '#06d6a0', '#3a86ff', '#ff7b00']);
-  const R = 0.355, TW = 0.12, WZ = 0.52; // tyre radius (20" rim + 4" tyre), tyre width, axle offset from the middle
-  const SEAT = 0.86, HEAD = WZ - 0.13; // seat top; z of the steering axis
+  const main = rnd.chance(0.8) ? FB_DARK : rnd.pick([FB_DARK, FB_DARK, FB_DARK]); // the dark parts (stays, fork, bars, grab bar), as dark as the crowd's (the draws as before)
+  const acc = rnd.pick(FAT_COLS); // the frame colour
+  const R = 0.3, TW = 0.28, WZ = 0.54; // tyre radius, tyre width, axle offset from the middle
+  const SEAT = 0.86, HEAD = WZ - 0.13, SX = TW / 2 + 0.03; // seat top; z of the steering axis; x of stays and fork blades
   body.add(piece((v, gl) => {
     // seat: one long flat bench, kicked up at the back, with a grab bar for the passenger
-    v.box(0, 0.76, -0.27, 0.38, 0.1, 0.94, '#17181a', 0.02);
-    v.box(0, 0.752, -0.27, 0.4, 0.016, 0.96, acc);
-    v.box(0, SEAT, -0.74, 0.38, 0.05, 0.1, '#17181a');
-    for (const sx of [-1, 1]) v.box(sx * 0.15, 0.78, -0.82, 0.03, 0.16, 0.03, main);
-    v.box(0, 0.93, -0.82, 0.33, 0.03, 0.04, main);
-    // battery tower under the seat, with an accent panel each side
-    v.box(0, 0.3, -0.12, 0.16, 0.46, 0.4, main, 0.02);
-    for (const sx of [-1, 1]) v.box(sx * 0.085, 0.38, -0.12, 0.012, 0.28, 0.3, acc);
-    // rear: fender, stays and drop-outs either side of the fat tyre
-    v.box(0, 0.715, -WZ, 0.17, 0.03, 0.56, main);
+    v.box(0, 0.74, -0.3, 0.4, 0.12, 1.04, '#17181a', 0.02);
+    v.box(0, SEAT, -0.76, 0.4, 0.05, 0.12, '#17181a');
+    for (const sx of [-1, 1]) v.box(sx * 0.17, 0.78, -0.82, 0.03, 0.16, 0.03, main);
+    v.box(0, 0.93, -0.82, 0.37, 0.03, 0.04, main);
+    // the battery block fills the frame between the wheels, a nose runs on from it to the head tube
+    v.box(0, 0.24, 0.0, 0.22, 0.5, 0.4, acc, 0.02); // (3 cm clear of the round tyres, see fatWheel)
+    v.box(0, 0.6, 0.3, 0.16, 0.14, 0.22, acc);
+    v.box(0, 0.68, HEAD, 0.11, 0.26, 0.11, main);
+    // rear: fender, stays and hub caps either side of the fat tyre
+    v.box(0, 0.62, -WZ, 0.3, 0.05, 0.46, acc);
     for (const sx of [-1, 1]) {
-      v.box(sx * 0.09, 0.28, -WZ - 0.02, 0.04, 0.46, 0.1, main);
-      v.box(sx * 0.09, 0.3, -0.4, 0.04, 0.07, 0.34, main);
-      v.box(sx * 0.1, 0.295, -WZ, 0.05, 0.12, 0.12, '#8a9199'); // hub motor caps
+      v.box(sx * SX, 0.3, -WZ - 0.02, 0.04, 0.34, 0.08, main);
+      v.box(sx * SX, 0.27, -0.38, 0.04, 0.06, 0.3, main);
     }
-    gl.box(0, 0.66, -WZ - 0.3, 0.14, 0.06, 0.03, '#ff2d2d'); // tail light
-    // front: a chunky nose from the seat over the front tyre to the head tube; footplates either side of the front tyre,
-    // pegs for the passenger either side of the rear one
-    v.box(0, 0.74, 0.29, 0.1, 0.1, 0.2, main);
-    v.box(0, 0.76, HEAD, 0.11, 0.22, 0.11, main);
-    v.box(0, 0.86, HEAD, 0.115, 0.04, 0.115, acc);
+    gl.box(0, 0.66, -0.84, 0.24, 0.08, 0.04, '#ff2d2d'); // tail light
+    // footplates for the rider either side of the block, pegs for the passenger either side of the rear tyre
     for (const sx of [-1, 1]) {
-      v.box(sx * 0.2, 0.12, 0.18, 0.22, 0.05, 0.42, main);
-      v.box(sx * 0.31, 0.12, 0.18, 0.02, 0.07, 0.42, acc);
-      v.box(sx * 0.24, 0.12, -0.3, 0.2, 0.05, 0.4, main);
+      v.box(sx * 0.22, 0.14, 0.08, 0.16, 0.04, 0.34, main);
+      v.box(sx * 0.22, 0.14, -0.3, 0.12, 0.04, 0.16, main);
     }
   }));
-  // wheels: outside the sprung body (they turn with the speed); the front one hangs from the steering axis and carries the fork, bars and headlight
+  // wheels: outside the sprung body (they turn with the speed); the front one hangs from the steering axis and carries the fork, bars and headlight.
+  // A fat tyre is six bars of 2R x 0.16 m at 30 degree steps (three meshes of two crossed bars): round to within 1 cm (R to R + 0.01),
+  // so as it spins it stays clear of the fenders (R + 0.02 above the axle) and the battery block (0.34 m from the axles), unlike
+  // makeWheel's two squares, whose corners reach 1.3 R.
   const mkWheel = () => {
-    const w = makeWheel(R, TW, 1);
-    w.userData.spin.add(sculpt((v) => { // the hub cap on the other side too
-      v.box(-(TW / 2 + 0.005), -R * 0.5, 0, 0.02, R, R, '#c9d1d6');
-      v.box(-(TW / 2 + 0.012), -R * 0.12, 0, 0.02, R * 0.24, R * 1.5, '#7d868c');
-      v.box(-(TW / 2 + 0.012), -R * 0.75, 0, 0.02, R * 1.5, R * 0.24, '#7d868c');
+    const w = new THREE.Group(), spin = new THREE.Group();
+    for (let k = 0; k < 3; k++) {
+      const t = sculpt((v) => { v.box(0, -R, 0, TW, 2 * R, 0.16, '#1a1a1a'); v.box(0, -0.08, 0, TW, 0.16, 2 * R, '#1a1a1a'); });
+      t.rotation.x = (k * Math.PI) / 6;
+      spin.add(t);
+    }
+    spin.add(sculpt((v) => { // the hub caps, both sides
+      for (const sd of [1, -1]) {
+        v.box(sd * (TW / 2 + 0.005), -R * 0.5, 0, 0.02, R, R, '#c9d1d6');
+        v.box(sd * (TW / 2 + 0.012), -R * 0.12, 0, 0.02, R * 0.24, R * 1.5, '#7d868c');
+        v.box(sd * (TW / 2 + 0.012), -R * 0.75, 0, 0.02, R * 1.5, R * 0.24, '#7d868c');
+      }
     }));
+    w.add(spin);
+    w.userData.spin = spin;
     return w;
   };
   const rear = mkWheel();
@@ -964,20 +975,21 @@ export function makeFatbike(rnd, riders = []) {
   wheelF.position.z = 0.13; // the wheel centre is ahead of the steering axis
   fr.userData = { spin: wheelF.userData.spin, front: true };
   fr.add(wheelF);
-  wheelF.add(piece((v, gl) => { // (origin: the front wheel centre)
-    for (const sx of [-1, 1]) v.box(sx * 0.1, 0, 0, 0.05, 0.34, 0.06, main); // fork blades
-    v.box(0, 0.3, -0.1, 0.26, 0.05, 0.14, main); // crown
-    v.box(0, 0.37, 0, 0.17, 0.03, 0.34, main); // fender
-    v.box(0, 0.3, -0.13, 0.07, 0.66, 0.07, main); // steering column (turns inside the static head tube)
-    v.box(0, 0.92, -0.13, 0.62, 0.04, 0.04, main); // upright bars, swept back at the grips
+  const Y = (y) => y - R; // (origin: the front wheel centre; heights below are above the ground)
+  wheelF.add(piece((v, gl) => {
+    for (const sx of [-1, 1]) v.box(sx * SX, Y(R), 0, 0.05, 0.34, 0.06, main); // fork blades
+    v.box(0, Y(0.62), -0.13, 0.4, 0.05, 0.1, main); // crown
+    v.box(0, Y(0.62), 0, 0.3, 0.05, 0.4, acc); // fender
+    v.box(0, Y(0.62), -0.13, 0.07, 0.66, 0.07, main); // steering column (turns inside the static head tube)
+    v.box(0, Y(1.24), -0.13, 0.74, 0.04, 0.04, main); // upright bars, swept back at the grips
     for (const sx of [-1, 1]) {
-      v.box(sx * 0.3, 0.88, -0.22, 0.05, 0.05, 0.2, '#101113');
-      v.box(sx * 0.3, 0.92, -0.17, 0.04, 0.04, 0.1, main);
+      v.box(sx * 0.35, Y(1.2), -0.22, 0.05, 0.05, 0.2, '#101113');
+      v.box(sx * 0.35, Y(1.24), -0.17, 0.04, 0.04, 0.1, main);
     }
-    v.box(0, 0.96, -0.13, 0.12, 0.04, 0.08, acc); // bar-top display
-    // the big round headlight: bezel, and a glowing lens in front of it
-    disc(v, 0, 0.62, -0.04, 0.16, 0.12, '#25272b');
-    disc(gl, 0, 0.62, 0.03, 0.135, 0.03, '#fff6c9');
+    v.box(0, Y(1.28), -0.13, 0.12, 0.04, 0.08, acc); // bar-top display
+    // the big round headlight in front of the column, below the bars: bezel, and a glowing lens in front of it
+    disc(v, 0, Y(1.0), 0.01, 0.25, 0.08, '#25272b'); // 0.46 m, as the crowd's
+    disc(gl, 0, Y(1.0), 0.06, 0.216, 0.03, '#fff6c9'); // 0.40 m
   }));
   g.add(rear, fr);
   const SIT = 0.285; // sit pose: the hip is this far up the person (times its scale) above its origin

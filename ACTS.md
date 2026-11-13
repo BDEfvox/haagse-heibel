@@ -234,7 +234,7 @@ kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a
 
 ## 6. Vehicles: `makeCar(rnd, 'car' | 'police' | 'van' | 'taxi', L.night)`, `makeScooter(rnd, [riders])`, `makeFatbike(rnd, [riders])`, `makeBike(rnd)`
 
-`makeFatbike` is an electric fat-bike like the scooter (1.75 m, 4 inch tyres, long bench for two, big round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
+`makeFatbike` is an electric fat-bike like the scooter (1.75 m; drawn larger than life so it reads from far off: tyres 0.60 m across and 0.28 m wide, a battery block in a strong frame colour, a long dark bench for two, tall bars, a 0.46 m round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
 
 Enter with `yield* R.enter(car, x, z, 0, { dir: 1 })` (it drives in from out of the frame heading the way you say) then `car.face(E)`. A car is 4.4 m long (`car.len`, `car.wid`). The body sits
 on springs: it **rolls in bends, dives when braking and squats when accelerating by itself** from how you drive it.

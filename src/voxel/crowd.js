@@ -134,13 +134,21 @@ const BIKE = () => model([
   [0, 0.88, 0.45, 0.1, 0.09, 0.05, '#fff6c9', 5], [0, 0.55, -0.79, 0.07, 0.07, 0.04, '#ff2d2d', 5], // a small white lamp in front, a red one behind
 ], 1.19, 1.19, 1.19);
 const RIDER_Y = 0.52, RIDER_Z = -0.28, RIDER_S = 1.2 * PERSON_K;
-// Fat-bike (20 x 4 inch tyres, long moped-style bench seat, big round headlight). Real metres, front towards +z.
+// Fat-bike, drawn larger than life where it counts so it reads as one from far off: fat tyres (0.60 m across, 0.28 m
+// wide: about three times a real 4 inch tyre), a solid battery block in the frame colour where a bike has an open
+// frame, one long flat dark bench, tall upright bars and a big round headlight. Real metres, front towards +z, the
+// same numbers as makeFatbike in props.js (seat top 0.90 here: RIDE.fatbike seats the riders on it).
+const FB_DARK = '#202226', FB_HUB = '#c9d1d6', FB_LAMP = '#fffbe0';
 const FATBIKE = () => model([
-  [0, 0, -0.6, 0.13, 0.7, 0.7, '#121212'], [0, 0, 0.6, 0.13, 0.7, 0.7, '#121212'], [0, 0.18, -0.6, 0.15, 0.3, 0.3, '#8d9299'], [0, 0.18, 0.6, 0.15, 0.3, 0.3, '#8d9299'],
-  [0, 0.3, 0.0, 0.16, 0.14, 1.0, W_, 1], [0, 0.42, -0.1, 0.2, 0.3, 0.62, '#202226'], [0, 0.4, 0.62, 0.1, 0.62, 0.1, '#202226'],
-  [0, 0.78, -0.3, 0.27, 0.12, 0.96, '#17171a'], [0, 0.7, -0.78, 0.22, 0.1, 0.12, W_, 1], [0, 0.55, 0.62, 0.22, 0.05, 0.34, W_, 1],
-  [0, 0.9, 0.52, 0.08, 0.3, 0.08, '#202226'], [0, 1.18, 0.5, 0.64, 0.06, 0.07, '#202226'],
-  [0, 0.98, 0.68, 0.34, 0.34, 0.14, '#fffbe0', 5], [0, 0.82, -0.8, 0.16, 0.07, 0.04, '#ff2d2d', 5],
+  ...[-0.54, 0.54].flatMap((z) => [[0, 0, z, 0.28, 0.6, 0.42, '#121212'], [0, 0.09, z, 0.28, 0.42, 0.6, '#121212'], [0, 0.15, z, 0.31, 0.3, 0.3, FB_HUB]]), // tyres (two crossed boxes: rounded) and hubs
+  [0, 0.24, 0.0, 0.22, 0.5, 0.4, W_, 1], [0, 0.6, 0.3, 0.16, 0.14, 0.22, W_, 1], // battery block filling the frame, nose up to the head tube
+  [0, 0.76, -0.3, 0.4, 0.14, 1.04, '#17171a'], // the bench, top 0.90
+  [0, 0.62, -0.54, 0.3, 0.05, 0.46, W_, 1], [0, 0.62, 0.54, 0.3, 0.05, 0.4, W_, 1], // fenders
+  [-0.17, 0.3, 0.54, 0.05, 0.34, 0.06, FB_DARK], [0.17, 0.3, 0.54, 0.05, 0.34, 0.06, FB_DARK], [0, 0.62, 0.41, 0.08, 0.66, 0.08, FB_DARK], // fork blades, steering column
+  [0, 1.24, 0.41, 0.74, 0.06, 0.06, FB_DARK], [0, 0.14, 0.08, 0.6, 0.04, 0.34, FB_DARK], // upright bars, footboards
+  [0, 0.83, 0.55, 0.46, 0.34, 0.08, FB_DARK], [0, 0.77, 0.55, 0.34, 0.46, 0.08, FB_DARK], // headlight bezel, round-ish, 0.46 m
+  [0, 0.86, 0.6, 0.4, 0.28, 0.04, FB_LAMP, 5], [0, 0.8, 0.6, 0.28, 0.4, 0.04, FB_LAMP, 5], // its lens: glows at night, 0.40 m across
+  [0, 0.66, -0.84, 0.24, 0.08, 0.04, '#ff2d2d', 5],
 ]);
 // Cargo bike (bakfiets): long, a wooden box with two helmeted children in front of the rider
 const CARGO = () => model([
@@ -152,8 +160,9 @@ const CARGO = () => model([
   [-0.2, 0.5, 0.62, 0.3, 0.4, 0.28, '#f4a261'], [-0.2, 0.9, 0.62, 0.28, 0.26, 0.28, '#ffd166'], [0.2, 0.5, 0.95, 0.3, 0.38, 0.28, '#2a9d8f'], [0.2, 0.88, 0.95, 0.28, 0.26, 0.28, '#e63946'],
   [0, 0.88, -0.98, 0.14, 0.07, 0.04, '#ff2d2d', 5],
 ]);
-// where the rider sits on each: y offset of the figure's origin, z of the driver, z of a passenger (0 = none)
-const RIDE = { bike: { y: RIDER_Y, z: RIDER_Z, z2: 0 }, fatbike: { y: 0.33, z: -0.1, z2: -0.5 }, cargo: { y: 0.4, z: -0.46, z2: 0 } };
+// where the rider sits on each: y offset of the figure's origin, z of the driver, z of a passenger (0 = none), and the
+// riders' pose (iAnim.z: 1 pedalling, 8 sitting upright with the legs held level and forward, as on makeFatbike)
+const RIDE = { bike: { y: RIDER_Y, z: RIDER_Z, z2: 0, pose: 1 }, fatbike: { y: 0.33, z: -0.1, z2: -0.5, pose: 8 }, cargo: { y: 0.4, z: -0.46, z2: 0, pose: 1 } };
 const BIKES_ = { bike: () => BIKE(), fatbike: FATBIKE, cargo: CARGO };
 // street lamps in the three shapes of LAMP_KIND (squares use the residential one); the arm reaches along +x, towards the road.
 // The head is part 6: it glows at night (uniform U.uNight in the shader), so a lamp never has to be swapped for a lit one.
@@ -195,8 +204,12 @@ function crowdMat() {
             bool leg = limb < 2.5;
             float ang = sgn * sin(iAnim.x) * iAnim.y * (leg ? 1.0 : 0.9);
             // iAnim.z: 0 walking, 1 riding, 2 talking with the hands, 3 looking at a phone, 4 hands in pockets (standing: the legs stay still),
-            // 5 running with both arms up (the legs keep their stride), 6 clapping, 7 filming with the phone held up
-            if (ride > 6.5) ang = leg ? 0.0 : (sgn > 0.0 ? -1.95 + 0.05 * sin(iAnim.x * 1.3) : -0.3);
+            // 5 running with both arms up (the legs keep their stride), 6 clapping, 7 filming with the phone held up,
+            // 8 riding a fat-bike (sitting upright, hands on the high bars, the legs held level and still, as the acted rider's
+            // thighs in the 'sit' pose; the instanced leg has no knee, so the whole leg goes forward: level, it passes over the
+            // nose, the front fender and the fork and stops short of the headlight)
+            if (ride > 7.5) ang = leg ? -1.5 : -1.1;
+            else if (ride > 6.5) ang = leg ? 0.0 : (sgn > 0.0 ? -1.95 + 0.05 * sin(iAnim.x * 1.3) : -0.3);
             else if (ride > 5.5) ang = leg ? 0.0 : -1.2 + 0.3 * sin(iAnim.x * 2.6);
             else if (ride > 4.5) { if (!leg) ang = -2.6 + 0.3 * sin(iAnim.x + sgn); }
             else if (ride > 3.5) ang = leg ? 0.0 : 0.12;
@@ -217,7 +230,7 @@ function crowdMat() {
       .replace('#include <opaque_fragment>', 'outgoingLight += vColor.rgb * vLamp * (0.9 * uNight);\n\toutgoingLight = mix(outgoingLight, vLit, vGlow);\n\t#include <opaque_fragment>');
     Object.assign(sh.uniforms, { uNight: U.uNight, uLampA: U.uLampA, uLampN: U.uLampN, uLampR: U.uLampR, uFocus: U.uFocus });
   };
-  mat.customProgramCacheKey = () => 'crowd5';
+  mat.customProgramCacheKey = () => 'crowd6';
   return mat;
 }
 /**
@@ -2281,11 +2294,11 @@ export class Crowd {
         const sn = Math.sin(a.hd), cs = Math.cos(a.hd);
         P.put(a.rider, a.x + sn * rd.z, y + rd.y, a.z + cs * rd.z, a.hd, RIDER_S * s);
         let o = a.rider * 4;
-        anim[o] = a.ph; anim[o + 1] = 0; anim[o + 2] = 1; anim[o + 3] = wait ? 0.06 : 0;
+        anim[o] = a.ph; anim[o + 1] = 0; anim[o + 2] = rd.pose; anim[o + 3] = wait ? 0.06 : 0;
         if (a.pass >= 0) {
           P.put(a.pass, a.x + sn * rd.z2, y + rd.y, a.z + cs * rd.z2, a.hd, RIDER_S * s * 0.97);
           o = a.pass * 4;
-          anim[o] = a.ph + 1.7; anim[o + 1] = 0; anim[o + 2] = 1; anim[o + 3] = 0;
+          anim[o] = a.ph + 1.7; anim[o + 1] = 0; anim[o + 2] = rd.pose; anim[o + 3] = 0;
         }
       } else if (a.kind === TRAM_) {
         // five sections, each where the track is under it; behind the start of the lane they follow in a straight line
