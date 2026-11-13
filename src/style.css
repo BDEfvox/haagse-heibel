@@ -167,6 +167,7 @@ button { font-family: inherit; cursor: pointer; }
 .gag-pin { position: absolute; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; padding: 0; border-radius: 50%; border: 3px solid var(--ink); background: var(--hot); color: #fff; font: 400 15px var(--pix); cursor: pointer; pointer-events: auto; box-shadow: 0 4px 0 rgba(8, 12, 30, 0.5); will-change: transform; }
 .gag-pin span { display: block; animation: pin 0.7s ease-in-out infinite alternate; }
 .gag-pin.edge { background: #ffd60a; color: var(--ink); }
+.gag-pin.faint { pointer-events: none; cursor: default; } /* fading with distance (stage.js PIN_FULL, PIN_GONE): not clickable */
 .gag-pin[hidden] { display: none; }
 @keyframes pin { from { transform: translateY(1px) scale(0.92); } to { transform: translateY(-2px) scale(1.12); } }
 #file .row em { font-style: normal; font-size: 10px; }

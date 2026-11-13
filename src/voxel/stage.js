@@ -110,6 +110,8 @@ const _col = new THREE.Color(), _W = new THREE.Matrix4(), _T = new THREE.Matrix4
 const MIN_SHOT = 0.9;      // a new shot waits until the last cut is this old (unless `quick`, or it glides)
 const SAFETY = 20;         // a scene that asks for nothing new for this long loses the camera (once, with a warning)
 const STAGE_R = 15;        // metres the crowd keeps clear around the scene that holds the camera
+// a "!" pin is fully there while its spot is within PIN_FULL metres of the point the camera looks at, fades evenly, and is gone at PIN_GONE
+const PIN_FULL = 150, PIN_GONE = 300;
 const BLOCKED_FOR = 0.7;   // the sight line must stay blocked this long before the stand is reconsidered (once)
 const RECLEAR_FOR = 1.0;   // ...and clear this long before the high fallback is left again
 const RECONSIDER = 2;      // after any such decision: no new one for this long
@@ -1406,33 +1408,52 @@ export class Stage {
   // ------------------------------------------------------------ "something is happening over there" pins
   _pins() {
     const show = this.mode === 'free';
-    const live = show ? this.locales.filter((c) => [...this.gags].some((g) => g.ctx === c)) : [];
+    // the spots with a scene on, in street order. Nothing is allocated per frame: the scenes playing mark their spot (one pass over
+    // the set with a callback made once), then the spots are read in order into a list the stage keeps
+    const live = this._live || (this._live = []);
+    live.length = 0;
+    if (show) {
+      const stamp = (this._pinStamp = (this._pinStamp || 0) + 1);
+      this.gags.forEach(this._markGag || (this._markGag = (g) => { g.ctx._pinMark = this._pinStamp; }));
+      for (let i = 0; i < this.locales.length; i++) if (this.locales[i]._pinMark === stamp) live.push(this.locales[i]);
+    }
     while (this.pins.length < live.length) {
       const el = document.createElement('button');
       el.className = 'gag-pin';
       el.setAttribute('aria-label', 'Jump to the action');
       el.innerHTML = '<span>!</span>';
-      const pin = { el, ctx: null };
+      const pin = { el, ctx: null, a: 1, q: 50, px: NaN, py: NaN };
       el.addEventListener('click', () => { if (pin.ctx) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } });
       this.overlay.appendChild(el);
       this.pins.push(pin);
     }
     const w = this.overlay.clientWidth, h = this.overlay.clientHeight;
-    this.pins.forEach((pin, i) => {
-      const c = live[i];
+    for (let i = 0; i < this.pins.length; i++) {
+      const pin = this.pins[i], c = live[i];
       pin.ctx = c || null;
-      if (!c) { pin.el.hidden = true; return; }
-      const p = this.W.path.xz(c.sc, 0);
+      if (!c) { pin.el.hidden = true; continue; }
+      const p = (c._c0 ||= this.W.path.xz(c.sc, 0)); // (the spot's centre: the same point ctx.watched() keeps)
       _v.set(p[0], 5 + this.W.landY(p[0], p[1]), p[1]).project(this.camera);
       const behind = _v.z > 1;
       let x = behind ? -_v.x : _v.x, y = behind ? -1 : _v.y;
       const off = behind || Math.abs(x) > 0.9 || Math.abs(y) > 0.86;
-      const close = !off && Math.hypot(p[0] - this.rig.tx, p[1] - this.rig.tz) < this.rig.dist * 0.5 && this.rig.dist < 160;
-      pin.el.hidden = close;
+      const d = Math.hypot(p[0] - this.rig.tx, p[1] - this.rig.tz), close = !off && d < this.rig.dist * 0.5 && this.rig.dist < 160;
+      // far spots fade with their distance from the point the camera looks at, and are gone (not laid out at the edge) at PIN_GONE
+      const a = clamp((PIN_GONE - d) / (PIN_GONE - PIN_FULL), 0, 1);
+      pin.el.hidden = close || a <= 0;
+      if (a !== pin.a) {
+        const faint = a < 1; // a pin that is not fully there cannot be clicked or reached with the keyboard
+        if (faint !== pin.a < 1) { pin.el.classList.toggle('faint', faint); pin.el.disabled = faint; pin.el.tabIndex = faint ? -1 : 0; }
+        pin.a = a;
+        // the opacity is written in steps of 2 % (and only when it changes by one): smooth to the eye, no string per frame
+        const q = Math.round(a * 50);
+        if (q !== pin.q) { pin.q = q; pin.el.style.opacity = q < 50 ? String(q / 50) : ''; }
+      }
       x = clamp(x, -0.9, 0.9); y = clamp(y, -0.7, 0.82);
       pin.el.classList.toggle('edge', off);
-      pin.el.style.transform = `translate(${((x + 1) / 2) * w}px, ${((1 - y) / 2) * h}px)`;
-    });
+      const px = ((x + 1) / 2) * w, py = ((1 - y) / 2) * h;
+      if (Math.abs(px - pin.px) > 0.1 || Math.abs(py - pin.py) > 0.1 || pin.px !== pin.px) { pin.px = px; pin.py = py; pin.el.style.transform = `translate(${px}px, ${py}px)`; }
+    }
   }
 
   // ------------------------------------------------------------ frame
