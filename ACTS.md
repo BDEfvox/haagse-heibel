@@ -219,7 +219,7 @@ A person standing on something or flying: set `a.air = true` and `a.g.position.y
 
 ## 5. Acting: `makePerson(rnd, { kind, scale, shirt, pants, hair, hat })`
 
-kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a parody designer tracksuit (HH monogram, green-red sleeve stripe, cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
+kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a beige/brown tracksuit (green-red stripe down sleeves and legs, no lettering; cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
 
 - `a.arms`: `swing` (default) `up` (panic) `carry` `fist` `hold` `wave` `sneak` `spray` `bag` (hand at the shoulder holding a slung sack) `laugh` `point` `shrug` `cheer` `hips` `cover` (hands over head/ears) `push` `drive` `facepalm` `phone` `count` (counting notes) `rub` (rubbing hands) `reach` `drag` `cross` `beg` `stop` (halt hand) `write`
 - `a.mood`: `neutral happy laugh smug sly angry shock scared sad dizzy sleepy focus whistle`; `a.emote('shock', 1.2)` for a passing one.

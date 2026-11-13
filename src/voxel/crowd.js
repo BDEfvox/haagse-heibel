@@ -75,21 +75,19 @@ const PERSON = () => model(figure());
 // Boxes on a limb swing with it: pass the limb number and pivot (arms 3 = right, 4 = left at +x, pivot 1.46; legs 1/2, pivot 0.7).
 const onArm = (x, y, z, w, h, d, c, limb = 4) => [x, y, z, w, h, d, c, 0, limb, 1.46];
 const onLeg = (x, y, z, w, h, d, c, limb) => [x, y, z, w, h, d, c, 0, limb, 0.7];
-// "HH": the parody monogram on a chest, two letters made of three bars each
-const monogram = (z, c, y0 = 1.0) => [-0.2, 0.2].flatMap((cx) => [[cx - 0.08, y0 + 0.15, z, 0.05, 0.3, 0.02, c], [cx + 0.08, y0 + 0.15, z, 0.05, 0.3, 0.02, c], [cx, y0 + 0.28, z, 0.11, 0.045, 0.02, c]]);
 const MODELS = {
   person: () => model(figure()),
-  // Straat Niffo: beige/brown tracksuit with an "HH" monogram and a green-red stripe down sleeves and legs, cap or hood
+  // Straat Niffo: beige/brown tracksuit with a green-red stripe down sleeves and legs, cap or hood
   niffo: () => model(figure({
     shoe: '#e9e9e4',
-    extra: [...monogram(0.235, '#4b2e16'), ...monogram(-0.235, '#4b2e16'),
+    extra: [
       ...[3, 4].flatMap((l) => { const sd = l === 3 ? -1 : 1; return [onArm(sd * 0.64, 0.96, -0.05, 0.03, 0.5, 0.07, '#1d8a4f', l), onArm(sd * 0.64, 0.96, 0.05, 0.03, 0.5, 0.07, '#d62839', l)]; }),
       ...[1, 2].flatMap((l) => { const sd = l === 1 ? -1 : 1; return [onLeg(sd * 0.36, 0, -0.05, 0.03, 0.7, 0.07, '#1d8a4f', l), onLeg(sd * 0.36, 0, 0.05, 0.03, 0.7, 0.07, '#d62839', l)]; }),
       [0, 2.0, 0.39, 0.62, 0.06, 0.3, '#1a1a1a'], [0, 2.1, 0.0, 0.74, 0.1, 0.7, W_, 4]], // cap: crown in the hair colour, visor in front
   })),
   niffoHood: () => model(figure({
     shoe: '#e9e9e4', hair: false,
-    extra: [...monogram(0.235, '#4b2e16'),
+    extra: [
       ...[3, 4].flatMap((l) => { const sd = l === 3 ? -1 : 1; return [onArm(sd * 0.64, 0.96, -0.05, 0.03, 0.5, 0.07, '#1d8a4f', l), onArm(sd * 0.64, 0.96, 0.05, 0.03, 0.5, 0.07, '#d62839', l)]; }),
       ...[1, 2].flatMap((l) => { const sd = l === 1 ? -1 : 1; return [onLeg(sd * 0.36, 0, -0.05, 0.03, 0.7, 0.07, '#1d8a4f', l), onLeg(sd * 0.36, 0, 0.05, 0.03, 0.7, 0.07, '#d62839', l)]; }),
       [0, 2.09, -0.02, 0.76, 0.16, 0.72, W_, 1], [0, 1.6, -0.3, 0.76, 0.6, 0.14, W_, 1], [-0.37, 1.7, 0.0, 0.06, 0.5, 0.5, W_, 1], [0.37, 1.7, 0.0, 0.06, 0.5, 0.5, W_, 1]], // hood up

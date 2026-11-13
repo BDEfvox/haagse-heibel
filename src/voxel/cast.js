@@ -81,7 +81,7 @@ const ARMS = {
 /**
  * Biped. Forward is +z. Options:
  *  kind: 'civ' | 'cop' | 'robber' | 'raccoon' | 'kid' | 'granny' | 'hoodie' | 'chef' | 'niffo' | 'harry'
- *    niffo  a teenager in a parody designer tracksuit (HH monogram, green-red sleeve stripe), cap or hood, pouch, white trainers; struts
+ *    niffo  a teenager in a beige/brown tracksuit (green-red stripe down sleeves and legs), cap or hood, pouch, white trainers; struts
  *    harry  a Hague mullet man: short on top, long at the back, moustache sometimes, dark jacket with a herring badge on the sleeve, jeans, boots
  *
  * Driving a person from a script (all optional, all eased):
@@ -104,7 +104,7 @@ export function makePerson(rnd, o = {}) {
   let shoes = '#2a2a2a';
   let stripes = false, mask = false, ears = false, tail = false, skirt = false, hood = false;
   let capCol = null, mullet = false, stache = false, track = false, jacket = false;
-  const TRACK = '#6b4a2a'; // the "designer" monogram brown
+  const TRACK = '#6b4a2a'; // the tracksuit's dark brown (waistband, one of the cap colours)
   if (kind === 'cop') { shirt = '#1b2a4a'; pants = '#16223d'; hat = 'cop'; shoes = '#111'; }
   if (kind === 'robber') { stripes = true; pants = '#1c1c1c'; hat = 'beanie'; mask = true; shoes = '#111'; }
   if (kind === 'raccoon') { skin = '#9a9a9a'; shirt = '#8a8a8a'; pants = '#777777'; hair = '#9a9a9a'; hat = null; mask = true; ears = true; tail = true; scale = o.scale ?? 0.85; shoes = '#3a3a3a'; }
@@ -173,11 +173,9 @@ export function makePerson(rnd, o = {}) {
     if (kind === 'hoodie') { v.box(0, 0.86, 0.235, 0.4, 0.2, 0.02, '#2c2c2c'); v.box(-0.07, 1.2, 0.235, 0.03, 0.26, 0.02, '#e8e8e8'); v.box(0.07, 1.2, 0.235, 0.03, 0.26, 0.02, '#e8e8e8'); } // pouch and cords
     if (kind === 'civ' || kind === 'kid' || kind === 'niffo') v.box(0, 1.42, 0.02, 0.4, 0.08, 0.44, skin); // collar line
     if (track) {
-      // "HH" monogram on the chest, a two-tone check low down and across the back
-      for (const hx of [-0.17, 0.17]) { v.box(hx - 0.06, 1.06, 0.235, 0.035, 0.22, 0.02, TRACK); v.box(hx + 0.06, 1.06, 0.235, 0.035, 0.22, 0.02, TRACK); v.box(hx, 1.15, 0.235, 0.09, 0.035, 0.02, TRACK); }
-      for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) if ((r + c) % 2 === 0) v.box(-0.27 + c * 0.18, 0.8 + r * 0.2, -0.235, 0.18, 0.2, 0.02, TRACK);
+      // plain front and back: no lettering, no brand pattern (the crowd's niffo models are plain too)
       v.box(0, 0.7, 0, 0.8, 0.07, 0.48, TRACK); // waistband
-      for (let i = 0; i < 3; i++) v.box(-0.26 + i * 0.26, 1.34 - i * 0.22, 0.25, 0.16, 0.22, 0.02, '#2b2b2b'); // cross-body strap (over the monogram)
+      for (let i = 0; i < 3; i++) v.box(-0.26 + i * 0.26, 1.34 - i * 0.22, 0.25, 0.16, 0.22, 0.02, '#2b2b2b'); // cross-body strap
       v.box(0.26, 0.66, 0.235, 0.24, 0.2, 0.1, '#2b2b2b'); // the pouch
     }
     if (jacket) {

@@ -56,8 +56,8 @@
 const NIFFO_CORE = 45;
 
 export const ARCHETYPES = {
-  // Teenagers on fat-bikes (20 x 4 inch tyres, long bench seat, round headlight), parody designer tracksuit
-  // (beige/brown "HH" monogram, green-red stripe), cap or hood. Often two on the seat; some ride on the pavement.
+  // Teenagers on fat-bikes (20 x 4 inch tyres, long bench seat, round headlight) in a beige/brown tracksuit with a
+  // green-red stripe, cap or hood. Often two on the seat; some ride on the pavement.
   niffo: {
     label: 'Straat Niffo', kind: 'rider', models: ['niffo', 'niffoHood'], bike: 'fatbike',
     watch: 0.9,
