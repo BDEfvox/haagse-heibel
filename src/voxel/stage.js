@@ -1258,7 +1258,10 @@ export class Stage {
       V = { m, gm: m, d: [0, -1], gd: [0, -1], el: TOP, gel: EL0, dist: opts.enter.dist, gdist: opts.enter.dist, ty: W.landY(p[0], p[1]) };
     }
     const dur = V ? 0 : CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
-    this.cutK = undefined; this.roamT = 0; this._parkAt = null; this._park = null;
+    // (after a focus shift the cutaway eases from where it was to what the new street needs, at its usual rate: no snap in the swap frame)
+    if (!opts.view) this.cutK = undefined;
+    this.roamT = 0; this._parkAt = null; this._park = null;
+    const was = this.mode;
     if (V) {
       // the focus moved here from another street: the camera carries on from exactly where it was
       const F = W.frame, az = (d) => Math.atan2(d[0] * F.dx + d[1] * F.dy, d[0] * F.dy - d[1] * F.dx);
@@ -1269,7 +1272,7 @@ export class Stage {
       this.mode = 'free';
       this.cutEnd = 0; this.lastSwitch = 0; this.idleT = 0; this.autoFree = false;
       U.uGrow.value = 1;
-      hooks.onMode?.('free');
+      if (was !== 'free') hooks.onMode?.('free'); // (a focus shift in free mode stays in free mode: the page's hints are not said again)
     } else {
       this.drop = { t: 0, dur, d0, c0, y0: W.landY(c0[0], c0[1]) };
       this.mode = 'drop';
