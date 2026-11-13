@@ -2332,6 +2332,8 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     start: (n) => { if (W.stream) W.stream.rebake(n); },
     step: (ms, cap) => (W.stream ? W.stream.stageStep(ms, cap) : 0),
     commit: (n) => { if (W.stream) W.stream.commit(); W.night = n; },
+    /** Swap staged tiles in, nearest first, until `bytes` of new geometry went in this frame; returns how many are left. */
+    commitSome: (bytes) => (W.stream ? W.stream.commitSome(bytes) : 0),
   };
   W.ms = { fetch: Math.round(t1 - t0), build: Math.round(performance.now() - t1) };
   W.dispose = () => {
@@ -3174,6 +3176,26 @@ class Streamer {
       if (open()) left++;
     }
     return left;
+  }
+  /**
+   * Swap staged tiles for the ones on screen, nearest first, until the geometry they bring to the graphics chip (what they do
+   * not share with the tile they replace) passes `maxBytes`, at least one a call. Returns how many are still staged: the stage
+   * calls it once a frame at the darkest moment of a change of light, then commit() for the rest of the bookkeeping.
+   */
+  commitSome(maxBytes) {
+    const [mx, my] = this.fm, order = [...this.staged.keys()].map((k) => { const [tx, ty] = k.split('_').map(Number); return [Math.hypot((tx + 0.5) * TILE - mx, (ty + 0.5) * TILE - my), k]; }).sort((a, b) => a[0] - b[0]);
+    let bytes = 0, n = 0;
+    for (const [, key] of order) {
+      if (n && bytes >= maxBytes) break;
+      const c = this.staged.get(key), old = this.live.get(key);
+      this.staged.delete(key);
+      if (!old || c.night !== this.target || old.night === c.night) { this._dropStaged(c); continue; }
+      c.g.traverse((o) => { const q = o.geometry; if (q && !(_owners.get(q) > 1)) { for (const a of Object.values(q.attributes)) bytes += a.array.byteLength; if (q.index) bytes += q.index.array.byteLength; } });
+      this._swap(key, old, c);
+      n++;
+    }
+    this._signs = null;
+    return this.staged.size;
   }
   /** Does the staged tile still lack detailed fronts that the one on screen shows? */
   _open(old, c) { return c.cells.some((nc) => { const oc = old.cells.find((q) => q.ci === nc.ci); return oc && oc.detail && !nc.detail; }); }

@@ -1234,9 +1234,13 @@ export class Stage {
       let p;
       if (!tr.need) p = clamp(tr.t / 1.1);
       else if (!tr.swapped) {
-        const left = this.W.bake.step(7, this.lite ? 10 : 48);
-        p = Math.min(0.5, (tr.t / 0.6) * 0.5);
-        if (p >= 0.5) { tr.hold += real; if (left === 0 || tr.hold > 4) this._commitBake(); } // (never hold the dusk for long: whatever is not ready follows)
+        if (!tr.committing) {
+          const left = this.W.bake.step(7, this.lite ? 10 : 48);
+          p = Math.min(0.5, (tr.t / 0.6) * 0.5);
+          if (p >= 0.5) { tr.hold += real; if (left === 0 || tr.hold > 4) tr.committing = true; } // (never hold the dusk for long: whatever is not ready follows)
+        } else p = 0.5;
+        // at the darkest moment the baked tiles go in a few megabytes a frame (a frame's uploads stay small), then the light turns
+        if (tr.committing && this.W.bake.commitSome(8e6) === 0) this._commitBake();
       }
       if (tr.need && tr.swapped) p = 0.5 + clamp((tr.t - tr.tc) / 0.7) * 0.5;
       const night = cur.night;
