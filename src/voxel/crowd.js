@@ -697,6 +697,26 @@ export class Crowd {
     for (let k = 0; k < 4; k++) { const v = G.at(x + (k & 1 ? 0.21 : -0.21), z + (k & 2 ? 0.21 : -0.21), 0); if (v !== v) return false; } // (and the diagonals: a bench askew)
     return true;
   }
+  /**
+   * A new lane's points without the places where it folds back on itself: where a point within 1 m of an earlier one is reached only
+   * after more than 2.5 times that distance and a metre along the way (a detour round a table that goes out and comes back), the way in between
+   * is cut short, when the straight line is clear (W.ground). Walkers on the two arms of such a fold met on one spot and turned there.
+   */
+  _unfold(P) {
+    let out = null;
+    for (let i = 0; i + 1 < P.length; i += 2) {
+      let cut = -1, arc = 0;
+      for (let j = i + 2, k = 0; j + 1 < P.length && k < 16; j += 2, k++) {
+        arc += Math.hypot(P[j] - P[j - 2], P[j + 1] - P[j - 1]);
+        const d = Math.hypot(P[j] - P[i], P[j + 1] - P[i + 1]);
+        if (d < 1.0 && arc > 2.5 * d + 1.0 && this._lineFree(P[i], P[i + 1], P[j], P[j + 1])) cut = j;
+      }
+      if (cut < 0) { if (out) out.push(P[i], P[i + 1]); continue; }
+      if (!out) out = Array.prototype.slice.call(P, 0, i);
+      out.push(P[i], P[i + 1]); i = cut - 2; // (on from the far end of the fold)
+    }
+    return out || P;
+  }
   /** Is the straight way from (x0, z0) to (x1, z1) clear for a person (checked every half metre, the ends left out)? */
   _lineFree(x0, z0, x1, z1, r = 0.25) {
     const m = Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 0.5);
@@ -804,6 +824,7 @@ export class Crowd {
   }
   /** A new walking lane of owner o along the points (resampled every 1.5 m), registered like the ones addTile makes. */
   _newLane(o, P, like) {
+    P = this._unfold(P);
     let len = 0;
     for (let i = 2; i < P.length; i += 2) len += Math.hypot(P[i] - P[i - 2], P[i + 1] - P[i - 1]);
     if (len < 6) return null;
@@ -1078,14 +1099,28 @@ export class Crowd {
     // (the owner's share of each kind carried from lane to lane, not drawn per lane: a lane cut in pieces gives the street the same
     // number, and the street holds what its lanes mean, not that give or take a few)
     const acc = { [PED]: 0.5, [BIKE_]: 0.5, [CAR_]: 0.5, [TRAM_]: 0.5 };
+    // the groups are planned first, and the walkers leave room under the cap for every planned group not yet drawn (theirs and the
+    // other streets'): a group drawn later still fits (_gShow), so the walkers do not take the groups' share
+    this._groups(o);
+    const pedCap = this.max[PED] - this._gRes();
     for (const lane of o.lanes) {
       const want = ((DENS[lane.kind][lane.cls] || 0) * lane.len * this._info(lane).mult * (lane.kind === PED ? o.pedK || 1 : 1)) / 100;
       acc[lane.kind] += want;
       let n = Math.floor(acc[lane.kind]);
       acc[lane.kind] -= n;
-      while (n-- > 0 && this.count[lane.kind] < this.max[lane.kind]) this._spawn(lane, this.rnd() * lane.len);
+      const cap = lane.kind === PED ? pedCap : this.max[lane.kind];
+      while (n-- > 0 && this.count[lane.kind] < cap) this._spawn(lane, this.rnd() * lane.len);
     }
-    this._groups(o);
+  }
+  /**
+   * The members of the groups planned on the streets that are filled and not drawn now (a drawn group is in count already). Counted
+   * from the owners each time it is asked (only when a street is filled), so nothing can be left over: an owner emptied or replaced
+   * takes its groups with it, a group drawn, taken down and drawn again is counted once whatever it is now.
+   */
+  _gRes() {
+    let n = 0;
+    for (const o of this.owners.values()) if (o.on) for (const g of o.groups) if (!g.shown) n += g.members.length;
+    return n;
   }
   /** Put up the owner's parked cars and lamp posts that nobody would see appear. */
   _reveal(o) {
@@ -2195,7 +2230,10 @@ export class Crowd {
               if (gq || (b.v < 0.15 && (b.sm === 2 || b.sm === 5 || b.sm === 6))) { wl += lt >= 0 ? -0.6 : 0.6; if (fw < 0.8 && lt < 0.5 && lt > -0.5) fol = 0; continue; }
               const cs = Math.sin(b.hd) * hx + Math.cos(b.hd) * hz;
               if (cs < -0.3) { wl += lt > 0.1 ? -0.55 : 0.55; if (fw < 1.0 && lt < 0.45 && lt > -0.45) onc = q; } // coming the other way
-              else if (fw < 0.15) { wl += lt >= 0 ? -0.4 : 0.4; if (lt < 0.5 && lt > -0.5) bes = q; } // beside, the same way: a little apart
+              else if (fw < 0.15) { // beside, the same way: a little apart; with no room the one at the back drops behind (both level or converging: the later in the list)
+                wl += lt >= 0 ? -0.4 : 0.4;
+                if (lt < 0.5 && lt > -0.5 && fw >= 0 && (i > q || bx * Math.sin(b.hd) + bz * Math.cos(b.hd) > 0)) bes = q; // (b's own look: I am behind it)
+              }
               else { // going the same way, ahead: keep 0.7 m behind, or overtake on the left when faster
                 if (fw < 1.5 && lt < 0.5 && lt > -0.5) fol = Math.min(fol, Math.max(0, b.v * cs * clamp((fw - 0.7) / 0.6, 0, 1.2)));
                 if (a.v0 > b.v + 0.15 && fw < 2.6) wl -= 0.6;
@@ -2207,7 +2245,7 @@ export class Crowd {
             // the side step must be ground a person may stand on (W.ground), else no step and slower
             const G = W.ground, tl = clamp(side * 1.3 + wl, -1.3, 1.3);
             const hs = G ? G.at(lx + a.ox - hz * tl, lz + a.oz + hx * tl, 0.25) : 0;
-            if (hs !== hs) { wl = 0; fol = onc >= 0 ? 0 : Math.min(fol, bes >= 0 && i > bes ? A[bes].v * 0.5 : 0.6); } // (no room to step aside: wait for the other to pass, drop behind the one beside, or slow down)
+            if (hs !== hs) { wl = 0; fol = onc >= 0 ? 0 : Math.min(fol, bes >= 0 ? A[bes].v * 0.5 : 0.6); } // (no room to step aside: wait for the other to pass, drop behind the one beside, or slow down)
           }
           // two who meet with no room to pass: the one later in the list turns round at once, the other waits for it
           const mayTurn = this.t - (a.tf ?? -9) > 2; // (one who just turned round waits rather than turn again: no back and forth)
