@@ -1652,10 +1652,13 @@ export const sceneTable = () => Object.fromEntries(Object.keys(G).map((n) => [n,
  * Nothing is drawn from the dice while it asks; the frame a scene starts in moves by a frame or two at most.
  */
 function* sweep(names, ok, out) {
-  let t0 = performance.now();
+  // (seeded, ?seed=: the director's dice are the spot's, shared with its scenes, so it gives the frame back after every 6 scenes
+  // asked, never by the clock: the order of draws between the director and the scenes does not depend on the machine)
+  let t0 = performance.now(), k = 0;
   for (const n of names) {
     if (ok(n)) out.push(n);
-    if (performance.now() - t0 > 2) { yield; t0 = performance.now(); }
+    k++;
+    if (SEEDED ? k % 6 === 0 : performance.now() - t0 > 2) { yield; t0 = performance.now(); }
   }
   return out;
 }

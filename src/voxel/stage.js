@@ -348,15 +348,18 @@ export class Stage {
   _warmStep() {
     if (this.cine || this.mode === 'drop' || this.mode === 'leave' || document.hidden) return; // never during a cutscene (its first beat included)
     if (this.lite && (_zooTick++ & 3)) return;
+    if ((this._cpuLast || 0) > 12) return; // (a busy frame: not this one)
     if (_zooAt < ZOO.length) {
-      try { const o = ZOO[_zooAt](_zooRnd); if (o && o.isObject3D) _zoo.add(o); } catch (e) { /* a maker that changed: skip it */ }
+      // one object a frame, compiled as it is made (one or two programs: without parallel shader compilation a link waits)
+      try {
+        const o = ZOO[_zooAt](_zooRnd);
+        if (o && o.isObject3D) { _zoo.add(o); o.updateMatrixWorld(true); this.renderer.compileAsync(o, this.camera, this.scene).catch(() => {}); }
+      } catch (e) { /* a maker that changed, or compile is not there: skip it */ }
       _zooAt++;
       return;
     }
     _zooDone = true;
     this._warmFrom = null;
-    _zoo.updateMatrixWorld(true);
-    try { this.renderer.compileAsync(_zoo, this.camera, this.scene).catch(() => {}); } catch (e) { /* compile is only a head start */ }
   }
   /** The drop is over: follow the action (nobody touched the camera) or stay exactly where the viewer took it. */
   _land(follow) {
@@ -1214,6 +1217,10 @@ export class Stage {
    * are made on the side and swapped in together at the darkest moment. The crowd does not change: its lights are uniforms.
    */
   _startTr(to) {
+    // a change asked for while the last one is putting its baked tiles in (committing): put the rest in now and let that change
+    // end (cur.night becomes its light), so the new one starts from tiles that all have one light and knows what it must bake
+    const tr0 = this.tr;
+    if (tr0 && tr0.need && tr0.committing && !tr0.swapped) this._commitBake();
     const from = new Look().copy(this.cur), need = !!to.night !== !!this.cur.night;
     // a change asked for during a change: carry on from where the picture is (it may be mid-dusk), never jump back to full light
     this.tr = { from, to, t: 0, need, swapped: false, hold: 0, tc: 0, d0: this._dip };
@@ -1240,7 +1247,9 @@ export class Stage {
           if (p >= 0.5) { tr.hold += real; if (left === 0 || tr.hold > 4) tr.committing = true; } // (never hold the dusk for long: whatever is not ready follows)
         } else p = 0.5;
         // at the darkest moment the baked tiles go in a few megabytes a frame (a frame's uploads stay small), then the light turns
-        if (tr.committing && this.W.bake.commitSome(8e6) === 0) this._commitBake();
+        // (the first frame puts in every close tile at once and up to 16 MB; then 8 MB a frame for the farther ones)
+        if (tr.committing && this.W.bake.commitSome(tr.firstPut ? 8e6 : 16e6, !tr.firstPut) === 0) this._commitBake();
+        if (tr.committing) tr.firstPut = true;
       }
       if (tr.need && tr.swapped) p = 0.5 + clamp((tr.t - tr.tc) / 0.7) * 0.5;
       const night = cur.night;
@@ -1857,6 +1866,8 @@ export class Stage {
 
   // ------------------------------------------------------------ frame
   _frame(now) {
+    const tF = performance.now(), st0 = this.W && this.W.stream;
+    if (st0) st0.tileMs = 0; // (the streamer adds its tile building of this frame: see the end)
     const real = clamp((now - this.last) / 1000, 0, 0.05);
     this.last = now;
     if (this.slow) { this.slow.t -= real; if (this.slow.t <= 0) this.slow = null; }
@@ -2109,6 +2120,10 @@ export class Stage {
     if (this.audit) this._beatTick();
     this.renderer.render(this.scene, this.camera);
     if (!_zooDone && this._warmFrom != null) this._warmStep();
+    // what this frame cost besides building tiles: the streamer fits next frame's tile work into what is left (sliceMs)
+    this._cpuLast = performance.now() - tF;
+    const st1 = this.W && this.W.stream;
+    if (st1) st1.frameOther = Math.max(0, this._cpuLast - (st1.tileMs || 0));
   }
 }
 export { preload };

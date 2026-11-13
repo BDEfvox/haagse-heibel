@@ -1998,6 +1998,20 @@ function treeMesh(pts, rnd, cap, yAt, mat = CUT.solid, depth = CUT.depth, far = 
  * st: street properties; geometry: its MultiLineString coordinates (lon/lat).
  * Returns the scene group plus everything the stage and the gags need to play on it.
  */
+// Hand the main thread back and continue as soon as it is free: scheduler.yield where it exists, else a MessageChannel message
+// (a setTimeout(0) is clamped to 4 ms after a few nested ones), else setTimeout.
+let _mc = null;
+const _mq = [];
+function yieldTask() {
+  if (globalThis.scheduler && typeof globalThis.scheduler.yield === 'function') return globalThis.scheduler.yield();
+  if (typeof MessageChannel !== 'undefined') {
+    // (Node: the port holds the process only while a message is on its way)
+    if (!_mc) { _mc = new MessageChannel(); _mc.port1.onmessage = () => { const f = _mq.shift(); if (!_mq.length && _mc.port1.unref) _mc.port1.unref(); if (f) f(); }; }
+    if (_mc.port1.ref) _mc.port1.ref();
+    return new Promise((r) => { _mq.push(r); _mc.port2.postMessage(0); });
+  }
+  return new Promise((r) => setTimeout(r, 0));
+}
 export async function buildWorld(st, geometry, { night = false, seed = '', lite = false, soft = false } = {}) {
   const city = await loadCity(), ix = city.ix;
   // Every open hands the main thread back at least every BREATHE_MS (pause), so the page keeps moving (the map's flight,
@@ -2005,7 +2019,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   // is used up. A world built while another one is on screen (soft: a focus shift) also takes its breathers of 12 ms
   // between the steps, as before.
   let lastB = performance.now();
-  const rest = (ms) => new Promise((r) => setTimeout(r, ms)).then(() => { lastB = performance.now(); });
+  const rest = (ms) => (ms ? new Promise((r) => setTimeout(r, ms)) : yieldTask()).then(() => { lastB = performance.now(); });
   const pause = () => (performance.now() - lastB < BREATHE_MS ? null : rest(soft ? 12 : 0));
   const breathe = soft ? () => rest(12) : pause;
   const t0 = performance.now();
@@ -2175,12 +2189,11 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       corridor.push(key);
       const had = _built.get(key);
       if (had && had.lod === 0) continue;
-      // (the same tile ensureTile builds, in slices: another builder may have registered it meanwhile)
-      const it = buildTileJob(city, key, t, night, lite, 0, SLICED);
-      let r = it.next();
-      while (!r.done) { const p = pause(); if (p) await p; r = it.next(); }
-      const cur = _built.get(key);
-      if (cur && cur.lod <= 0) r.value.dispose(); else installTile(key, r.value);
+      // (the same tile ensureTile builds, in slices, through the shared record: the streamer on screen may be building it too)
+      const J = tileJob(city, key, t, 0, night, lite);
+      J.world = true;
+      while (!stepJob(J, lastB + BREATHE_MS)) await rest(soft ? 12 : 0);
+      finishJob(J);
       await breathe();
     }
   }
@@ -2333,7 +2346,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     step: (ms, cap) => (W.stream ? W.stream.stageStep(ms, cap) : 0),
     commit: (n) => { if (W.stream) W.stream.commit(); W.night = n; },
     /** Swap staged tiles in, nearest first, until `bytes` of new geometry went in this frame; returns how many are left. */
-    commitSome: (bytes) => (W.stream ? W.stream.commitSome(bytes) : 0),
+    commitSome: (bytes, first) => (W.stream ? W.stream.commitSome(bytes, first) : 0),
   };
   W.ms = { fetch: Math.round(t1 - t0), build: Math.round(performance.now() - t1) };
   W.dispose = () => {
@@ -2673,7 +2686,9 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   // lamps, the trees, the ordinary buildings and the plain street-front cells are the same, byte for byte, and are taken
   // over as new objects on base's geometry (see again); the dice are drawn in the same order, so what is built comes out as
   // a fresh build would (Node: rebake-proof.mjs).
-  const B = opt && opt.base && opt.base.parts && opt.base.key === key && opt.base.src === t && opt.base.lod === lod && opt.base.lite === !!lite ? opt.base : null;
+  const B = opt && opt.base && opt.base.parts && opt.base.key === key && opt.base.src === t && opt.base.lod === lod && opt.base.lite === !!lite && !opt.base.disposed ? opt.base : null;
+  // with base: a placeholder in the child order now, base's object taken over at the very end (see the last step)
+  const slots = [], takeOver = (src, set) => { const mk = new THREE.Object3D(); g.add(mk); slots.push([mk, src, set]); };
   const c = [0.5, 1, 2][lod] * (lite ? 2 : 1), n = Math.round(TILE / c), grid = B ? B.grid : new Grid(0, 0, n, n, c);
   // tile data is in decimetres from the tile's south-west corner; the tile's own coordinates run east and south from its north-west corner
   const loc = (e, from) => { const a = new Float32Array(e.length - from); for (let i = from; i + 1 < e.length; i += 2) { a[i - from] = e[i] / 10; a[i - from + 1] = TILE - e[i + 1] / 10; } return a; };
@@ -2807,12 +2822,12 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   if (!B) paintTop(grid, rails, flats);
   const G = B ? B.parts.G : yield* buildGroundJob(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
   yield;
-  if (B) { for (const m of G.meshes) g.add(again(m)); own(G.tex); own(G.pool); } else g.add(...G.meshes);
+  if (B) { for (const m of G.meshes) takeOver(m); } else g.add(...G.meshes);
   v.setT(); gl.setT();
   // buildings are lifted onto the terrain by the shader and may stick out of the tile: give them a generous bounding sphere
   const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(TILE / 2, 30, TILE / 2), 240); return m; };
   let vM = null, glM = null;
-  if (B) { if (B.parts.v) g.add((vM = again(B.parts.v))); if (B.parts.gl) g.add((glM = again(B.parts.gl))); }
+  if (B) { if (B.parts.v) takeOver(B.parts.v, (q) => { vM = q; }); if (B.parts.gl) takeOver(B.parts.gl, (q) => { glM = q; }); }
   else {
     if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add((vM = m)); }
     if (!gl.empty) g.add((glM = roomy(new THREE.Mesh(gl.geometry(), CUTT.glow))));
@@ -2836,8 +2851,8 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
     const i = Math.min(grid.w - 1, Math.max(0, Math.floor(gx / c))), j = Math.min(grid.h - 1, Math.max(0, Math.floor(gz / c)));
     return city.landAt(ox + gx, oy + TILE - gz) + grid.off[j * grid.w + i];
   };
-  const trees = B ? (B.parts.trees ? again(B.parts.trees) : null) : treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
-  if (trees) g.add(trees);
+  let trees = B ? null : treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
+  if (B) { if (B.parts.trees) takeOver(B.parts.trees, (q) => { trees = q; }); } else if (trees) g.add(trees);
   yield;
   // street furniture: every street has it, placed by the same rules from the tile's own data (see furnish.js)
   let props = null, tCells = null;
@@ -2855,7 +2870,7 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   }
   // the cells of buildings with street fronts: their plain version now, the detailed one on demand
   const cells = [];
-  if (B) for (const q of B.cells) { const plain = q.plain.map(again); for (const m of plain) g.add(m); cells.push({ ci: q.ci, cx: q.cx, cz: q.cz, plain, units: q.units, detail: null, job: null }); }
+  if (B) for (const q of B.cells) { const cell = { ci: q.ci, cx: q.cx, cz: q.cz, plain: [], units: q.units, detail: null, job: null }; for (const m of q.plain) takeOver(m, (k) => cell.plain.push(k)); cells.push(cell); }
   else if (cellVox) for (const [ci, cv] of cellVox) {
     if (cells.length && !(cells.length & 3)) yield;
     cv.v.setT(); cv.gl.setT();
@@ -2869,7 +2884,14 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   yield;
   // what stands on each ground cell (finest level only) and the buildings that reach into the neighbours: see ground.js
   const O = lod === 0 ? buildOcc({ grid, C, buildings: occB, fronts: F, props, cells: tCells, trees: pts, lamps, barriers: t.x }) : null;
-  return {
+  if (B) {
+    // after the last yield, in one go: what is taken over from base becomes this tile's (again: counted owners). A job dropped
+    // before this point owns nothing of base's. If base was freed meanwhile, the tile is built in full after all.
+    if (B.disposed) return yield* buildTileJob(city, key, t, night, lite, lod, opt && opt.sliced ? SLICED : null);
+    for (const [mk, src, set] of slots) { const q = again(src), i = g.children.indexOf(mk); g.children[i] = q; q.parent = g; mk.parent = null; if (set) set(q); }
+    own(G.tex); own(G.pool);
+  }
+  const res = {
     occ: O ? O.occ : null, spill: O ? O.spill : spillOf(occB, F),
     key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t, lite: !!lite,
     // what a rebake for the other light takes over (opt.base): the same objects by day and by night
@@ -2884,8 +2906,10 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
       });
       if (letGo(G.tex)) G.tex.dispose();
       if (G.pool && letGo(G.pool)) G.pool.dispose();
+      res.disposed = true; // (a rebake job that takes over from this tile builds in full instead)
     },
   };
+  return res;
 }
 /** Stand a tile in a street's frame. */
 function placeTile(c, f) {
@@ -2926,8 +2950,36 @@ function installTile(key, c) {
   return c;
 }
 const WEIGHT = [4, 2, 0.5]; // what a tile of each level costs in memory, roughly
-// milliseconds of tile building per frame and caller (the frame's own work is 3-6 ms: this keeps it inside 16.7 ms)
-const SLICE_MS = 9;
+// milliseconds of tile building per frame: what is left of FRAME_MS after the rest of the last frame (Streamer.frameOther,
+// measured by the stage), never more than SLICE_MS and never less than SLICE_MIN (so tiles still arrive on a slow device)
+const SLICE_MS = 9, SLICE_MIN = 2, FRAME_MS = 14;
+/**
+ * Tiles being built in slices, by key: one record per tile, shared by the streamer and a street's buildWorld (the corridor),
+ * so the same tile is never built twice at once. { key, lod, night, lite, t, it, done, value, installed, world }.
+ * A record that is not finished owns nothing (a fresh build: no base), so dropping one costs only the work done.
+ */
+const _jobs = new Map();
+function tileJob(city, key, t, lod, night, lite) {
+  let J = _jobs.get(key);
+  if (J && (J.night !== night || J.lite !== !!lite || J.lod > lod)) { _jobs.delete(key); J = null; } // (another light, or a finer level is wanted now)
+  if (!J) _jobs.set(key, (J = { key, lod, night, lite: !!lite, t, it: buildTileJob(city, key, t, night, lite, lod, SLICED), done: false, value: null, installed: null, world: false }));
+  return J;
+}
+/** Step a record until performance.now() reaches `until` (at least one step); true when it is done (J.value: the tile). */
+function stepJob(J, until) {
+  if (J.done) return true;
+  let r;
+  do r = J.it.next(); while (!r.done && performance.now() < until);
+  if (r.done) { J.done = true; J.value = r.value; if (_jobs.get(J.key) === J) _jobs.delete(J.key); }
+  return J.done;
+}
+/** Register a finished record's tile (once, by whichever builder finished it); null when it was not needed any more. */
+function finishJob(J) {
+  if (J.installed !== null) return J.installed || null;
+  const cur = _built.get(J.key);
+  if (J.night !== _builtNight || (cur && cur.lod <= J.lod)) { J.value.dispose(); J.installed = false; return null; }
+  return (J.installed = installTile(J.key, J.value));
+}
 // the longest stretch a street open keeps the main thread (buildWorld's pause)
 const BREATHE_MS = 8;
 
@@ -2943,7 +2995,8 @@ class Streamer {
     this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
     this.staged = new Map(); this.target = null; this.busy = false; this.fm = [0, 0]; this.lazyT = 0; // busy: a rebake is waiting for its swap
     // tile builds in slices (buildTileJob): the one the streamer is building, the rebake's per key, the stragglers' one
-    this.job = null; this.sjobs = new Map(); this.lazyJob = null;
+    this.sjobs = new Map(); this.lazyJob = null;
+    this.frameOther = 4; // ms of the last frame that were not tile work (set by the stage)
     /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves; also with (tile, true) when a finer build replaces the one on screen. */
     this.onTile = null;
     // a focus shift (stage.show keep): the tiles that were on screen a moment ago come back in this street's first frame, not a few per
@@ -2972,6 +3025,8 @@ class Streamer {
     this._signs = null;
     if (c) { this.group.remove(c.g); this._mask(key, 0); if (this.onTile) this.onTile(c, false); }
   }
+  /** Milliseconds of tile building this frame may take (see SLICE_MS). */
+  sliceMs() { return Math.max(SLICE_MIN, Math.min(SLICE_MS, FRAME_MS - (this.frameOther || 0))); }
   /** x, z: what the camera looks at; dist: how far away it is; az: the side it stands on. */
   update(x, z, dist, az = 0, warm = false) {
     if (this.dead) return;
@@ -3025,33 +3080,32 @@ class Streamer {
         if (t) this.ready.set(key, t); else this.failed.set(key, performance.now());
       });
     }
-    // build: nearest first, within a time budget per frame. A tile is built in slices (buildTileJob, SLICE_MS a frame with
-    // whatever else the frame did here), so no frame carries a whole tile; it goes on screen in the frame its last slice ends
-    if (this.job || this.ready.size) { // (no breather between tiles any more: a slice never runs past the budget)
+    // build: nearest first, within a time budget per frame (sliceMs). A tile is built in slices (tileJob, shared with a street's
+    // buildWorld), so no frame carries a whole tile. Each frame the nearest wanted tile that is ready or under way goes first: a
+    // far build waits (where it stopped) while a nearer one is built; a build that is no longer wanted, or wanted finer now,
+    // is dropped (it owns nothing yet)
+    for (const [k, J] of _jobs) if (!J.world && (!this.lodOf.has(k) || J.lod > this.lodOf.get(k) || J.night !== _builtNight)) { _jobs.delete(k); if (this.lodOf.has(k) && !this.ready.has(k)) this.ready.set(k, J.t); }
+    const budget = this.sliceMs();
+    if (this.ready.size || _jobs.size) {
       let did = false;
-      for (;;) {
-        if (!this.job) {
-          let key = null, t = null;
-          for (const k of this.want) { const q = this.ready.get(k); if (!q) continue; this.ready.delete(k); if (!needs(k)) continue; key = k; t = q; break; }
-          if (!key) break;
-          const lod = this.lodOf.get(key);
-          this.job = { key, t, lod, night: _builtNight, it: buildTileJob(this.city, key, t, _builtNight, this.W.lite, lod, SLICED) };
-        }
-        const J = this.job;
-        let r = null;
+      for (const key of this.want) {
+        if (performance.now() - now > budget) break;
+        let J = _jobs.get(key), t = this.ready.get(key);
+        if (!J && !t) continue;
+        if (!needs(key)) { this.ready.delete(key); if (J && !J.world) _jobs.delete(key); continue; }
+        this.ready.delete(key);
+        J = tileJob(this.city, key, J ? J.t : t, this.lodOf.get(key), _builtNight, this.W.lite);
         did = true;
-        try { do r = J.it.next(); while (!r.done && performance.now() - now < SLICE_MS); } catch (e) { console.error('tile failed', J.key, e); this.failed.set(J.key, performance.now() + 1e7); this.job = null; continue; }
-        if (!r.done) break; // (the rest next frame)
-        this.job = null;
-        const c = r.value, cur = _built.get(J.key);
-        if (J.night !== _builtNight) { c.dispose(); this.ready.set(J.key, J.t); continue; } // (the light changed meanwhile: built again for the new one)
-        if (cur && cur.lod <= J.lod) { c.dispose(); continue; } // (an as fine tile arrived meanwhile)
-        try { installTile(J.key, c); if (!cur) this._attach(J.key, c); this.built++; } catch (e) { console.error('tile failed', J.key, e); this.failed.set(J.key, performance.now() + 1e7); }
-        if (performance.now() - now > SLICE_MS) break;
+        let done = false;
+        try { done = stepJob(J, now + budget); } catch (e) { console.error('tile failed', key, e); _jobs.delete(key); this.failed.set(key, performance.now() + 1e7); continue; }
+        if (!done) break; // (the rest next frame)
+        const was = _built.get(key);
+        try { const c = finishJob(J); if (c && !this.live.has(key) && (!was || was === c)) this._attach(key, c); if (c) this.built++; } catch (e) { console.error('tile failed', key, e); this.failed.set(key, performance.now() + 1e7); }
       }
-      if (!did) this.ready.clear(); // none of it is wanted any more
+      if (!did && !_jobs.size) this.ready.clear(); // none of it is wanted any more
       this.last = performance.now();
       this.ms = this.last - now;
+      this.tileMs = (this.tileMs || 0) + this.ms;
     }
     { const tm = f.M(x, z); this._detail(tm[0], tm[1], warm ? Math.min(dist, 140) : dist); }
     // too much in memory: let go of the farthest tiles that are not wanted right now
@@ -3149,7 +3203,11 @@ class Streamer {
    */
   stageStep(ms = 7, cap = 64) {
     if (this.target === null) return 0;
+    ms = Math.min(ms, this.sliceMs());
     const t0 = performance.now();
+    try { return this._stageStep(ms, cap, t0); } finally { this.tileMs = (this.tileMs || 0) + performance.now() - t0; }
+  }
+  _stageStep(ms, cap, t0) {
     const keys = this._staleKeys(false).slice(0, cap);
     let left = 0;
     for (const key of keys) {
@@ -3182,12 +3240,13 @@ class Streamer {
    * not share with the tile they replace) passes `maxBytes`, at least one a call. Returns how many are still staged: the stage
    * calls it once a frame at the darkest moment of a change of light, then commit() for the rest of the bookkeeping.
    */
-  commitSome(maxBytes) {
+  commitSome(maxBytes, first = false) {
     const [mx, my] = this.fm, order = [...this.staged.keys()].map((k) => { const [tx, ty] = k.split('_').map(Number); return [Math.hypot((tx + 0.5) * TILE - mx, (ty + 0.5) * TILE - my), k]; }).sort((a, b) => a[0] - b[0]);
     let bytes = 0, n = 0;
     for (const [, key] of order) {
-      if (n && bytes >= maxBytes) break;
       const c = this.staged.get(key), old = this.live.get(key);
+      // the first call puts in every close tile (lod 0) whatever the bytes: the near ring changes in one frame, as it did before
+      if (n && bytes >= maxBytes && !(first && c.lod === 0)) { if (first) continue; break; }
       this.staged.delete(key);
       if (!old || c.night !== this.target || old.night === c.night) { this._dropStaged(c); continue; }
       c.g.traverse((o) => { const q = o.geometry; if (q && !(_owners.get(q) > 1)) { for (const a of Object.values(q.attributes)) bytes += a.array.byteLength; if (q.index) bytes += q.index.array.byteLength; } });
@@ -3268,7 +3327,8 @@ class Streamer {
   /** Leave the scene. The tiles themselves stay in memory for the next street. */
   dispose() {
     this.dead = true;
-    this.job = null; this.sjobs.clear(); this.lazyJob = null; // (half-built tiles: never registered, nothing of them on the GPU)
+    this.sjobs.clear(); this.lazyJob = null; // (half-built tiles: never registered, nothing of them on the GPU)
+    for (const [k, J] of _jobs) if (!J.world) _jobs.delete(k); // (a street being built keeps its corridor's)
     for (const key of [...this.staged.keys()]) this._unstage(key);
     _handover = new Set(this.live.keys()); // for the next street's streamer, if a focus shift starts one right now (trimTiles forgets it)
     for (const key of [...this.live.keys()]) this._detach(key);
