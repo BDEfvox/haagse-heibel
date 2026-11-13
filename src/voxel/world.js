@@ -2254,6 +2254,27 @@ function classAt(mx, my) {
   const g = c.grid, i = Math.floor((mx - c.ox) / g.cell), j = Math.floor((c.oy + TILE - my) / g.cell);
   return i >= 0 && j >= 0 && i < g.w && j < g.h ? g.a[j * g.w + i] : 255;
 }
+// The free camera's cutaway follows what the camera looks at, not which street happens to be open: its strength depends on how far
+// the target is from the nearest street surface of any kind (carriageway, cycle path or lane, pavement, pedestrian street, square),
+// read from the ground classes of the tiles (classAt). Footpaths and dirt tracks do not count (they run through parks), nor parking.
+const STREET_CLS = new Uint8Array(256);
+for (const k of [C.ASPHALT, C.KLINKER, C.SERVICE, C.CYCLE, C.PED, C.WALK, C.CURB, C.MARK, C.BIKELANE, C.PLAZA]) STREET_CLS[k] = 1;
+const STREET = { MAX: 46, STEP: 2, ARC: 3, REUSE: 1 }; // m: search radius (the cutaway is gone beyond it), ring step, spacing on a ring, target move before a new search
+const _street = { mx: NaN, my: NaN, d: Infinity };
+/** Distance (m, in STREET.STEP steps) from the scene point (x, z) to the nearest street surface, Infinity beyond STREET.MAX. No allocation. */
+export function streetNear(W, x, z) {
+  const f = W.frame, mx = f.ox + x * f.dx + z * f.dy, my = f.oy + x * f.dy - z * f.dx;
+  if (Math.abs(mx - _street.mx) < STREET.REUSE && Math.abs(my - _street.my) < STREET.REUSE) return _street.d;
+  _street.mx = mx; _street.my = my; _street.d = Infinity;
+  for (let r = 0; r <= STREET.MAX; r += STREET.STEP) {
+    const n = r === 0 ? 1 : Math.max(6, Math.ceil((2 * Math.PI * r) / STREET.ARC)), a0 = (r / STREET.STEP) * 0.5;
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i * 2 * Math.PI) / n;
+      if (STREET_CLS[classAt(mx + r * Math.cos(a), my + r * Math.sin(a))]) { _street.d = r; return r; }
+    }
+  }
+  return Infinity;
+}
 /**
  * One 256 m tile, in its own coordinates. Three levels of detail, all painted and coloured by the same rules:
  * 0 close (half-metre ground with kerbs and road markings), 1 normal (1 m), 2 far (2 m, plain roofs, simple trees).

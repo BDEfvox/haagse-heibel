@@ -3,7 +3,7 @@
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
 import { makeRng, hashStr, Runner, ease, clamp, lerp, clearSigns, wait, disposeTree } from './kit.js';
-import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND, lensGuard, duckAt } from './world.js';
+import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND, lensGuard, duckAt, streetNear } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx, fadeOut } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
@@ -1664,9 +1664,10 @@ export class Stage {
     U.uR.value = shotOn ? r.dist * 0.3 + 3 : r.dist * 0.6 + 20; // a directed shot only clears its own sight line
     U.uHalf.value = shotBlocked ? 0 : 0.5; // ...unless something is in the way: then everything on the camera's side of the subject ducks
     // The cutaway is only for watching the street from close by. It fades out as the camera climbs, and when the
-    // camera wanders off the street there is nothing to keep in view, so everything stands up again.
+    // camera wanders off the streets there is nothing to keep in view, so everything stands up again. Any street counts,
+    // not only the open one: crossing onto the next street must not stand everything up until the focus has moved there.
     let need = clamp((1.3 - r.el) / 0.15) * clamp((190 - r.dist) / 80);
-    if (need > 0 && this.mode === 'free') need *= clamp((46 - W.path.project(r.tx, r.tz).d) / 26);
+    if (need > 0 && this.mode === 'free') need *= clamp((46 - Math.min(W.path.project(r.tx, r.tz).d, streetNear(W, r.tx, r.tz))) / 26);
     if (shotOn || shotBlocked) need = Math.max(need, clamp((1.3 - r.el) / 0.15));
     this.cutK = snapCut ? need : (this.cutK ?? need) + (need - (this.cutK ?? need)) * (1 - Math.exp(-real * 6));
     U.uCut.value = this.cutK < 0.004 ? 0 : this.cutK;
