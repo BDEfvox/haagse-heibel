@@ -236,6 +236,23 @@ function tileKeys(f, margin) {
 
 // ---------------------------------------------------------------- cutaway materials
 // Buildings and trees between the camera and the street duck out of the way; everything rises from flat on arrival.
+
+// The lens guard (see lensGuard below). Thresholds in metres and seconds.
+const DUCK_MAX = 12; // buildings that can be down at once: the length of U.uDuck and of the shader's loop
+const DUCK = {
+  MATCH: 0.05, // m: how close a vertex's tag centre must be to a guard entry (the same float numbers on both sides; 1e-3 m error)
+  PAD_IN: 1.5, // m: a building whose box comes this close to the lens (or to a point ahead of it) goes down...
+  PAD_OUT: 3, // m: ...and stays held while within this, so a lens grazing its edge does not make it flicker
+  HOLD: 0.6, // s: held this long after the lens is clear
+  EASE: 0.4, // s: down, and up again, at the cutaway's own pace (smoothstepped both ways: no pop)
+  AHEAD: 6, // m: a point this far ahead of the lens on the sight line (at most 30 % of the way to the target)
+  LOOK: [0.15, 0.3, 0.45], // s: where the lens will be on its current velocity while the ease runs
+  VMAX: 60, // m/s: the look-ahead's speed clamp
+  REACH: 130, // m: how far a building may stick out of the tile that draws it
+  CELL: 8, // m: cell of the box index
+  INDEX_MS: 1.5, // ms a frame may spend building box indexes (nearest mesh first; a big mesh is built in slices over several frames)
+  VEL_S: 0.15, // s: time constant of the lens velocity's smoothing (camera shake and frame-time jitter must not swing the look-ahead)
+};
 export const U = {
   uFocus: { value: new THREE.Vector3() }, uCamDir: { value: new THREE.Vector2(0, 1) },
   uTan: { value: 1 }, uR: { value: 60 }, uCut: { value: 1 }, uGrow: { value: 1 },
@@ -254,6 +271,9 @@ export const U = {
   uWin: { value: new THREE.Vector3(0.3, 0.1, 0.5) }, uTime: { value: 0 },
   // the lamps nearest to what the camera looks at (written by the stage): x, y (head), z, reach; how many; and how far the set reaches
   uLampA: { value: Array.from({ length: 24 }, () => new THREE.Vector4()) }, uLampN: { value: 0 }, uLampR: { value: 60 },
+  // buildings the lens guard lays down whatever the cutaway decided (see lensGuard): tag centre x, z in scene coords and how far
+  // down (0..1); how many are in use (the shader's loop stops there, so with none down it costs nothing)
+  uDuck: { value: Array.from({ length: DUCK_MAX }, () => new THREE.Vector3()) }, uDuckN: { value: 0 },
 };
 /** Warm light from the lamps of U.uLampA at a point (p) facing n; `wrap` softens the dark side (1 = lights everything alike). */
 export const LAMP_GLSL = `
@@ -290,7 +310,7 @@ function cutPatch(mat, tint = true, tile = false) {
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + (windows ? '\nvarying vec3 vLW;' : '') + TERR_GLSL)
+      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nuniform vec3 uDuck[' + DUCK_MAX + '];\nuniform float uDuckN;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + (windows ? '\nvarying vec3 vLW;' : '') + TERR_GLSL)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vCut = 0.0; vWU = aW; vWY = position.y; vWF = vec3(abs(aW), aB.z - 2.0, fract(aB.x * 0.137 + aB.y * 0.291));
         if (aB.z > 0.0) {
@@ -302,6 +322,12 @@ function cutPatch(mat, tint = true, tile = false) {
           float cutH = max(0.3, (cutT - cutR - 7.0) * uTan);
           float cutW = uCut * smoothstep(-1.0, 3.0, cutT - cutR * uHalf) * (1.0 - smoothstep(uR, uR * 1.5, cutL));
           float cutK = smoothstep(0.7, 1.0, cutH / aB.z);
+          // the lens guard: a building the lens is in (or about to be in) lies down whatever the cutaway decided
+          if (aB.w >= 0.0) for (int i = 0; i < ${DUCK_MAX}; i++) {
+            if (float(i) >= uDuckN) break;
+            vec3 q = uDuck[i];
+            if (abs(q.x - bXZ.x) + abs(q.y - bXZ.y) < ${DUCK.MATCH.toFixed(3)}) { cutW = max(cutW, q.z); cutK *= 1.0 - q.z; }
+          }
           if (aB.w < 0.0) {
             // trees shrink to shrubs (their place on the ground is in the instance matrix)
             float cutS = mix(1.0, mix(0.2, 1.0, cutK), cutW);
@@ -357,7 +383,7 @@ function cutPatch(mat, tint = true, tile = false) {
         outgoingLight = mix(outgoingLight, wLit, wGlow);
         #include <opaque_fragment>`);
   };
-  mat.customProgramCacheKey = () => 'cut12' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
+  mat.customProgramCacheKey = () => 'cut13' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
   return mat;
 }
 /** Far-away building blocks pick their own level of detail: see U.uNear. */
@@ -428,6 +454,202 @@ export function cutWeight(x, z, r = 5) {
   const ss = (a, b, v) => { const k = clamp((v - a) / (b - a)); return k * k * (3 - 2 * k); };
   const hmax = Math.max(0.3, (t - r - 7) * U.uTan.value);
   return U.uCut.value * ss(-1, 3, t - r * U.uHalf.value) * (1 - ss(U.uR.value, U.uR.value * 1.5, l)) * (hmax < 4 ? 1 : 0);
+}
+
+// ---------------------------------------------------------------- the lens guard
+// The cutaway decides once per building, from its centre and half its short side. A wing of a big complex (the Tweede Kamer
+// between Hofweg and Plein, the Stadhuis) or the end of a long block can then stand right at the lens while the building's
+// centre is far off the sight line, and the picture fills with a wall or a roof. In free mode the stage asks every frame which
+// buildings the lens is in, or is about to be in, and lays exactly those down (U.uDuck, matched in cutPatch on the building's
+// own cutaway tag), whatever the cutaway decided. The camera itself never moves. The buildings are found in the tile meshes'
+// own geometry: every Vox box is 24 vertices carrying its owner's tag in `aB` (kit.js), the very numbers the shader matches on,
+// so plain buildings, typed ones, hand-made landmarks, building parts, features and detailed house fronts are all covered.
+const _boxIx = new WeakMap();
+const cellKey = (i, j) => (i + 1024) * 4096 + (j + 1024);
+const IX_NONE = { done: true, cells: null }; // a mesh without building boxes (or a glow mesh: see lensProbe)
+const _xs = new Float64Array(4), _zs = new Float64Array(4);
+/**
+ * The tagged boxes of a tile mesh, from its position and aB arrays (which stay on the CPU): b = 10 numbers a box (centre x, z,
+ * axis ux, uz, half sizes, bottom, top, tag x, tag z; tile-local) and cells: cell key -> the box indices there (views into one
+ * Int32Array). Built in slices (indexStep) so no frame spends more than DUCK.INDEX_MS on it; storage is sized once per mesh.
+ */
+function indexStart(mesh) {
+  const g = mesh.geometry, P = g && g.attributes.position, A = g && g.attributes.aB;
+  if (!P || !A || P.count < 24) return IX_NONE;
+  const n = Math.floor(P.count / 24);
+  return { done: false, phase: 0, p: P.array, t: A.array, n, v: 0, k: 0, i: 0, b: new Float32Array(n * 10), count: new Map(), at: null, all: null, cells: null };
+}
+/** Cells of box k: calls fn(key) for each (no closure is made per box: fn is one of two fixed functions). */
+function boxCells(b, k, fn, ix) {
+  const o = k * 10, C = DUCK.CELL, r = Math.hypot(b[o + 4], b[o + 5]) + DUCK.PAD_OUT, cx = b[o], cz = b[o + 1];
+  for (let i = Math.floor((cx - r) / C); i <= Math.floor((cx + r) / C); i++) for (let j = Math.floor((cz - r) / C); j <= Math.floor((cz + r) / C); j++) fn(ix, cellKey(i, j), k);
+}
+const countCell = (ix, key) => { ix.count.set(key, (ix.count.get(key) || 0) + 1); };
+const fillCell = (ix, key, k) => { const a = ix.at.get(key); ix.all[a] = k; ix.at.set(key, a + 1); };
+/** Work on an index until `until` (performance.now() value); true when it is complete. */
+function indexStep(ix, until) {
+  const p = ix.p, t = ix.t, b = ix.b;
+  if (ix.phase === 0) { // the boxes
+    for (; ix.v < ix.n * 24; ix.v += 24) {
+      if ((ix.v & 767) === 0 && performance.now() > until) return false; // (a time check every 32 boxes)
+      const v = ix.v;
+      if (!(t[v * 4 + 2] > 0) || t[v * 4 + 3] < 0) continue; // untagged; trees (aB.w < 0) are not buildings
+      let y0 = Infinity, y1 = -Infinity, c = 0;
+      for (let q = 0; q < 24; q++) {
+        const o = (v + q) * 3, x = p[o], z = p[o + 2];
+        if (p[o + 1] < y0) y0 = p[o + 1];
+        if (p[o + 1] > y1) y1 = p[o + 1];
+        let seen = false;
+        for (let e = 0; e < c; e++) if (Math.abs(_xs[e] - x) < 1e-3 && Math.abs(_zs[e] - z) < 1e-3) { seen = true; break; }
+        if (!seen && c < 4) { _xs[c] = x; _zs[c] = z; c++; }
+      }
+      if (c < 4) continue;
+      // corner 0 and its two neighbours (the farthest of the other three is the opposite corner); the nearer one gives the axis
+      const d1 = (_xs[1] - _xs[0]) ** 2 + (_zs[1] - _zs[0]) ** 2, d2 = (_xs[2] - _xs[0]) ** 2 + (_zs[2] - _zs[0]) ** 2, d3 = (_xs[3] - _xs[0]) ** 2 + (_zs[3] - _zs[0]) ** 2;
+      let ea = 1, eb = 2;
+      if (d1 >= d2 && d1 >= d3) { ea = 2; eb = 3; } else if (d2 >= d1 && d2 >= d3) { ea = 1; eb = 3; }
+      const da = ea === 1 ? d1 : ea === 2 ? d2 : d3, db = eb === 2 ? d2 : d3;
+      if (db < da) { const s = ea; ea = eb; eb = s; }
+      const ax = _xs[ea] - _xs[0], az = _zs[ea] - _zs[0], l1 = Math.hypot(ax, az), l2 = Math.hypot(_xs[eb] - _xs[0], _zs[eb] - _zs[0]);
+      if (!(l1 > 1e-4)) continue;
+      const o = ix.k * 10;
+      b[o] = (_xs[0] + _xs[1] + _xs[2] + _xs[3]) / 4; b[o + 1] = (_zs[0] + _zs[1] + _zs[2] + _zs[3]) / 4; b[o + 2] = ax / l1; b[o + 3] = az / l1;
+      b[o + 4] = l1 / 2; b[o + 5] = l2 / 2; b[o + 6] = y0; b[o + 7] = y1; b[o + 8] = t[v * 4]; b[o + 9] = t[v * 4 + 1];
+      ix.k++;
+    }
+    ix.phase = 1; ix.i = 0;
+  }
+  if (ix.phase === 1) { // how many boxes each cell gets
+    for (; ix.i < ix.k; ix.i++) { if ((ix.i & 31) === 0 && performance.now() > until) return false; boxCells(b, ix.i, countCell, ix); }
+    let total = 0;
+    ix.at = new Map();
+    for (const [key, n] of ix.count) { ix.at.set(key, total); total += n; }
+    ix.all = new Int32Array(total);
+    ix.phase = 2; ix.i = 0;
+  }
+  if (ix.phase === 2) { // the box indices, cell by cell in one array
+    for (; ix.i < ix.k; ix.i++) { if ((ix.i & 31) === 0 && performance.now() > until) return false; boxCells(b, ix.i, fillCell, ix); }
+    ix.cells = new Map();
+    for (const [key, n] of ix.count) { const end = ix.at.get(key); ix.cells.set(key, ix.all.subarray(end - n, end)); }
+    ix.count = ix.at = null; ix.p = ix.t = null;
+    ix.done = true;
+  }
+  return true;
+}
+// what one frame's probes found: buildings (tag in map coords) and how near their boxes came (m; negative: inside)
+const _cand = { n: 0, mx: new Float64Array(64), my: new Float64Array(64), d: new Float64Array(64) };
+const _want = { mesh: null, d: Infinity }; // the nearest mesh this frame's probes needed but found without a finished index
+let _job = null; // the mesh whose index is being built
+/** Probe one point (map x, y; height z) against the boxes of the tiles on screen; nearer than `pad` goes into _cand. */
+function lensProbe(stream, px, py, pz, pad) {
+  const city = stream.city, C = DUCK.CELL;
+  for (let tx = Math.floor((px - DUCK.REACH) / TILE); tx <= Math.floor((px + DUCK.REACH) / TILE); tx++) {
+    for (let ty = Math.floor((py - DUCK.REACH) / TILE); ty <= Math.floor((py + DUCK.REACH) / TILE); ty++) {
+      const c = _byNum.get(tileNum(tx, ty));
+      if (!c || c.g.parent !== stream.group) continue; // only what is on screen
+      const lx = px - c.ox, lz = c.oy + TILE - py, key = cellKey(Math.floor(lx / C), Math.floor(lz / C)), ch = c.g.children;
+      for (let m = 0; m < ch.length; m++) {
+        const mesh = ch[m];
+        // (glow meshes are skipped: their boxes are window lights inside the walls of buildings the solid meshes already hold)
+        if (!mesh.isMesh || mesh.isInstancedMesh || !mesh.visible || mesh.material.isMeshBasicMaterial || !mesh.geometry.attributes.aB) continue;
+        const bs = mesh.geometry.boundingSphere; // (set by buildTile: tile-wide for a tile's meshes, about 90 m for a cell's)
+        const bd = bs ? Math.sqrt((lx - bs.center.x) ** 2 + (lz - bs.center.z) ** 2) - bs.radius : 0;
+        if (bd > pad) continue;
+        let ix = _boxIx.get(mesh);
+        if (ix === undefined) { ix = indexStart(mesh); _boxIx.set(mesh, ix); }
+        if (!ix.done) { if (bd < _want.d) { _want.d = bd; _want.mesh = mesh; } continue; } // (indexed nearest first, see lensGuard)
+        const list = ix.cells && ix.cells.get(key);
+        if (!list) continue;
+        const b = ix.b;
+        for (let q = 0; q < list.length; q++) {
+          const o = list[q] * 10, dx = lx - b[o], dz = lz - b[o + 1];
+          const ea = Math.abs(dx * b[o + 2] + dz * b[o + 3]) - b[o + 4], eb = Math.abs(-dx * b[o + 3] + dz * b[o + 2]) - b[o + 5];
+          if (ea > pad || eb > pad) continue;
+          const mx = c.ox + b[o + 8], my = c.oy + TILE - b[o + 9], base = city.landAt(mx, my) + 0.1; // the shader seats it on the ground under its tag
+          const ey = Math.max(base + b[o + 6] - pz, pz - base - b[o + 7]), e = Math.max(ea, eb, ey); // (at full height: a building that is down stays found)
+          if (e > pad) continue;
+          let f = 0;
+          while (f < _cand.n && (Math.abs(_cand.mx[f] - mx) > 0.01 || Math.abs(_cand.my[f] - my) > 0.01)) f++;
+          if (f === _cand.n) { if (f >= _cand.mx.length) continue; _cand.n++; _cand.mx[f] = mx; _cand.my[f] = my; _cand.d[f] = e; }
+          else if (e < _cand.d[f]) _cand.d[f] = e;
+        }
+      }
+    }
+  }
+}
+/** Spend at most DUCK.INDEX_MS on box indexes: the one in progress, then the nearest one this frame's probes were missing. */
+function indexWork() {
+  const until = performance.now() + DUCK.INDEX_MS;
+  for (let n = 0; n < 4; n++) {
+    if (!_job || !_job.parent) { _job = _want.mesh && _want.mesh.parent ? _want.mesh : null; _want.mesh = null; _want.d = Infinity; } // (a dropped tile's mesh has no parent)
+    if (!_job) return;
+    const ix = _boxIx.get(_job);
+    if (!ix || ix.done || indexStep(ix, until)) _job = null;
+    if (performance.now() > until) return;
+  }
+}
+// the buildings that are down or on their way: a fixed pool (no allocation per frame); tags in MAP coords, so a building that is
+// down stays down through a focus shift (the scene frame changes then, the map does not)
+const _ducks = Array.from({ length: DUCK_MAX }, () => ({ on: false, mx: 0, my: 0, w: 0, hold: 0 }));
+const _lens = { has: false, mx: 0, my: 0, vx: 0, vy: 0 };
+const smooth = (w) => w * w * (3 - 2 * w);
+/**
+ * Once per frame, after the camera is placed: lens (cx, cy, cz) and target (tx, ty, tz) in scene coords, WITHOUT camera shake.
+ * `active`: free mode; otherwise nothing new goes down and whatever is down rises again at once, at the same smooth pace.
+ */
+export function lensGuard(W, real, active, cx, cy, cz, tx, ty, tz) {
+  const f = W.frame, S = W.stream;
+  if (active && S && !S.dead) {
+    const lmx = f.ox + cx * f.dx + cz * f.dy, lmy = f.oy + cx * f.dy - cz * f.dx;
+    if (_lens.has && real > 1e-4) {
+      // the lens's velocity, smoothed (frame-time jitter must not swing the look-ahead), at most DUCK.VMAX in any direction
+      const k = 1 - Math.exp(-real / DUCK.VEL_S);
+      _lens.vx += ((lmx - _lens.mx) / real - _lens.vx) * k; _lens.vy += ((lmy - _lens.my) / real - _lens.vy) * k;
+      const sp = Math.hypot(_lens.vx, _lens.vy);
+      if (sp > DUCK.VMAX) { _lens.vx *= DUCK.VMAX / sp; _lens.vy *= DUCK.VMAX / sp; }
+    } else { _lens.vx = 0; _lens.vy = 0; }
+    const vx = _lens.vx, vy = _lens.vy;
+    _lens.has = true; _lens.mx = lmx; _lens.my = lmy;
+    _cand.n = 0; _want.mesh = null; _want.d = Infinity;
+    const pad = DUCK.PAD_OUT;
+    lensProbe(S, lmx, lmy, cy, pad);
+    const fx = tx - cx, fy = ty - cy, fz = tz - cz, fl = Math.hypot(fx, fy, fz) || 1, ah = Math.min(DUCK.AHEAD, fl * 0.3) / fl;
+    const ax = cx + fx * ah, az = cz + fz * ah;
+    lensProbe(S, f.ox + ax * f.dx + az * f.dy, f.oy + ax * f.dy - az * f.dx, cy + fy * ah, pad);
+    if (vx * vx + vy * vy > 0.01) for (let i = 0; i < DUCK.LOOK.length; i++) lensProbe(S, lmx + vx * DUCK.LOOK[i], lmy + vy * DUCK.LOOK[i], cy, pad);
+    indexWork();
+    for (let i = 0; i < _cand.n; i++) {
+      const mx = _cand.mx[i], my = _cand.my[i], d = _cand.d[i];
+      let e = null, free = null;
+      for (let j = 0; j < DUCK_MAX; j++) {
+        const q = _ducks[j];
+        if (q.on && Math.abs(q.mx - mx) < 0.01 && Math.abs(q.my - my) < 0.01) { e = q; break; }
+        if (!q.on && !free) free = q;
+      }
+      if (e) { e.hold = DUCK.HOLD; continue; } // within PAD_OUT: held (hysteresis)
+      if (d > DUCK.PAD_IN) continue; // not yet near enough to go down
+      // (with all DUCK_MAX in use it waits for a slot rather than make another building pop up)
+      if (free) { free.on = true; free.mx = mx; free.my = my; free.w = 0; free.hold = DUCK.HOLD; }
+    }
+  } else {
+    _lens.has = false;
+    for (let j = 0; j < DUCK_MAX; j++) _ducks[j].hold = 0; // out of free mode: no holding, whatever is down starts rising now
+  }
+  let n = 0;
+  for (let j = 0; j < DUCK_MAX; j++) {
+    const q = _ducks[j];
+    if (!q.on) continue;
+    q.hold -= real;
+    q.w = clamp(q.w + (q.hold > 0 ? real : -real) / DUCK.EASE);
+    if (q.w <= 0 && q.hold <= 0) { q.on = false; continue; }
+    U.uDuck.value[n++].set((q.mx - f.ox) * f.dx + (q.my - f.oy) * f.dy, (q.mx - f.ox) * f.dy - (q.my - f.oy) * f.dx, smooth(q.w));
+  }
+  U.uDuckN.value = n;
+}
+/** How far down the lens guard has a building with its tag at scene (x, z) (0..1): signs on a front that is down hide with it. */
+export function duckAt(x, z) {
+  for (let i = 0; i < U.uDuckN.value; i++) { const q = U.uDuck.value[i]; if (Math.abs(q.x - x) + Math.abs(q.y - z) < DUCK.MATCH) return q.z; }
+  return 0;
 }
 
 // ---------------------------------------------------------------- building looks

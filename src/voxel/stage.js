@@ -3,7 +3,7 @@
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
 import { makeRng, hashStr, Runner, ease, clamp, lerp, clearSigns, wait, disposeTree } from './kit.js';
-import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND } from './world.js';
+import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND, lensGuard, duckAt } from './world.js';
 import { localeL, ambientL } from './street.js';
 import { Fx, fadeOut } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
@@ -1648,6 +1648,16 @@ export class Stage {
     this.crowd.update(dt, r.tx, r.tz, r.dist);
 
     // ---- things in the way duck; shadows follow the camera
+    // the lens guard (free mode only): a building the lens is in, or is about to be in, lies down whatever the cutaway below
+    // decides (a wing of a big complex, the end of a long block); the camera itself is never moved
+    // (fed the camera WITHOUT the shake: a shaking lens would swing the guard's look-ahead about)
+    {
+      const gx = r.tx + camD * Math.sin(r.az) * ce, gz = r.tz + camD * Math.cos(r.az) * ce;
+      let gy = r.ty + camD * Math.sin(r.el);
+      if (!sh) gy = cy; // (no shake: the camera's own position, ground clamp included)
+      else if (r.dist < 80) gy = Math.max(gy, W.landY(gx, gz) + 0.35);
+      lensGuard(W, real, this.mode === 'free', gx, gy, gz, r.tx, r.ty, r.tz);
+    }
     U.uFocus.value.set(r.tx, 0, r.tz);
     U.uCamDir.value.set(Math.sin(r.az), Math.cos(r.az));
     U.uTan.value = Math.tan(clamp(r.el, 0.1, 1.45));
@@ -1660,7 +1670,7 @@ export class Stage {
     if (shotOn || shotBlocked) need = Math.max(need, clamp((1.3 - r.el) / 0.15));
     this.cutK = snapCut ? need : (this.cutK ?? need) + (need - (this.cutK ?? need)) * (1 - Math.exp(-real * 6));
     U.uCut.value = this.cutK < 0.004 ? 0 : this.cutK;
-    for (const s of W.signs) s.m.visible = U.uGrow.value > 0.9 && cutWeight(s.x, s.z) < 0.5;
+    for (const s of W.signs) s.m.visible = U.uGrow.value > 0.9 && cutWeight(s.x, s.z) < 0.5 && duckAt(s.x, s.z) < 0.5;
     const half = clamp(r.dist * 0.55, 45, 260), sc = this.sun.shadow.camera;
     this.sun.castShadow = r.dist < 1300;
     if (Math.abs(half - (this._half || 0)) > half * 0.06) {
