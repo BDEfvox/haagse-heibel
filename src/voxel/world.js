@@ -2222,6 +2222,7 @@ function dropTile(key) {
 export const tileOf = (key) => _built.get(key) || null;
 /** Let go of all but the `keep` most recently used tiles (called when the street view closes: the map page needs the memory). */
 export function trimTiles(keep) {
+  _handover = null; // the street was closed, not swapped: the next one starts from the sky, a few tiles per frame
   for (const key of [..._built.keys()]) { if (_built.size <= keep) break; dropTile(key); }
   // the tiles that stay give up their detailed house fronts: those are heavy, and are rebuilt in a moment when needed
   for (const c of _built.values()) if (c.cells) for (const cell of c.cells) { dropJob(cell); if (cell.detail) plainCell(c, cell); }
@@ -2434,6 +2435,7 @@ function placeTile(c, f) {
   c.g.updateMatrixWorld(true);
 }
 let _stream = null; // the streamer of the world on screen
+let _handover = null; // the keys a streamer had on screen when it was disposed (Streamer constructor, dispose, trimTiles)
 /** Tiles carry a few things that differ by night (lanterns): when night falls or lifts, start afresh. */
 function syncNight(night) {
   if (_builtNight === night || _builtNight === null && !_built.size) { _builtNight = night; return; }
@@ -2472,6 +2474,9 @@ class Streamer {
     this.staged = new Map(); this.target = null; this.busy = false; this.fm = [0, 0]; this.lazyT = 0; // busy: a rebake is waiting for its swap
     /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves; also with (tile, true) when a finer build replaces the one on screen. */
     this.onTile = null;
+    // a focus shift (stage.show keep): the tiles that were on screen a moment ago come back in this street's first frame, not a few per
+    // frame (they are built and on the GPU already: placing them is all it takes), so no far tile shows as a plain block meanwhile
+    this.handover = _handover; _handover = null;
     _stream = this;
   }
   _mask(key, v) {
@@ -2522,11 +2527,18 @@ class Streamer {
       this.want = want.map((q) => q[1]);
     }
     // tiles that are already built come straight back, a few per frame so a street swap does not stutter
+    // (the tiles handed over from the street before come back all at once in the first frame, see the constructor)
     let back = 0;
+    const hand = this.handover;
     for (const key of this.want) {
-      if (back >= 6) break;
-      if (!this.live.has(key) && _built.has(key)) { this._attach(key, _built.get(key)); back++; }
+      if (back >= 6 && !hand) break;
+      if (this.live.has(key) || !_built.has(key)) continue;
+      const mine = hand !== null && hand.has(key);
+      if (back >= 6 && !mine) continue;
+      this._attach(key, _built.get(key));
+      if (!mine) back++;
     }
+    this.handover = null;
     // fetch what is missing, or too coarse for where the camera is now
     const needs = (key) => { const c = _built.get(key); return !c || c.lod > this.lodOf.get(key); };
     let flying = this.pending.size;
@@ -2736,6 +2748,7 @@ class Streamer {
   dispose() {
     this.dead = true;
     for (const key of [...this.staged.keys()]) this._unstage(key);
+    _handover = new Set(this.live.keys()); // for the next street's streamer, if a focus shift starts one right now (trimTiles forgets it)
     for (const key of [...this.live.keys()]) this._detach(key);
     this.ready.clear();
     if (_stream === this) _stream = null;
