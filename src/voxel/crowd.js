@@ -336,8 +336,9 @@ class Pool {
   }
   tint(attr, i, c) { const a = attr.array, o = i * 3; a[o] = c[0]; a[o + 1] = c[1]; a[o + 2] = c[2]; attr.needsUpdate = true; }
   flush() {
-    if (this.dirty) { this.mesh.instanceMatrix.needsUpdate = true; this.dirty = false; }
-    if (this.anim && this.hi) this.anim.needsUpdate = true;
+    // only the slots that are drawn (0 .. hi) go to the graphics chip, not the whole pool (three uploads the range, then forgets it)
+    if (this.dirty) { const a = this.mesh.instanceMatrix; a.clearUpdateRanges(); a.addUpdateRange(0, this.hi * 16); a.needsUpdate = true; this.dirty = false; }
+    if (this.anim && this.hi) { const a = this.anim; a.clearUpdateRanges(); a.addUpdateRange(0, this.hi * 4); a.needsUpdate = true; }
   }
   dispose() { this.mesh.geometry.dispose(); this.mesh.dispose(); }
 }
@@ -923,8 +924,15 @@ export class Crowd {
     this.pedIx = null;
   }
   /** Forget tiles that are no longer on screen (`live` has the keys that are). */
-  prune(live) {
-    for (const id of [...this.owners.keys()]) if (!live.has(id) && this.t - this.owners.get(id).seen > 3) this.remove(id);
+  prune(live, max = 4) {
+    // at most `max` tiles per call (each frees its walkers, cars and lanes: about 0.13 ms in Node); returns how many are still due,
+    // so the stage asks again next frame instead of freeing a whole street's worth of tiles in one frame after a switch
+    let n = 0, left = 0;
+    for (const [id, o] of this.owners) {
+      if (live.has(id) || this.t - o.seen <= 3) continue;
+      if (n < max) { this.remove(id); n++; } else left++;
+    }
+    return left;
   }
   /**
    * The focus moved to another street, whose scene has its own origin and orientation: carry every lane, post and

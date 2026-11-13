@@ -1774,7 +1774,7 @@ export class Stage {
     }
     if (this.walker) B.push(this._wb); // the walking character: the crowd treats him as a person on stage (walkers go round, vehicles brake)
     for (const c of this.locales) if (c.road && c.road.closed > 0) { const p = path.xz(c.sc, 0); Z.push({ x: p[0], z: p[1], r: 26 }); }
-    if ((this.pruneT -= 0.016) <= 0) { this.pruneT = 2; C.prune(this.W.stream.live); }
+    if ((this.pruneT -= 0.016) <= 0) this.pruneT = C.prune(this.W.stream.live) > 0 ? 0 : 2; // (what is still due: a few tiles next frame)
   }
 
   // ------------------------------------------------------------ "something is happening over there" pins
