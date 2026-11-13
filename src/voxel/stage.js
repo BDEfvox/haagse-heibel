@@ -581,6 +581,10 @@ export class Stage {
 
   _resize() {
     const w = this.root.clientWidth, h = this.root.clientHeight;
+    // the overlay (pins, comic words) covers the root exactly (inset: 0): its size is kept here, so no frame reads layout
+    const S = (this._size ||= { w: 0, h: 0 });
+    S.w = w; S.h = h;
+    if (this.fx) this.fx.size = S;
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
@@ -1337,6 +1341,7 @@ export class Stage {
     const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + (opts.seed || '') + '|stage'));
     const path = W.path, len = path.sB - path.sA;
     this.fx = new Fx(this.scene, this.camera, this.overlay);
+    this.fx.size = this._size || null; // (and by _resize)
     // whose words stay readable from afar: the scene that directs the camera, or the spot the camera is following
     this.fx.watch = (ctx) => (this.cine ? this.cine.ctx === ctx : this.mode === 'follow' && this.camCtx === ctx);
     this.fx.ground = W.hAt;
@@ -1782,7 +1787,8 @@ export class Stage {
       this.overlay.appendChild(el);
       this.pins.push(pin);
     }
-    const w = this.overlay.clientWidth, h = this.overlay.clientHeight;
+    if (!this.pins.length) return;
+    const S = this._size, w = S ? S.w : this.overlay.clientWidth, h = S ? S.h : this.overlay.clientHeight;
     for (let i = 0; i < this.pins.length; i++) {
       const pin = this.pins[i], c = live[i];
       pin.ctx = c || null;
@@ -1864,7 +1870,8 @@ export class Stage {
       if (this.mode === 'walk') this._walkStep(real * (this.debugSpeed || 1)); // (on the viewer's clock: a scene's slow motion does not slow his feet)
       let rate = this._own ? 10 : 3.2, rateT = rate, snap = false;
       if (this.mode === 'follow') {
-        const busy = [...this.gags].some((q) => q.ctx === this.camCtx);
+        let busy = false;
+        for (const q of this.gags) if (q.ctx === this.camCtx) { busy = true; break; }
         this.idleT = busy ? 0 : this.idleT + real;
         if (this.idleT > 3 && this.time - this.lastSwitch > 5 && !this.cine) {
           let nb = null;

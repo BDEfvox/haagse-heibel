@@ -207,7 +207,7 @@ export class Fx {
     this.solid.update(dt);
     this.glow.update(dt);
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * (1.2 + this.shakeAmt * 2.4));
-    const w = this.overlay.clientWidth, h = this.overlay.clientHeight;
+    const S = this.size, w = S ? S.w : this.overlay.clientWidth, h = S ? S.h : this.overlay.clientHeight; // (the stage keeps the size: no layout read per frame)
     // words belong to the street: from further away they shrink, then slowly fade out
     const want = 1 - Math.min(1, Math.max(0, (this.zoom - 115) / 150));
     this.alpha += (want - this.alpha) * Math.min(1, dt * 1.6);
