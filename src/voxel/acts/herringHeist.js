@@ -1,7 +1,7 @@
 // The herring heist: a dog (or a cat) steals a herring from the stall, then a gull steals it from the thief. Or nobody does.
 // Storyboard: storyboards/herringHeist.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
@@ -244,7 +244,7 @@ export default function (T) {
           cam.close(thief, { dist: 4.5, el: 0.06, az: -dir * 0.4, y: 0.5, fov: 36, cut: 0.6 });
           thief.heading = 0;
           yield* wait(0.4);
-          if (mouthFish) thief.b.remove(mouthFish);
+          if (mouthFish) { thief.b.remove(mouthFish); disposeTree(mouthFish); mouthFish = null; } // eaten: gone for good
           ctx.sfx('gulp');
           yield* hop(thief, 0.25, 0.22);
           say(ctx, thief, catThief ? 'prr...' : '*slurp*', { size: 14, color: '#b9fbc0', off: 1.0 });

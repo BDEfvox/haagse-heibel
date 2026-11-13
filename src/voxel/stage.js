@@ -2,16 +2,19 @@
 // contexts handed to gag scripts. Gag scripts think in "street space" (x along the street, z across it);
 // every object they place is bent onto the real street here.
 import * as THREE from 'three';
-import { makeRng, hashStr, Runner, ease, clamp, lerp, Vox, sculpt, clearSigns, wait, disposeTree } from './kit.js';
-import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND } from './world.js';
+import { makeRng, hashStr, Runner, ease, clamp, lerp, clearSigns, wait, disposeTree } from './kit.js';
+import { buildWorld, preload, U, cutWeight, cutLimit, setMaxTexture, trimTiles, tileOf, LAMP_KIND, lensGuard, duckAt, streetNear } from './world.js';
 import { localeL, ambientL } from './street.js';
-import { Fx } from './fx.js';
+import { Fx, fadeOut } from './fx.js';
 import { startAmbient, startLocale, mixFor, playGag, GAG_NAMES } from './gags.js';
-import { makeBird, makePerson, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
-import { litShare } from './props.js';
+import { makePerson, makeDog, makeCat, makeBird, item, PERSON_K, SKINS, SHIRTS, PANTS, HAIRS } from './cast.js';
+import { litShare, makeCar, makeBike, makeScooter, makeFatbike, makeHeli, makeBoat } from './props.js';
 import { Crowd, PED } from './crowd.js';
 import { spotAt } from './districts.js';
+import { Overhead } from './overhead.js';
+import { Walker } from './walker.js';
 import { FURN as STREET_FURN } from './setting.js';
+import { PERSON as G_PERSON, WHEEL as G_WHEEL, ALL as G_ALL } from './ground.js';
 import { sfx } from '../audio.js';
 
 // Light follows the real clock in The Hague: the same sun (or moon) for the whole city, whatever street is open. The owner can
@@ -102,6 +105,14 @@ const TOP = 1.5608, EXIT = 2900;
 /** Camera height at which zooming out hands over to the map (and zooming in on the map hands back). */
 export const EXIT_DIST = EXIT;
 const DMIN = 20, DMAX = 3100;
+// the elevations the viewer can tilt the free camera between
+const EL_LO = 0.16, EL_HI = 1.5;
+/**
+ * A camera value the viewer changes, kept within [lo, hi], but never pushed further than it already is: a cutscene shot taken over
+ * at 8 m (or from below 0.16) stays as it is, zooming in from there does not throw the camera back to the 20 m limit, and the
+ * viewer can still move it back into the range.
+ */
+const lim = (v, lo, hi, was) => clamp(v, Math.min(lo, was), Math.max(hi, was));
 const sm = (x) => x * x * (3 - 2 * x);
 const angDiff = (a, b) => { const d = b - a; return Math.atan2(Math.sin(d), Math.cos(d)); };
 const _col = new THREE.Color(), _W = new THREE.Matrix4(), _T = new THREE.Matrix4(), _f = {}, _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
@@ -109,11 +120,33 @@ const _col = new THREE.Color(), _W = new THREE.Matrix4(), _T = new THREE.Matrix4
 const MIN_SHOT = 0.9;      // a new shot waits until the last cut is this old (unless `quick`, or it glides)
 const SAFETY = 20;         // a scene that asks for nothing new for this long loses the camera (once, with a warning)
 const STAGE_R = 15;        // metres the crowd keeps clear around the scene that holds the camera
+// a "!" pin is fully there while its spot is within PIN_FULL metres of the point the camera looks at, fades evenly, and is gone at PIN_GONE
+const PIN_FULL = 150, PIN_GONE = 300;
+// A pin laid out at the bottom right must not sit on the Walk button (a press there would start a walk instead). The button's box as
+// style.css lays it out (#btn-walk: right 16, bottom 116 on wide screens; right 8, bottom 118 at max-width 760 px), a little larger
+// than it is drawn, and the pin's own reach (18 px radius and its shadow): a pin whose disc would reach into the box is lifted above it.
+const PIN_R = 22, PIN_NARROW = 760;
+const WALK_BOX = { wide: { right: 16, bottom: 116, w: 100, h: 46 }, narrow: { right: 8, bottom: 114, w: 92, h: 50 } };
+// m: pressing a pin brings the camera this close to the spot if it is further away (a wide view of one spot, about the street's own
+// viewing distance on a wide screen; see flyTo)
+const PIN_VIEW = 80;
+// the on-screen turn pad: one step is PAD_AZ radians of turn (15 degrees) or PAD_EL of tilt; held with reduced motion, a step every PAD_REPEAT s
+const PAD_AZ = 0.26, PAD_EL = 0.12, PAD_REPEAT = 0.35;
+// two fingers on the canvas do ONE thing per touch, decided once a finger has moved GESTURE_PX: spread or twist = zoom and turn
+// together, both moving up or down = tilt, both moving the same way otherwise = pan
+const GESTURE_PX = 10;
+// the camera keys, by the key's meaning (so Q is Q on any keyboard layout); a held key is remembered by its physical key (e.code),
+// so a key let go after Shift was pressed or released (= then +, - then _) is still let go
+const KEY_ACT = { w: 'up', arrowup: 'up', s: 'down', arrowdown: 'down', a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right', q: 'turnL', e: 'turnR', r: 'tiltU', f: 'tiltD', '+': 'in', '=': 'in', '-': 'out', _: 'out' };
 const BLOCKED_FOR = 0.7;   // the sight line must stay blocked this long before the stand is reconsidered (once)
 const RECLEAR_FOR = 1.0;   // ...and clear this long before the high fallback is left again
 const RECONSIDER = 2;      // after any such decision: no new one for this long
 const RESTAND_GLIDE = 0.5; // the move to the new stand takes about this long
 const SAME_AZ = 0.52, SAME_DIST = 0.3; // 'nearly the same shot': within 30 degrees and 30% of the distance
+// the walking character (walker.js, mode 'walk'): the camera's distance and tilt when he is dropped (the viewer's own are kept when
+// they are within these ranges), the height over his feet it aims at, how long a drop may wait for the ground to be ready, how far
+// from the point looked at he may be put, and the height above which the camera first comes down to him
+const WALK_DIST = 20, WALK_D = [20, 60], WALK_EL = 0.35, WALK_E = [0.2, 0.9], WALK_AIM = 1.1, WALK_WAIT = 6, WALK_REACH = 8, WALK_HIGH = 300;
 
 
 // (disposeTree, which frees the GPU buffers of an object that has left the scene for good, lives in kit.js)
@@ -131,7 +164,37 @@ const FURN = Object.fromEntries(['bench', 'bin', 'box', 'mailbox', 'parasol', 'r
 /** Furniture the camera must never stand under or inside (parasols, market stalls, kiosks): see _clear. */
 const TALL = new Set(['terrace', 'mstall', 'kiosk', 'parasol']);
 
+let _wT = 0; // the stage's clock, for easing heights in warp (set at the start of every frame)
 /** Make an object live in a context's street space: its position is (x along, y up, z across) from that spot. */
+const SOFT_REACH = 600; // m: how far the focus-shift tests of ambient life look (the overhead's SEE_FAR: beyond it a bird is under a pixel)
+/**
+ * An ambient actor drawn arriving at where its script has put it, without touching the script: what it shows is moved into a child
+ * group, which starts offset and glides home. The offset is d metres along the street (side -1 / +1; a bird also 8 m up), kept in the
+ * street's axes and turned into the actor's own every frame, so the actor may turn meanwhile. 'air': a bird flaps (a.flap) and comes
+ * in at landBird's 7.5 m/s (at least 1.6 s); 'boat': it catches up (ease out over d / 2.6 s, 3-10 s). Ends early if the actor is retired.
+ */
+function arrival(a, kind, d, side = 1) {
+  const g = a.g;
+  if (!g || a._wrap) return null;
+  const wr = (a._wrap = new THREE.Group());
+  while (g.children.length) wr.add(g.children[0]);
+  g.add(wr);
+  const T = kind === 'boat' ? clamp(d / 2.6, 3, 10) : Math.max(1.6, d / 7.5), up = kind === 'boat' ? 0 : 8;
+  const at = (u) => {
+    // street-axes offset (dx along, up), into the actor's own turned and scaled axes as it stands now
+    const e = (1 - u) * (1 - u), dx = side * d * e, k = 1 / (g.scale.x || 1), c = Math.cos(g.rotation.y), sn = Math.sin(g.rotation.y);
+    wr.position.set(dx * c * k, up * e * k, dx * sn * k);
+  };
+  at(0);
+  if (kind !== 'boat') a.flap = true;
+  return (function* () {
+    let t = 0;
+    while (t < T && a.alive && !a._left) { t += yield; at(Math.min(1, t / T)); }
+    wr.position.set(0, 0, 0);
+    a.flap = false;
+  })();
+}
+
 function warp(obj, ctx, path, hAt) {
   obj._ctx = ctx;
   obj.updateMatrix = function () {
@@ -147,12 +210,26 @@ function warp(obj, ctx, path, hAt) {
     this.matrix.compose(p, this.quaternion, this.scale);
     _W.makeRotationY(Math.atan2(-_f.tz, _f.tx));
     const X = _f.x - _f.tz * az, Z = _f.z + _f.tx * az;
-    let Y = hAt(X, Z);
-    const V = this._veh;
+    const V = this._veh, G = ctx.W && ctx.W.ground;
+    let Y;
     if (V && V.len) {
       // a long vehicle sits on the highest ground under its axles and sides, so a kerb step or a slope never buries a wheel
+      // (W.ground for a wheel: a rail bar counts as the road it lies in, so a car crossing tram tracks is not lifted onto one corner)
       const h = this.rotation.y, sh = Math.sin(h), ch = Math.cos(h), fx = _f.tx * sh - _f.tz * ch, fz = _f.tz * sh + _f.tx * ch, a = V.len * 0.36, w = (V.wid || 1.8) * 0.42;
-      for (const k of [-1, 1]) for (const q of [-1, 1]) Y = Math.max(Y, hAt(X + fx * a * k - fz * w * q, Z + fz * a * k + fx * w * q));
+      Y = G ? -Infinity : hAt(X, Z);
+      for (const k of [-1, 1]) for (const q of [-1, 1]) { const px = X + fx * a * k - fz * w * q, pz = Z + fz * a * k + fx * w * q; Y = Math.max(Y, G ? G.at(px, pz, 0, G_WHEEL, G_ALL) : hAt(px, pz)); }
+    } else {
+      Y = hAt(X, Z);
+      if (this._feet && G) {
+        // a person: the highest ground under the corners of the two shoes (x +-0.36, z -0.17..0.27 in the figure's units), turned with it
+        const h = this.rotation.y, sh = Math.sin(h), ch = Math.cos(h), fx = _f.tx * sh - _f.tz * ch, fz = _f.tz * sh + _f.tx * ch, sc = this.scale.x;
+        for (let k = 0; k < 4; k++) { const lx = (k & 1 ? 0.36 : -0.36) * sc, lz = (k & 2 ? 0.27 : -0.17) * sc; Y = Math.max(Y, G.at(X + fx * lz + fz * lx, Z + fz * lz - fx * lx, 0, G_PERSON, G_ALL)); }
+      }
+    }
+    if (V || this._feet) {
+      // eased on the stage's clock (a step onto a kerb is quick, a step down a little slower); a jump of more than 1.5 m is not eased
+      if (this._gy !== undefined && Math.hypot(X - this._gx, Z - this._gz) < 1.5) { const dt = Math.min(0.1, Math.max(0, _wT - this._gt)); Y = this._gy + clamp(Y - this._gy, -2.5 * dt, 4 * dt); }
+      this._gy = Y; this._gx = X; this._gz = Z; this._gt = _wT;
     }
     _W.setPosition(X, Y, Z); // it stands (or floats) on whatever is there
     _W.multiply(_T.makeTranslation(-ax, 0, -az));
@@ -160,6 +237,22 @@ function warp(obj, ctx, path, hAt) {
     this.matrixWorldNeedsUpdate = true;
   };
 }
+
+// ---- warm-up: the programs of what scenes bring on (people, animals, vehicles, items), compiled once for the page after the
+// first drop has landed, so a scene's first frames do not link them. One object is made per frame (one per fourth frame on a
+// phone), never while a cutscene holds the camera; then `compileAsync` (KHR_parallel_shader_compile: it does not block) runs
+// over them with the scene's own lights, so the program keys are the ones the frames will ask for (the sun casts its shadow by
+// then). The objects are never shown and are kept for the page: a kept material keeps its program.
+const ZOO = [
+  (r) => makePerson(r, { kind: 'civ' }).g, (r) => makePerson(r, { kind: 'cop' }).g, (r) => makePerson(r, { kind: 'kid' }).g,
+  (r) => makeCar(r, 'car').g, (r) => makeCar(r, 'police').g, (r) => makeCar(r, 'van').g,
+  (r) => makeBike(r).g, (r) => makeScooter(r).g, (r) => makeFatbike(r).g, (r) => makeHeli().g, (r) => makeBoat(r).g,
+  (r) => makeDog(r).g, (r) => makeCat(r).g, (r) => makeBird(r, 'gull').g, (r) => makeBird(r, 'pigeon').g, (r) => makeBird(r, 'stork').g,
+  () => { const g = new THREE.Group(); for (const f of Object.values(item)) { try { const o = f(); if (o && o.isObject3D) g.add(o); } catch (e) { /* an item that needs arguments */ } } return g; },
+];
+const _zoo = new THREE.Group();
+let _zooAt = 0, _zooDone = false, _zooTick = 0;
+const _zooRnd = makeRng(97);
 
 export class Stage {
   constructor(root) {
@@ -200,7 +293,7 @@ export class Stage {
     this.rig = { az: AZ0, el: EL0, dist: 80, tx: 0, ty: 1.5, tz: 0, fov: FOV, roll: 0 };
     this.goal = { ...this.rig };
     this.pins = [];
-    this.keys = new Set();
+    this.keys = new Map(); // held camera keys: physical key (e.code) -> what it does (see KEY_ACT)
     this._bindInput();
     new ResizeObserver(() => this._resize()).observe(root);
     // one bad frame must not kill the page: log it, and bow out cleanly if it keeps happening
@@ -220,12 +313,77 @@ export class Stage {
   }
 
   // ------------------------------------------------------------ input
+  // The camera rule: who may write the camera, by mode.
+  //   drop    the drop from the map, until the viewer touches the camera (see _take)
+  //   follow  the director: the spot with the newest scene, its shots (_cam), its punchlines (_focus). Scenes get the camera in
+  //           this mode only: every request they make is gated on mode === 'follow' (can() in _cam, _focus, gagStart)
+  //   free    the viewer, and nothing else that moves the view: a pin the viewer pressed (flyTo), the frame change of a focus
+  //           shift (exact, in map terms), the straight-down look high up, the rise to the map (leave)
+  //   leave   the rise to the map
+  // Once the viewer has touched the camera it stays theirs: only follow() (the Follow the action button) puts it back in follow.
+  // Nothing goes from free to follow by itself; the only automatic change is the other way (a follow with nothing left to show).
+  //   walk    the viewer's too, with the walking character (walker.js) on the street: the camera looks at him (its target follows
+  //           him); the viewer turns, tilts and zooms it as in free, a drag turns it (there is nothing to pan), the movement keys and
+  //           the on-screen stick move him. Not being 'follow', the director is locked out of it as out of free. Everything free does
+  //           for the viewer (lens guard, cutaway, aim height, the look straight down high up, the way out to the map, the focus
+  //           shift: _own) counts for walk too; a focus shift keeps it (_begin). Follow the action from walk ends the walk.
+  /** The viewer gives camera input: from here on the camera is theirs. False when input cannot act now. */
   _take() {
-    if (!this.W || this.mode === 'drop' || this.mode === 'leave' || this.exiting) return false;
-    if (this.mode === 'follow') this._setMode('free');
+    if (!this.W || this.mode === 'leave' || this.exiting) return false;
+    if (this.mode === 'drop') {
+      // still high up (a map click drops from as far as the map was) or not falling yet: the input itself is ignored, since taking
+      // the camera up there would cross the height that hands back to the map, but the drop lands in free instead of follow
+      if (this.hold || this.rig.dist >= EXIT * 0.9) { if (!this.landFree) { this.landFree = true; this.hooks.onMode?.('drop'); } return false; } // (the page repaints Follow)
+      this._land(false);
+    } else if (this.mode === 'follow') this._setMode('free', true);
     return true;
   }
+  /** Whether the camera is (or, during the drop, will be) following the action: the Follow button shows it pressed. */
+  get following() { return this.mode === 'follow' || (this.mode === 'drop' && !this.landFree); }
+  /** The camera is the viewer's: free, or walk (the walking character's). */
+  get _own() { return this.mode === 'free' || this.mode === 'walk'; }
+  /** The Follow button pressed while following: stop following, the camera stays exactly where it is. */
+  takeCamera() { this._take(); }
+  /** One step of the warm-up (see ZOO), after the frame has been drawn. */
+  _warmStep() {
+    if (this.cine || this.mode === 'drop' || this.mode === 'leave' || document.hidden) return; // never during a cutscene (its first beat included)
+    if (this.lite && (_zooTick++ & 3)) return;
+    if ((this._cpuLast || 0) > 12) return; // (a busy frame: not this one)
+    if (_zooAt < ZOO.length) {
+      // one object a frame, compiled as it is made (one or two programs: without parallel shader compilation a link waits)
+      try {
+        const o = ZOO[_zooAt](_zooRnd);
+        if (o && o.isObject3D) { _zoo.add(o); o.updateMatrixWorld(true); this.renderer.compileAsync(o, this.camera, this.scene).catch(() => {}); }
+      } catch (e) { /* a maker that changed, or compile is not there: skip it */ }
+      _zooAt++;
+      return;
+    }
+    _zooDone = true;
+    this._warmFrom = null;
+  }
+  /** The drop is over: follow the action (nobody touched the camera) or stay exactly where the viewer took it. */
+  _land(follow) {
+    const g = this.goal, r = this.rig;
+    if (!_zooDone) this._warmFrom = this.time; // the shaders scenes use are compiled from now on, in the background (see _warmStep)
+    this.drop = null;
+    if (follow) {
+      U.uGrow.value = 1;
+      this.mode = 'follow';
+      Object.assign(g, this._view(this.camCtx));
+      if (!CALM) this.fx.shake(0.22);
+      if (!document.hidden) sfx.thud?.();
+    } else {
+      this.mode = 'free';
+      Object.assign(g, r); g.fov = FOV; g.roll = 0;
+      this.autoFree = false; this._fl = null;
+      // buildings that were still rising finish rising (at once, for reduced motion)
+      if (CALM || U.uGrow.value >= 1) U.uGrow.value = 1; else this.grow = { v: U.uGrow.value };
+    }
+    this.hooks.onMode?.(this.mode);
+  }
   _pan(dx, dy) {
+    // walking: the target is the character, there is nothing to pan; a drag turns and tilts instead (as a right-drag does)
+    if (this.mode === 'walk') { this.goal.az -= dx * 0.005; this.goal.el = lim(this.goal.el + dy * 0.004, EL_LO, EL_HI, this.goal.el); return; }
     // by the elevation that is on screen (high up the camera tilts towards straight down by itself), so the ground follows the pointer
     const g = this.goal, mpp = (2 * g.dist * TAN) / (this.canvas.clientHeight || 1), kf = (dy * mpp) / Math.max(0.35, Math.sin(this.viewEl ?? g.el)), kr = dx * mpp;
     g.tx += -kr * Math.cos(g.az) - kf * Math.sin(g.az);
@@ -234,72 +392,192 @@ export class Stage {
     g.tx = q[0]; g.tz = q[1];
   }
   _bindInput() {
+    // What each device can do (every one of these is camera input: see _take):
+    //   mouse     drag pans; right-, middle-, Shift-, Ctrl-, Cmd- or Alt-drag turns (sideways) and tilts (up and down); the wheel zooms,
+    //             Shift + wheel turns, Alt + wheel tilts
+    //   trackpad  click-drag pans (with Shift: turns and tilts); two fingers up and down zoom, sideways turn; a pinch zooms (Chrome,
+    //             Edge and Firefox send it as Ctrl + wheel; Safari as gesture events, whose twist also turns)
+    //   touch     one finger pans; two fingers pinch to zoom, twist to turn, and moved up or down together tilt
+    //   keyboard  WASD and the arrows pan, Q/E turn, R/F tilt, + and - zoom (never with Cmd, Ctrl or Alt held: those are the browser's)
+    //   on screen the turn pad (#cam-pad): turn left and right, higher and lower view; held, it keeps going
     const c = this.canvas, pts = new Map();
     let drag = null, pinch = null;
-    const two = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x) }; };
+    const two = () => { const [a, b] = [...pts.values()]; return { ax: a.x, ay: a.y, bx: b.x, by: b.y, d: Math.hypot(b.x - a.x, b.y - a.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; };
+    // a two-finger touch: where the fingers and the camera were when it began (or when its kind was decided), and its kind
+    const base = (kind = null) => { const t = two(); return { ...t, pmx: t.mx, pmy: t.my, dist: this.goal.dist, az: this.goal.az, el: this.goal.el, kind }; };
     c.addEventListener('contextmenu', (e) => e.preventDefault());
     c.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.running = false; this.hooks?.onContextLost?.(); });
-    c.addEventListener('pointerdown', (e) => {
+    // a pointer goes down on the canvas, or (`at`: where it went down, with its button and keys) a drag that started on a "!" pin
+    // is handed over once it moves (see _pins)
+    const down = (e, at = e) => {
       c.setPointerCapture(e.pointerId);
-      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pts.size === 1) drag = { x: e.clientX, y: e.clientY, orbit: e.button === 2 || e.shiftKey || e.ctrlKey || e.metaKey, moved: false };
-      else if (pts.size === 2) { drag = null; pinch = { ...two(), dist: this.goal.dist, az: this.goal.az }; }
-    });
+      if (at.button === 1 && e.cancelable) e.preventDefault(); // (a middle-button drag turns: no autoscroll)
+      pts.set(e.pointerId, { x: at.x, y: at.y }); // (a PointerEvent's x and y are its clientX and clientY)
+      if (pts.size === 1) drag = { x: at.x, y: at.y, orbit: at.button === 2 || at.button === 1 || at.shiftKey || at.ctrlKey || at.metaKey || at.altKey, moved: false };
+      else if (pts.size === 2) { drag = null; pinch = base(); }
+    };
+    c.addEventListener('pointerdown', (e) => down(e));
+    this._grab = (e, at) => down(e, at); // (the canvas takes the pointer over: its next move pans or turns from where it went down)
     c.addEventListener('pointermove', (e) => {
       const p = pts.get(e.pointerId);
       if (!p) return;
       const dx = e.clientX - p.x, dy = e.clientY - p.y;
       p.x = e.clientX; p.y = e.clientY;
       if (pinch && pts.size === 2) {
-        if (!this._take()) return;
         const t = two();
-        this.goal.dist = clamp((pinch.dist * pinch.d) / t.d, DMIN, DMAX);
-        this.goal.az = pinch.az - (t.ang - pinch.ang);
+        if (!pinch.kind) {
+          // not decided yet: nothing moves until a finger has gone GESTURE_PX, then the touch is one kind until the fingers lift
+          const ax = t.ax - pinch.ax, ay = t.ay - pinch.ay, bx = t.bx - pinch.bx, by = t.by - pinch.by;
+          if (Math.max(Math.hypot(ax, ay), Math.hypot(bx, by)) < GESTURE_PX) return;
+          const spread = Math.abs(t.d - pinch.d), twist = (Math.abs(angDiff(pinch.ang, t.ang)) * pinch.d) / 2, mid = Math.hypot(t.mx - pinch.mx, t.my - pinch.my);
+          let kind = 'zoom'; // spreading or twisting: zoom and turn together, as touch maps do
+          if (ax * bx + ay * by > 0 && mid > spread && mid > twist) {
+            // both fingers the same way: up or down together tilts (it never comes with anything else), any other way pans
+            kind = Math.abs(t.my - pinch.my) > 1.5 * Math.abs(t.mx - pinch.mx) && Math.sign(ay) === Math.sign(by) ? 'tilt' : 'pan';
+          }
+          if (!this._take()) return;
+          pinch = base(kind); // (it starts from here, and from where the camera is now that it is the viewer's)
+          return;
+        }
+        if (!this._take()) return;
+        const g = this.goal;
+        if (pinch.kind === 'zoom') {
+          g.dist = lim((pinch.dist * pinch.d) / t.d, DMIN, DMAX, pinch.dist);
+          g.az = pinch.az - angDiff(pinch.ang, t.ang); // a twist turns
+        } else if (pinch.kind === 'tilt') g.el = lim(pinch.el + (t.my - pinch.my) * 0.005, EL_LO, EL_HI, pinch.el); // (as in map apps)
+        else { this._pan(t.mx - pinch.pmx, t.my - pinch.pmy); pinch.pmx = t.mx; pinch.pmy = t.my; }
         return;
       }
       if (!drag) return;
       if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
       drag.moved = true;
       if (!this._take()) return;
-      if (drag.orbit) { this.goal.az -= dx * 0.005; this.goal.el = clamp(this.goal.el + dy * 0.004, 0.16, 1.5); }
+      if (drag.orbit) { this.goal.az -= dx * 0.005; this.goal.el = lim(this.goal.el + dy * 0.004, EL_LO, EL_HI, this.goal.el); }
       else this._pan(dx, dy);
     });
     const end = (e) => {
-      pts.delete(e.pointerId);
+      if (!pts.delete(e.pointerId)) return; // (pointerup and then lostpointercapture: once)
+      // three fingers down and one lifted: the other two go on as a new two-finger touch; one left: it drags on
+      if (pts.size >= 2) { drag = null; pinch = base(); return; }
       pinch = null;
       drag = pts.size === 1 ? { ...[...pts.values()][0], orbit: false, moved: true } : null;
     };
     c.addEventListener('pointerup', end);
     c.addEventListener('pointercancel', end);
     c.addEventListener('lostpointercapture', end);
-    this._clearPointers = () => { pts.clear(); drag = null; pinch = null; };
+    this._clearPointers = () => { pts.clear(); drag = null; pinch = null; this._padStop(); };
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
       if (!this._take()) return;
-      this.goal.dist = clamp(this.goal.dist * Math.exp(e.deltaY * 0.0012), DMIN, DMAX);
+      const g = this.goal, u = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1; // (lines or pages, as some mice send them)
+      let dx = e.deltaX * u, dy = e.deltaY * u;
+      if (e.shiftKey && !dx && this.mode !== 'walk') { dx = dy; dy = 0; } // Shift + wheel turns (macOS already sends it as a sideways scroll); walking, Shift is the run key and the wheel still zooms
+      if (e.shiftKey && !dy && this.mode === 'walk') { dy = dx; dx = 0; } // (walking: macOS turned the Shift + wheel into a sideways scroll; it is the wheel, it zooms)
+      if (e.ctrlKey) { g.dist = lim(g.dist * Math.exp(clamp(dy, -50, 50) * 0.006), DMIN, DMAX, g.dist); return; } // a trackpad pinch
+      if (e.altKey) { g.el = lim(g.el - clamp(dy, -240, 240) * 0.003, EL_LO, EL_HI, g.el); return; } // Alt (Option) + scroll tilts
+      // one meaning per movement: mostly sideways (two fingers on a trackpad, a tilting wheel) turns, mostly up and down zooms
+      if (Math.abs(dx) > Math.abs(dy) * 1.5) g.az += clamp(dx, -240, 240) * 0.004;
+      else g.dist = lim(g.dist * Math.exp(clamp(dy, -240, 240) * 0.0012), DMIN, DMAX, g.dist);
     }, { passive: false });
+    // Safari's trackpad pinch and twist come as gesture events (no Ctrl + wheel). On an iPhone or iPad they come as well as the touch
+    // pointers, which already do it: ignored while fingers are down on the canvas
+    let gz = null;
+    c.addEventListener('gesturestart', (e) => { e.preventDefault(); gz = null; if (pts.size || !this._take()) return; gz = { dist: this.goal.dist, az: this.goal.az }; });
+    c.addEventListener('gesturechange', (e) => {
+      e.preventDefault();
+      if (!gz || pts.size) return;
+      this.goal.dist = lim(gz.dist / (e.scale || 1), DMIN, DMAX, gz.dist);
+      this.goal.az = gz.az - ((e.rotation || 0) * Math.PI) / 180;
+    });
+    c.addEventListener('gestureend', (e) => { e.preventDefault(); gz = null; });
     const key = (e, on) => {
-      if (!this.running || e.target.closest?.('input, textarea')) return;
-      const k = e.key.toLowerCase();
-      if (!['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', '+', '-', '='].includes(k)) return;
-      if (on) this.keys.add(k); else this.keys.delete(k);
-      if (on) e.preventDefault();
+      const k = (e.key || '').toLowerCase(), id = e.code || 'key:' + k;
+      if (k === 'shift') { this.shift = on; return; } // (held: the walking character runs; never a camera key, so it never takes the camera)
+      if (!on) { this.keys.delete(id); this.keyMute?.delete(id); return; } // (always let go)
+      // while Cmd is down macOS sends no keyup for the other keys: let go of all of them, and of the pad held by a key (nothing
+      // left turning the camera by itself)
+      if (k === 'meta' || k === 'control' || k === 'alt') { this.keys.clear(); this._padStop(); this.shift = false; return; }
+      if (!this.running) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // Cmd/Ctrl/Alt + a key is the browser's or the system's (zoom, bookmark...), not the camera's
+      if (e.target.closest?.('input, textarea, select, [contenteditable]')) return; // text fields keep their keys
+      const act = KEY_ACT[k];
+      if (!act) return;
+      // a key held through a change of who moves what (a walk started or ended, Follow pressed) does nothing until it is let go, its
+      // auto-repeat included: W held when the walk ends must not pan the camera, nor move him the moment he lands (_muteKeys)
+      if (this.keyMute && this.keyMute.has(id)) { e.preventDefault(); return; }
+      this.keys.set(id, act);
+      e.preventDefault();
+      if (this.mode === 'drop') this._take(); // (_keys does not run during the drop: the key takes the camera here)
     };
     window.addEventListener('keydown', (e) => key(e, true));
     window.addEventListener('keyup', (e) => key(e, false));
-    window.addEventListener('blur', () => this.keys.clear());
+    const letGo = () => { this.keys.clear(); this.keyMute?.clear(); this._padStop(); this.shift = false; if (this.stick) this.stick.x = this.stick.y = 0; };
+    window.addEventListener('blur', letGo);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) letGo(); });
+    this._bindPad();
+  }
+  /**
+   * The on-screen turn pad (#cam-pad in the street view): turn left or right, a higher or lower view. A press turns a little at
+   * once; held (pointer, or Enter / Space with the key held), it keeps going. With reduced motion it goes in steps instead.
+   */
+  _bindPad() {
+    this.pad = { az: 0, el: 0, t: 0 };
+    const pad = this.root.querySelector('#cam-pad');
+    if (!pad) return;
+    const P = this.pad;
+    const go = (b) => {
+      if (!this._take()) return;
+      P.az = +(b.dataset.az || 0); P.el = +(b.dataset.el || 0); P.t = PAD_REPEAT;
+      this._padStep(CALM ? 1 : 0.25);
+    };
+    const stop = () => this._padStop();
+    pad.addEventListener('pointerdown', (e) => {
+      const b = e.target.closest('button');
+      if (!b || e.button > 0) return;
+      e.preventDefault(); // (no focus ring from a pointer, no text selection, no long-press menu)
+      try { b.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
+      go(b);
+    });
+    for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) pad.addEventListener(t, stop);
+    pad.addEventListener('keydown', (e) => {
+      const b = e.target.closest('button');
+      if (!b || (e.key !== 'Enter' && e.key !== ' ') || e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      if (!e.repeat) go(b); // (held, the turn keeps going until the key comes up)
+    });
+    pad.addEventListener('keyup', (e) => { if (e.key === 'Enter' || e.key === ' ') stop(); });
+    pad.addEventListener('focusout', stop);
+    pad.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  /** Let go of the pad (the button came up, lost focus or was hidden, the pointer was cancelled, a modifier went down, the page was left). */
+  _padStop() { if (this.pad) { this.pad.az = 0; this.pad.el = 0; } }
+  /** One step of the pad: `k` of a full step (a full step is PAD_AZ radians of turn or PAD_EL of tilt). */
+  _padStep(k) {
+    const g = this.goal, P = this.pad;
+    if (P.az) g.az += P.az * PAD_AZ * k;
+    if (P.el) g.el = lim(g.el + P.el * PAD_EL * k, EL_LO, EL_HI, g.el);
   }
   _keys(dt) {
-    const K = this.keys;
-    if (!K.size || !this._take()) return;
+    const K = this.keys, P = this.pad;
+    if (!K.size && !P.az && !P.el) return;
+    if (!this._take()) return;
     const g = this.goal, px = 620 * dt;
-    const x = (K.has('d') || K.has('arrowright') ? 1 : 0) - (K.has('a') || K.has('arrowleft') ? 1 : 0);
-    const y = (K.has('s') || K.has('arrowdown') ? 1 : 0) - (K.has('w') || K.has('arrowup') ? 1 : 0);
-    if (x || y) this._pan(-x * px, -y * px);
-    if (K.has('q')) g.az += dt * 1.3;
-    if (K.has('e')) g.az -= dt * 1.3;
-    if (K.has('+') || K.has('=')) g.dist = clamp(g.dist * Math.exp(-dt * 1.4), DMIN, DMAX);
-    if (K.has('-')) g.dist = clamp(g.dist * Math.exp(dt * 1.4), DMIN, DMAX);
+    const h = this._held || (this._held = {});
+    for (const a in h) h[a] = 0;
+    for (const a of K.values()) h[a] = 1;
+    const x = (h.right || 0) - (h.left || 0), y = (h.down || 0) - (h.up || 0);
+    if ((x || y) && this.mode !== 'walk') this._pan(-x * px, -y * px); // (walking, these keys move him: _walkStep)
+    if (h.turnL) g.az += dt * 1.3;
+    if (h.turnR) g.az -= dt * 1.3;
+    const tilt = (h.tiltU || 0) - (h.tiltD || 0);
+    if (tilt) g.el = lim(g.el + tilt * dt * 0.8, EL_LO, EL_HI, g.el);
+    if (h.in) g.dist = lim(g.dist * Math.exp(-dt * 1.4), DMIN, DMAX, g.dist);
+    if (h.out) g.dist = lim(g.dist * Math.exp(dt * 1.4), DMIN, DMAX, g.dist);
+    // the pad held down: smoothly (as fast as Q/E and R/F), or with reduced motion a whole step every PAD_REPEAT seconds
+    if (P.az || P.el) {
+      if (!CALM) this._padStep((dt * 1.3) / PAD_AZ);
+      else if ((P.t -= dt) <= 0) { P.t = PAD_REPEAT; this._padStep(1); }
+    }
   }
 
   /** Count late frames in windows of 2.5 s and step the pixel ratio down (quickly) or back up (slowly, backing off when it did not hold). */
@@ -337,6 +615,10 @@ export class Stage {
 
   _resize() {
     const w = this.root.clientWidth, h = this.root.clientHeight;
+    // the overlay (pins, comic words) covers the root exactly (inset: 0): its size is kept here, so no frame reads layout
+    const S = (this._size ||= { w: 0, h: 0 });
+    S.w = w; S.h = h;
+    if (this.fx) this.fx.size = S;
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
@@ -350,17 +632,29 @@ export class Stage {
     path.at(ctx.sc, _f);
     return { tx: p[0], tz: p[1], ty: this.W.landY(p[0], p[1]) + 1.2, az: AZ0 + Math.atan2(-_f.tz, _f.tx), el: EL0, dist: this.fit || 56, fov: FOV, roll: 0 };
   }
-  _setMode(mode) {
+  /** `user`: the viewer took the camera (the camera then stays exactly where it is); otherwise the follow ran out by itself. */
+  _setMode(mode, user = false) {
     if (this.mode === mode) return;
     const was = this.mode;
     this.mode = mode;
     if (mode === 'free') {
       if (this.cine) this._cineEnd();
-      Object.assign(this.goal, this.rig);
-      // coming out of a close-up: back off to a sensible height
-      this.goal.el = clamp(this.goal.el, 0.32, 1.5); this.goal.dist = Math.max(this.goal.dist, 42); this.goal.fov = FOV; this.goal.roll = 0;
-      this.focusReq = null;
-      if (was === 'follow' && this.autoFree) { this.goal.dist = Math.max(this.goal.dist, this.fit * 1.45); this.autoFree = false; }
+      // The picture must not change when the viewer takes the camera. A cutscene's lens (22 to 56 degrees, widened further on a
+      // narrow screen, see aspK in _frame) becomes the free camera's own at once, and the distance changes with it so that the
+      // point looked at, and everything at that distance, stays exactly the size it was: camera distance x tan(half the lens)
+      // is what sets that size. (Only depth changes, slightly: things well in front of or behind the aim point.)
+      const r = this.rig, aK = Math.sqrt(this.aspK || 1), half = Math.tan((r.fov * Math.PI) / 360) * aK;
+      r.dist = clamp(r.dist * aK * (half / TAN), 1, DMAX); r.fov = FOV; this.aspK = 1;
+      // the tilted horizon of a shot and its aim height stay as they are; they level out and come down to the free camera's
+      // own only as the viewer turns and moves the camera (see the free branch of _frame)
+      Object.assign(this.goal, r);
+      this.focusReq = null; this._fl = null;
+      if (!user) {
+        // the follow ran out by itself (nobody touched the camera): coming out of a close-up, back off to a sensible height
+        this.goal.el = clamp(this.goal.el, 0.32, 1.5); this.goal.dist = Math.max(this.goal.dist, 42); this.goal.roll = 0;
+        if (was === 'follow' && this.autoFree) this.goal.dist = Math.max(this.goal.dist, this.fit * 1.45);
+      }
+      this.autoFree = false;
     }
     if (mode === 'follow') {
       this.cutEnd = this.time + 30;
@@ -377,13 +671,105 @@ export class Stage {
   /** Debug: play a gag at the spot the camera is on. */
   debugPlay(name) { return this.W ? playGag(this.camCtx, name) : null; }
   get gagNames() { return GAG_NAMES; }
-  /** Resume the directed camera. */
-  follow() { if (this.W && this.mode === 'free') this._setMode('follow'); }
-  /** Fly the free camera to a spot with something going on. */
+  /** Follow the action (the button): the only way into follow, apart from a street's own opening. During the drop: land following. */
+  follow() {
+    if (!this.W || this.exiting || this.mode === 'leave') return; // (not while the page hands over to the map)
+    if (this.mode === 'walk') this.walkEnd(); // (following the action ends the walk: he is taken away)
+    this._muteKeys(); // (a key still held would take the camera straight back from the director)
+    if (this.mode === 'free') this._setMode('follow');
+    else if (this.mode === 'drop') this.landFree = false;
+  }
+  /**
+   * A "!" pin was pressed: fly to that spot and stay the viewer's camera. The viewer's bearing and tilt are kept; the camera comes
+   * in to PIN_VIEW metres (or the street's own viewing distance on a narrow screen) only if it is further away, never closer.
+   */
   flyTo(ctx) {
-    if (!this.W || this.mode === 'drop') return;
-    if (this.mode === 'follow') this._setMode('free');
-    Object.assign(this.goal, this._view(ctx));
+    if (!this.W || this.mode === 'drop' || this.mode === 'leave' || this.exiting) return;
+    if (this.mode === 'follow') this._setMode('free', true);
+    if (this.mode === 'walk') this.walkEnd(); // (no pins are shown while walking; should one be pressed, the camera is free again first)
+    const g = this.goal, p = this.W.path.xz(ctx.sc, 0);
+    g.tx = p[0]; g.tz = p[1]; g.ty = this.W.landY(p[0], p[1]) + 1.5;
+    g.dist = Math.min(g.dist, Math.max(PIN_VIEW, this.fit || 0));
+    if (CALM) { const r = this.rig; r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.dist = g.dist; } // (reduced motion: there at once, no flight)
+  }
+  // ------------------------------------------------------------ the walking character (walker.js)
+  /** Is the walking character on the street (or about to be put there)? */
+  get walking() { return this.mode === 'walk'; }
+  /** The keys held now are ignored until they are let go (see the key handler), and the pad lets go. */
+  _muteKeys() { const M = this.keyMute || (this.keyMute = new Set()); this.keys.forEach((a, id) => M.add(id)); this.keys.clear(); this._padStop(); }
+  /** Can a walk start now, as far as the stage knows? (Not during the drop from the map or the rise back to it; the page also holds the
+   * button while it builds the next street at a focus shift, main.js paintWalk.) */
+  get canWalk() { return !!this.W && this.running && !this.exiting && (this.mode === 'free' || this.mode === 'follow' || this.mode === 'walk'); }
+  /**
+   * The Walk button: put the character on the ground at the point the camera looks at (or the nearest place within WALK_REACH metres
+   * where a person may stand). The camera is the viewer's from now on (as with any camera input), keeps its bearing and settles
+   * behind him: he faces away from it. From high up, or where the ground is not ready yet, the camera first comes down over that point
+   * (the viewer asked for the walk) and he is put there once the ground is ready. False when a walk cannot start now.
+   */
+  walkStart() {
+    if (!this.canWalk || this.mode === 'walk') return false;
+    if (!this._take()) return false;
+    this._muteKeys();
+    this.mode = 'walk';
+    this.walkWant = { t: 0 };
+    this.stick = this.stick || { x: 0, y: 0, run: false };
+    this._wb = this._wb || { x: 0, z: 0, r: 0.35 };
+    const g = this.goal, r = this.rig;
+    if (r.dist > WALK_HIGH || !this.W.ground || !this.W.ground.ready(r.tx, r.tz)) { g.dist = WALK_DIST; g.el = WALK_EL; if (CALM) { r.dist = g.dist; r.el = g.el; } } // (the camera comes down first; at once with reduced motion)
+    this.hooks.onMode?.('walk');
+    this._walkPlace(); // (now, or once the ground is ready: _walkStep)
+    return this.mode === 'walk';
+  }
+  /** Take him away: the camera is free again, exactly where it is. `msg`: why, for the page to say. */
+  walkEnd(msg = '') {
+    if (this.walker) { this.walker.dispose(); this.walker = null; }
+    this.walkWant = null;
+    this._muteKeys();
+    if (this.stick) { this.stick.x = this.stick.y = 0; this.stick.run = false; }
+    if (this.mode === 'walk') { this.mode = 'free'; this.hooks.onMode?.('free'); }
+    this.hooks.onWalk?.(false, msg);
+  }
+  /** Waiting to put him down: once the ground under the point looked at is ready (at most WALK_WAIT s), find his spot and put him there. */
+  _walkPlace() {
+    const W = this.W, r = this.rig, G = W.ground, out = this._ws || (this._ws = [0, 0]);
+    if (!G || !(r.dist < WALK_HIGH) || !G.ready(r.tx, r.tz)) return false;
+    if (!Walker.spot(W, r.tx, r.tz, WALK_REACH, out)) { this.walkEnd('Nobody can stand there. Look at the street and try again.'); return false; }
+    const wk = (this.walker = new Walker()), az = r.az;
+    wk.place(W, out[0], out[1], -Math.sin(az), -Math.cos(az)); // facing away from the camera: it is behind him already
+    this.scene.add(wk.g);
+    this.walkWant = null;
+    // the camera settles behind him: the viewer's bearing stays; the distance and tilt too, if they suit walking
+    const g = this.goal, p = wk.g.position;
+    g.tx = p.x; g.tz = p.z; g.ty = wk.y + WALK_AIM; g.roll = 0;
+    if (!(g.dist >= WALK_D[0] && g.dist <= WALK_D[1])) g.dist = WALK_DIST;
+    if (!(g.el >= WALK_E[0] && g.el <= WALK_E[1])) g.el = WALK_EL;
+    if (CALM) Object.assign(r, g); // (reduced motion: there at once, no glide)
+    this._wb.x = p.x; this._wb.z = p.z;
+    this.hooks.onWalk?.(true);
+    return true;
+  }
+  /** One frame of walking: his input (keys and the stick, read every frame so a key let go stops him), his step, his blocker. */
+  _walkStep(dt) {
+    if (this.walkWant) {
+      if ((this.walkWant.t += dt) > WALK_WAIT) { this.walkEnd('The street there is not ready yet. Try again in a moment.'); return; }
+      if (!this._walkPlace()) return;
+    }
+    const wk = this.walker;
+    if (!wk) return;
+    const I = this._win || (this._win = { x: 0, y: 0, f: null });
+    I.x = 0; I.y = 0;
+    this.keys.forEach(I.f || (I.f = (a) => { if (a === 'right') I.x += 1; else if (a === 'left') I.x -= 1; else if (a === 'up') I.y += 1; else if (a === 'down') I.y -= 1; })); // (no iterator per frame)
+    let ix = I.x, iy = I.y;
+    if (ix > 1) ix = 1; else if (ix < -1) ix = -1;
+    if (iy > 1) iy = 1; else if (iy < -1) iy = -1;
+    const kl = Math.hypot(ix, iy);
+    if (kl > 1) { ix /= kl; iy /= kl; } // (a diagonal is no faster)
+    const S = this.stick;
+    if (S && (S.x || S.y)) { ix = S.x; iy = S.y; }
+    wk.step(this.W, dt, ix, iy, this.rig.az, !!(this.shift || (S && S.run)), this.crowd, this.crowd && this.crowd.blockers, this._wb);
+    if (wk.lost) { this.walkEnd('Nobody can stand there. Look at the street and try again.'); return; } // (stuck with no free spot near)
+    const p = wk.g.position;
+    this._wb.x = p.x; this._wb.z = p.z;
   }
   /**
    * Rise straight up to `dist` metres, looking down with north up, so the page can hand over to the map.
@@ -400,6 +786,7 @@ export class Stage {
       };
       if (r.dist >= dist * 0.9 || CALM) return resolve(here());
       if (this.cine) this._cineEnd();
+      this._padStop(); this.keys.clear(); // (the pad is hidden now)
       this.mode = 'leave';
       this.leaveTo = { t: 0, dur: clamp(0.45 + 0.4 * Math.log(dist / r.dist), 0.7, 2.1), d0: r.dist, d1: dist, el0: r.el, az0: r.az, done: false, resolve: () => resolve(here()) };
       this.hooks.onMode?.('leave');
@@ -830,6 +1217,10 @@ export class Stage {
    * are made on the side and swapped in together at the darkest moment. The crowd does not change: its lights are uniforms.
    */
   _startTr(to) {
+    // a change asked for while the last one is putting its baked tiles in (committing): put the rest in now and let that change
+    // end (cur.night becomes its light), so the new one starts from tiles that all have one light and knows what it must bake
+    const tr0 = this.tr;
+    if (tr0 && tr0.need && tr0.committing && !tr0.swapped) this._commitBake();
     const from = new Look().copy(this.cur), need = !!to.night !== !!this.cur.night;
     // a change asked for during a change: carry on from where the picture is (it may be mid-dusk), never jump back to full light
     this.tr = { from, to, t: 0, need, swapped: false, hold: 0, tc: 0, d0: this._dip };
@@ -850,9 +1241,15 @@ export class Stage {
       let p;
       if (!tr.need) p = clamp(tr.t / 1.1);
       else if (!tr.swapped) {
-        const left = this.W.bake.step(7, this.lite ? 10 : 48);
-        p = Math.min(0.5, (tr.t / 0.6) * 0.5);
-        if (p >= 0.5) { tr.hold += real; if (left === 0 || tr.hold > 4) this._commitBake(); } // (never hold the dusk for long: whatever is not ready follows)
+        if (!tr.committing) {
+          const left = this.W.bake.step(7, this.lite ? 10 : 48);
+          p = Math.min(0.5, (tr.t / 0.6) * 0.5);
+          if (p >= 0.5) { tr.hold += real; if (left === 0 || tr.hold > 4) tr.committing = true; } // (never hold the dusk for long: whatever is not ready follows)
+        } else p = 0.5;
+        // at the darkest moment the baked tiles go in a few megabytes a frame (a frame's uploads stay small), then the light turns
+        // (the first frame puts in every close tile at once and up to 16 MB; then 8 MB a frame for the farther ones)
+        if (tr.committing && this.W.bake.commitSome(tr.firstPut ? 8e6 : 16e6, !tr.firstPut) === 0) this._commitBake();
+        if (tr.committing) tr.firstPut = true;
       }
       if (tr.need && tr.swapped) p = 0.5 + clamp((tr.t - tr.tc) / 0.7) * 0.5;
       const night = cur.night;
@@ -927,9 +1324,20 @@ export class Stage {
       if (!o || !this.running || this.mode === 'leave' || this.mode === 'drop' || this.exiting) { W.dispose(); return false; }
       // the camera, in map terms, so it can be put back in the new street's frame
       const dir = (az) => { const x = Math.sin(az), z = Math.cos(az); return [x * o.frame.dx + z * o.frame.dy, x * o.frame.dy - z * o.frame.dx]; };
-      view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, sky: this.sky };
+      view = { m: o.frame.M(r.tx, r.tz), gm: o.frame.M(g.tx, g.tz), d: dir(r.az), gd: dir(g.az), el: r.el, gel: g.el, dist: r.dist, gdist: g.dist, ty: r.ty, gty: g.ty, roll: r.roll, groll: g.roll, sky: this.sky };
       // the city's street life carries on: it is handed to the next street instead of being torn down
+      // the scenes playing here end with this street. A scene holding the camera lets the crowd go first (as it always does when it ends:
+      // no stage left standing in the crowd), and whoever the scenes borrowed and is standing on the pavement goes back to the crowd where
+      // they stand, before the crowd is handed over (later, ctx.demote could no longer reach it)
+      this._cineEnd();
+      this._handBack();
+      // the ambient life in view (boats, gulls, pigeons) is not dropped with the street: the overhead carries it on until out of view
+      for (const a of [...this.actors]) if (a.ambient && a.alive && !a._left && this.overhead.seenActor(a)) this.overhead.adopt(a);
       view.crowd = this.crowd; this.crowd = null;
+      // and so does what flies over it (the helicopter): it lives in map metres and is written into whichever frame is open
+      view.overhead = this.overhead; this.overhead = null;
+      // and so does the walking character: he lives in map metres too (walker.js); his figure hangs from the scene, not the street
+      view.walker = this.walker; this.walker = null; view.walkWant = this.walkWant; this.walkWant = null;
       if (o.stream) o.stream.onTile = null;
       this._teardown(true);
       dress();
@@ -938,6 +1346,10 @@ export class Stage {
       this._begin(W, st, sky, level, { ...opts, view });
     } catch (e) {
       console.error('scene start failed', e);
+      // what was handed over and never taken back by _begin is not this stage's any more: hide() would not find it
+      if (view && view.overhead && view.overhead !== this.overhead) view.overhead.dispose();
+      if (view && view.crowd && view.crowd !== this.crowd) { this.scene.remove(view.crowd.group); view.crowd.dispose(); }
+      if (view && view.walker && view.walker !== this.walker) { view.walker.dispose(); this.hooks.onWalk?.(false); }
       if (!this.W) W.dispose();
       this.hide();
       return false;
@@ -963,19 +1375,27 @@ export class Stage {
     W.stream.onTile = (c, on) => { if (!this.crowd) return; if (on) this.crowd.addTile(c); }; // (tiles that leave are pruned a little later)
     for (const key of W.corridor) { const c = tileOf(key); if (c) this.crowd.addTile(c); } // this street's own tiles now: its lamp posts and parked cars are needed below
     this.pruneT = 2;
+    // what flies over the city (the helicopter) is the city's too: carried over like the crowd, and moved into this street's frame
+    this.overhead = (opts.view && opts.view.overhead) || new Overhead(this);
+    this.overhead.begin(W);
+    this.scene.add(this.overhead.group);
     this.dyn = new THREE.Group();
     this.scene.add(this.dyn);
 
     const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + (opts.seed || '') + '|stage'));
     const path = W.path, len = path.sB - path.sA;
     this.fx = new Fx(this.scene, this.camera, this.overlay);
+    this.fx.size = this._size || null; // (and by _resize)
     // whose words stay readable from afar: the scene that directs the camera, or the spot the camera is following
     this.fx.watch = (ctx) => (this.cine ? this.cine.ctx === ctx : this.mode === 'follow' && this.camCtx === ctx);
     this.fx.ground = W.hAt;
     this.cine = null; this._stage = null; this.cineSkip = null; this._wasShot = false; this.exiting = false; this.leaveTo = null;
+    // the drop lands in free when the viewer kept the camera from the street before (Next street: opts.land) or touches it on the way
+    // down (_take); a drop cut short lets the buildings finish rising (grow)
+    this.landFree = opts.land === 'free'; this.grow = null; this._fl = null; // (_fl: the free camera's last target, in this street's frame)
     this.runner = new Runner();
-    this.actors = [];
-    this.extras = [];
+    this.actors = this.overhead.carried(); // (a helicopter and the leftovers carried over are still the stage's to animate)
+    this.extras = this.overhead.extras; // (the stork: the overhead updates it; scripts/dev-swap.mjs reads stage.extras)
     this.gags = new Set();
     this.time = 0;
     this.timeScale = 1;
@@ -1045,12 +1465,55 @@ export class Stage {
         district: (() => { const p = path.xz(sc, 0), m = W.frame.M(p[0], p[1]), d = spotAt(m[0], m[1]); return { wijk: d.wijk, buurt: d.buurt, level: d.level, pop: d.pop }; })(), // whose neighbourhood this is (wijk and buurt are null off the map); pop = the shares of districts.js here
         world: { add: (o) => { warp(o, ctx, path, W.hAt); this.dyn.add(o); }, remove: (o) => { this.dyn.remove(o); disposeTree(o); } },
         run: (g) => this.runner.run(g),
+        /** startLocale asks for the spot's helicopter (level 5): the stage flies it (overhead.js). `phase` is startLocale's ctx.rnd draw. */
+        heli: (phase) => this.overhead.want(ctx, phase, !!opts.view),
+        /** This spot was started by a focus shift (its ambient life must not pop in or out in view: gags.js softSeen). */
+        soft: !!opts.view,
+        /**
+         * Like inView, but in the frame the camera was last drawn in: right after a focus shift (startLocale runs before the first frame
+         * of this street) the camera's matrices are still the old street's. Same reach (250 m) and margin.
+         */
+        seenNow: (x, z, y = 1, margin = 0.08, reach = 250) => {
+          const p = path.xz(sc + x, z), F = this._camFrame || W.frame, cam = this.camera;
+          let px = p[0], pz = p[1];
+          if (F !== W.frame) { const m = W.frame.M(px, pz), q = F.S(m[0], m[1]); px = q[0]; pz = q[1]; }
+          _v3.set(px, W.hAt(p[0], p[1]) + y, pz);
+          if (cam.position.distanceToSquared(_v3) > reach * reach) return false;
+          _v3.applyMatrix4(cam.matrixWorldInverse);
+          if (_v3.z >= 0) return false;
+          _v3.applyMatrix4(cam.projectionMatrix);
+          return Math.abs(_v3.x) <= 1 + margin && Math.abs(_v3.y) <= 1 + margin;
+        },
+        /**
+         * Draw an ambient actor arriving where the script has just put it: 'boat' sails in from behind, 'air' (a bird) comes down
+         * from 8 m up. Only drawn: the script has it there already.
+         */
+        arrive: (a, kind, from = 0) => {
+          // where it comes from: the first point along the street on that side that is out of the picture, plus 6 m. A boat only from
+          // behind (`from` = -its direction); a bird from a random side, else the other. No hidden start within 120 m (a high camera sees
+          // it all): no arrival, it is simply there as before (a few pixels from up there). Only drawn either way: no ctx.rnd, no retiming
+          const p = a.g.position, y = kind === 'boat' ? 1 : 8, first = kind === 'boat' ? Math.sign(from) || -1 : Math.random() < 0.5 ? -1 : 1;
+          for (const side of kind === 'boat' ? [first] : [first, -first]) {
+            let d = 0, run = 0;
+            for (; d < 120; d++) if (!ctx.seenNow(p.x + side * d, p.z, y, 0.1, SOFT_REACH)) { if (++run >= 2) break; } else run = 0;
+            if (run < 2) continue;
+            const g = arrival(a, kind, d + 6, side);
+            if (g) this.runner.run(g);
+            return;
+          }
+        },
+        /** Take an ambient actor off: in view, the overhead carries it on until it is out of view (a leftover); else it goes at once. */
+        retire: (a) => {
+          if (a.alive && this.overhead && this._camFrame === W.frame && this.overhead.seenActor(a)) this.overhead.adopt(a);
+          else ctx.despawn(a);
+        },
         spawn(a, x, z, y) {
           a.g.position.set(x, y ?? 0, z);
           a.baseScale = a.g.scale.x;
           a.alive = true;
           a.ctx = ctx;
           if (a.vehicle) a.g._veh = a;
+          else if (a.legL && a.head) a.g._feet = true; // (a person: stands on the highest ground under the feet, see warp)
           warp(a.g, ctx, path, W.hAt);
           stage.dyn.add(a.g);
           stage.actors.push(a);
@@ -1144,7 +1607,7 @@ export class Stage {
         watched: () => {
           if (this.cine) return this.cine.ctx === ctx;
           if (this.mode === 'follow' || this.mode === 'drop') return this.camCtx === ctx;
-          if (this.mode !== 'free') return false;
+          if (!this._own) return false;
           const c0 = (ctx._c0 ||= path.xz(sc, 0));
           return Math.hypot(c0[0] - this.rig.tx, c0[1] - this.rig.tz) < 60;
         },
@@ -1170,18 +1633,27 @@ export class Stage {
       V = { m, gm: m, d: [0, -1], gd: [0, -1], el: TOP, gel: EL0, dist: opts.enter.dist, gdist: opts.enter.dist, ty: W.landY(p[0], p[1]) };
     }
     const dur = V ? 0 : CALM ? 0.01 : clamp(1.3 + 0.66 * Math.log(d0 / 65), 2.4, 5.2);
-    this.cutK = undefined; this.roamT = 0; this._parkAt = null; this._park = null;
+    // (after a focus shift the cutaway eases from where it was to what the new street needs, at its usual rate: no snap in the swap frame)
+    if (!opts.view) this.cutK = undefined;
+    this.roamT = 0; this._parkAt = null; this._park = null;
+    const was = this.mode;
     if (V) {
       // the focus moved here from another street: the camera carries on from exactly where it was
       const F = W.frame, az = (d) => Math.atan2(d[0] * F.dx + d[1] * F.dy, d[0] * F.dy - d[1] * F.dx);
       const p = F.S(V.m[0], V.m[1]), q = F.S(V.gm[0], V.gm[1]);
-      Object.assign(this.rig, { tx: p[0], tz: p[1], ty: V.ty, az: az(V.d), el: V.el, dist: V.dist, fov: FOV, roll: 0 });
-      Object.assign(this.goal, { tx: q[0], tz: q[1], ty: V.ty, az: az(V.gd), el: V.gel, dist: V.gdist, fov: FOV, roll: 0 });
+      // (the horizon too: a cutscene's tilted horizon the viewer took over levels out only as they turn, see the free branch of _frame)
+      Object.assign(this.rig, { tx: p[0], tz: p[1], ty: V.ty, az: az(V.d), el: V.el, dist: V.dist, fov: FOV, roll: V.roll || 0 });
+      Object.assign(this.goal, { tx: q[0], tz: q[1], ty: V.gty ?? V.ty, az: az(V.gd), el: V.gel, dist: V.gdist, fov: FOV, roll: V.groll || 0 });
       this.drop = null;
-      this.mode = 'free';
+      // the viewer's camera stays the viewer's: free stays free, and a walk goes on with the same character, written into this frame
+      const wv = opts.view && (opts.view.walker || opts.view.walkWant) && was === 'walk';
+      this.mode = wv ? 'walk' : 'free';
+      if (wv && opts.view.walker) { this.walker = opts.view.walker; this.scene.add(this.walker.g); this.walker.rebase(W); }
+      if (wv && opts.view.walkWant) this.walkWant = opts.view.walkWant;
+      if (was === 'walk' && !wv) hooks.onWalk?.(false);
       this.cutEnd = 0; this.lastSwitch = 0; this.idleT = 0; this.autoFree = false;
       U.uGrow.value = 1;
-      hooks.onMode?.('free');
+      if (was !== this.mode) hooks.onMode?.(this.mode); // (a focus shift in free or walk mode stays there: the page's hints are not said again)
     } else {
       this.drop = { t: 0, dur, d0, c0, y0: W.landY(c0[0], c0[1]) };
       this.mode = 'drop';
@@ -1196,39 +1668,24 @@ export class Stage {
       ? { only: opts.only || null, delay: dur + 0.9, signature: true, withHeli: level >= 5 }
       : { delay: dur + rnd.range(6, 24), signature: rnd.chance(0.5) }));
 
-    this._clouds(rnd, sky, mid);
-    // the stork, The Hague's mascot, on a chimney near the action
-    if (A.chimneys.length) {
+    this.overhead.settle(); // (a helicopter the new street does not want flies away out of sight)
+    // the clouds and the stork are made once per visit and carried over from street to street (overhead.js). The stage's rnd draws
+    // for them come after every draw the spots use, so skipping them on a focus shift changes no scene
+    if (!(opts.view && opts.view.overhead)) this.overhead.makeClouds(rnd, this.cur.nk, mid);
+    this.clouds = this.overhead.clouds; this._cloudMat = this.overhead.cloudMat; // (stage.clouds: only scripts/dev-swap.mjs reads it; the overhead moves them)
+    // the stork, The Hague's mascot, on a chimney near the action (one carried over stays on its own chimney; a street opened without
+    // one gets it only where nobody is looking)
+    if (A.chimneys.length && !this.overhead.hasStork) {
       const m = path.xz(main, 0), c = A.chimneys.reduce((a, b) => ((b.x - m[0]) ** 2 + (b.z - m[1]) ** 2 < (a.x - m[0]) ** 2 + (a.z - m[1]) ** 2 ? b : a));
-      const stork = makeBird(rnd, 'stork');
-      stork.g.position.set(c.x, c.y + 0.3, c.z);
-      stork.g.rotation.y = rnd.range(0, 6.28);
-      const nest = sculpt((v) => { v.box(c.x, c.y, c.z, 1.1, 0.3, 1.1, '#9b7653', 0.1); v.box(c.x, c.y + 0.2, c.z, 0.8, 0.14, 0.8, '#7a5a3c'); });
-      this.dyn.add(nest, stork.g);
-      this.extras.push(stork);
+      const cm = W.frame.M(c.x, c.z);
+      if (!opts.view || !this.overhead._inView(cm[0], cm[1], 0.15, c.y + 0.3)) this.overhead.makeStork(rnd, c);
     }
     this.running = true;
-    this.last = performance.now();
+    // (after a focus shift the loop has been running all along: the first frame takes its full step, so whatever was carried over
+    // moves on in the swap frame exactly as in the frame before)
+    if (!opts.view) this.last = performance.now();
     cancelAnimationFrame(this._raf); // never two loops at once
     this._raf = requestAnimationFrame(this._tick);
-  }
-
-  _clouds(rnd, sky, c0) {
-    this.clouds = [];
-    const mat = this._cloudMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: lerp(0.92, 0.42, this.cur.nk), fog: false });
-    for (let i = 0; i < 22; i++) {
-      const v = new Vox(i + 20), n = rnd.int(4, 7), s = rnd.range(16, 34);
-      for (let k = 0; k < n; k++) {
-        const w = rnd.range(2.2, 3.6) * s, h = rnd.range(1.0, 2.0) * s;
-        v.box((k * 1.5 - n * 0.75 + rnd.range(-0.4, 0.4)) * s, (Math.abs(k - n / 2) < 1.2 ? 0.5 : 0) * s + rnd.range(-0.2, 0.2) * s, rnd.range(-0.8, 0.8) * s, w, h, rnd.range(1.8, 3.0) * s, '#ffffff');
-      }
-      const m = v.mesh(mat, false, false);
-      const r = rnd.range(380, 2600), a = rnd.range(0, 6.28);
-      m.position.set(c0[0] + Math.cos(a) * r, rnd.range(700, 1600), c0[1] + Math.sin(a) * r);
-      m.userData.v = rnd.range(4, 12) * rnd.sign();
-      this.dyn.add(m);
-      this.clouds.push(m);
-    }
   }
 
   hide() {
@@ -1247,8 +1704,9 @@ export class Stage {
     if (this.leaveTo && !this.leaveTo.done) { this.leaveTo.done = true; this.leaveTo.resolve(); }
     this.leaveTo = null;
     if (this.runner) this.runner.clear();
-    if (this.fx) { this.fx.dispose(); this.fx = null; }
-    for (const p of this.pins) p.el.remove();
+    // (on a focus shift the scenes' words and the "!" pins fade out where they are instead of vanishing)
+    if (this.fx) { this.fx.dispose(swap); this.fx = null; }
+    for (const p of this.pins) { p.ctx = null; fadeOut(p.el, swap); }
     this.pins = [];
     if (this.dyn) {
       disposeTree(this.dyn);
@@ -1256,6 +1714,8 @@ export class Stage {
       this.dyn = null;
     }
     if (this.crowd) { this.scene.remove(this.crowd.group); this.crowd.dispose(); this.crowd = null; }
+    if (this.overhead) { this.overhead.dispose(); this.overhead = null; } // (on a focus shift it was handed over first: nothing here)
+    if (this.walker || this.walkWant) { if (this.walker) this.walker.dispose(); this.walker = null; this.walkWant = null; this.hooks?.onWalk?.(false); } // (likewise)
     // on a swap the next street's signs are already made and share the cache: only a full close clears it
     if (this.W) { this.scene.remove(this.W.group); this.W.dispose(); this.W = null; if (!swap) clearSigns(); }
     for (const l of this.lampLights) l.intensity = 0;
@@ -1263,6 +1723,19 @@ export class Stage {
     this.gags = new Set();
   }
 
+  /**
+   * A focus shift ends the scenes of this street. The walkers they borrowed from the crowd (or made up for it) who stand on the pavement
+   * go back to the crowd where they stand (crowd.adopt), rather than vanish with the scene. Sitting, riding, up high, in a doorway, falling
+   * or shrinking: they go with their scene, as before. adopt can say no (no lane within 3.5 m, too few free figures): then they go too.
+   */
+  _handBack() {
+    for (const a of [...this.actors]) {
+      if (!a.alive || !a.look || a.vehicle || !a.ctx || !a.ctx.demote) continue;
+      if (a.air || a.fly || a.pose || a.offstage || !a.g.visible || a.g.position.y > 0.05) continue;
+      if (Math.abs(a.g.rotation.x) > 0.05 || Math.abs(a.g.rotation.z) > 0.05 || a.g.scale.x < (a.baseScale || a.g.scale.x) * 0.9) continue;
+      a.ctx.demote(a);
+    }
+  }
   _focus(ctx, X, Z, zoom, hold, prio) {
     if (this.mode !== 'follow') return;
     const f = this.focusReq;
@@ -1305,47 +1778,96 @@ export class Stage {
     B.length = 0; Z.length = 0;
     for (const a of this.actors) {
       if (!a.alive || a.air || a.fly) continue;
-      const e = a.g.matrixWorld.elements; // where it was drawn last frame
-      B.push({ x: e[12], z: e[14], r: a.vehicle ? Math.max(1, (a.len || 2) / 2) : 0.35 });
+      // where it stands now (the scripts have moved it this frame; matrixWorld is still last frame's): as warp maps it
+      const p = a.g.position, c = a.g._ctx || a.ctx;
+      let x, z;
+      if (c && c.sc !== undefined && path && a.g.parent === this.dyn) { path.at(c.sc + p.x, _f); x = _f.x - _f.tz * p.z; z = _f.z + _f.tx * p.z; } // (only an actor standing in the street itself, not one carried by another)
+      else { const e = a.g.matrixWorld.elements; x = e[12]; z = e[14]; }
+      B.push({ x, z, r: a.vehicle ? Math.max(1, (a.len || 2) / 2) : 0.35 });
     }
+    if (this.walker) B.push(this._wb); // the walking character: the crowd treats him as a person on stage (walkers go round, vehicles brake)
     for (const c of this.locales) if (c.road && c.road.closed > 0) { const p = path.xz(c.sc, 0); Z.push({ x: p[0], z: p[1], r: 26 }); }
-    if ((this.pruneT -= 0.016) <= 0) { this.pruneT = 2; C.prune(this.W.stream.live); }
+    if ((this.pruneT -= 0.016) <= 0) this.pruneT = C.prune(this.W.stream.live) > 0 ? 0 : 2; // (what is still due: a few tiles next frame)
   }
 
   // ------------------------------------------------------------ "something is happening over there" pins
   _pins() {
     const show = this.mode === 'free';
-    const live = show ? this.locales.filter((c) => [...this.gags].some((g) => g.ctx === c)) : [];
+    // the spots with a scene on, in street order. Nothing is allocated per frame: the scenes playing mark their spot (one pass over
+    // the set with a callback made once), then the spots are read in order into a list the stage keeps
+    const live = this._live || (this._live = []);
+    live.length = 0;
+    if (show) {
+      const stamp = (this._pinStamp = (this._pinStamp || 0) + 1);
+      this.gags.forEach(this._markGag || (this._markGag = (g) => { g.ctx._pinMark = this._pinStamp; }));
+      for (let i = 0; i < this.locales.length; i++) if (this.locales[i]._pinMark === stamp) live.push(this.locales[i]);
+    }
     while (this.pins.length < live.length) {
       const el = document.createElement('button');
       el.className = 'gag-pin';
       el.setAttribute('aria-label', 'Jump to the action');
       el.innerHTML = '<span>!</span>';
-      const pin = { el, ctx: null };
-      el.addEventListener('click', () => { if (pin.ctx) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } });
+      const pin = { el, ctx: null, a: 1, q: 50, px: NaN, py: NaN, down: null };
+      // (a pin that has faded (disabled, .faint) or is hidden does not fly, also if it faded while it was being pressed)
+      const go = () => { if (pin.ctx && !el.disabled && !el.hidden) { this.flyTo(pin.ctx); this.hooks.onPin?.(); } };
+      // A pin is pressed and let go without moving. A drag that starts on a pin is a drag of the camera: once it has moved 4 px
+      // it is handed to the canvas (which takes the pointer over) and the pin does nothing.
+      el.addEventListener('pointerdown', (e) => {
+        if (el.disabled) return; // (a faint pin takes no pointer: .faint, pointer-events none)
+        // (only a press of the primary button flies; any button can start a drag of the camera from here)
+        pin.down = { id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button, primary: e.button === 0, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey };
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
+      });
+      el.addEventListener('pointermove', (e) => {
+        const d = pin.down;
+        if (!d || d.id !== e.pointerId || Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4) return;
+        pin.down = null;
+        this._grab?.(e, d);
+      });
+      el.addEventListener('pointerup', (e) => { const d = pin.down; pin.down = null; if (d && d.id === e.pointerId && d.primary) go(); });
+      el.addEventListener('contextmenu', (e) => e.preventDefault());
+      el.addEventListener('pointercancel', () => { pin.down = null; });
+      el.addEventListener('click', (e) => { if (e.detail === 0) go(); }); // Enter or Space on a focused pin (a pointer press is handled above)
       this.overlay.appendChild(el);
       this.pins.push(pin);
     }
-    const w = this.overlay.clientWidth, h = this.overlay.clientHeight;
-    this.pins.forEach((pin, i) => {
-      const c = live[i];
+    if (!this.pins.length) return;
+    const S = this._size, w = S ? S.w : this.overlay.clientWidth, h = S ? S.h : this.overlay.clientHeight;
+    for (let i = 0; i < this.pins.length; i++) {
+      const pin = this.pins[i], c = live[i];
       pin.ctx = c || null;
-      if (!c) { pin.el.hidden = true; return; }
-      const p = this.W.path.xz(c.sc, 0);
+      if (!c) { pin.el.hidden = true; continue; }
+      const p = (c._c0 ||= this.W.path.xz(c.sc, 0)); // (the spot's centre: the same point ctx.watched() keeps)
       _v.set(p[0], 5 + this.W.landY(p[0], p[1]), p[1]).project(this.camera);
       const behind = _v.z > 1;
       let x = behind ? -_v.x : _v.x, y = behind ? -1 : _v.y;
       const off = behind || Math.abs(x) > 0.9 || Math.abs(y) > 0.86;
-      const close = !off && Math.hypot(p[0] - this.rig.tx, p[1] - this.rig.tz) < this.rig.dist * 0.5 && this.rig.dist < 160;
-      pin.el.hidden = close;
+      const d = Math.hypot(p[0] - this.rig.tx, p[1] - this.rig.tz), close = !off && d < this.rig.dist * 0.5 && this.rig.dist < 160;
+      // far spots fade with their distance from the point the camera looks at, and are gone (not laid out at the edge) at PIN_GONE
+      const a = clamp((PIN_GONE - d) / (PIN_GONE - PIN_FULL), 0, 1);
+      pin.el.hidden = close || a <= 0;
+      if (a !== pin.a) {
+        const faint = a < 1; // a pin that is not fully there cannot be clicked or reached with the keyboard
+        if (faint !== pin.a < 1) { pin.el.classList.toggle('faint', faint); pin.el.disabled = faint; pin.el.tabIndex = faint ? -1 : 0; }
+        pin.a = a;
+        // the opacity is written in steps of 2 % (and only when it changes by one): smooth to the eye, no string per frame
+        const q = Math.round(a * 50);
+        if (q !== pin.q) { pin.q = q; pin.el.style.opacity = q < 50 ? String(q / 50) : ''; }
+      }
       x = clamp(x, -0.9, 0.9); y = clamp(y, -0.7, 0.82);
       pin.el.classList.toggle('edge', off);
-      pin.el.style.transform = `translate(${((x + 1) / 2) * w}px, ${((1 - y) / 2) * h}px)`;
-    });
+      const px = ((x + 1) / 2) * w;
+      let py = ((1 - y) / 2) * h;
+      const wb = w <= PIN_NARROW ? WALK_BOX.narrow : WALK_BOX.wide, top = h - wb.bottom - wb.h; // (the Walk button's top edge, from the top)
+      if (px + PIN_R > w - wb.right - wb.w && py + PIN_R > top && py - PIN_R < h - wb.bottom) py = top - PIN_R;
+      if (Math.abs(px - pin.px) > 0.1 || Math.abs(py - pin.py) > 0.1 || pin.px !== pin.px) { pin.px = px; pin.py = py; pin.el.style.transform = `translate(${px}px, ${py}px)`; }
+    }
   }
 
   // ------------------------------------------------------------ frame
   _frame(now) {
+    const tF = performance.now(), st0 = this.W && this.W.stream;
+    if (st0) st0.tileMs = 0; // (the streamer adds its tile building of this frame: see the end)
     const real = clamp((now - this.last) / 1000, 0, 0.05);
     this.last = now;
     if (this.slow) { this.slow.t -= real; if (this.slow.t <= 0) this.slow = null; }
@@ -1353,13 +1875,13 @@ export class Stage {
     this.timeScale += (target - this.timeScale) * Math.min(1, real * 14);
     const dt = real * this.timeScale * (this.debugSpeed || 1);
     this.time += dt;
+    _wT = this.time;
     const W = this.W, r = this.rig, g = this.goal;
 
     this.runner.update(dt);
+    this.overhead.update(dt); // (where the helicopter's script used to run: before the actors, so its beam is drawn from where it is now; also the clouds and the stork)
     for (let i = this.actors.length - 1; i >= 0; i--) this.actors[i].update(dt);
-    for (const e of this.extras) e.update(dt);
     this.fx.update(dt);
-    for (const c of this.clouds) c.position.x += c.userData.v * dt;
 
     // ---- camera
     let shotOn = false, shotBlocked = false, snapCut = false;
@@ -1374,14 +1896,7 @@ export class Stage {
       r.tx = lerp(D.c0[0], v.tx, k); r.tz = lerp(D.c0[1], v.tz, k); r.ty = lerp(D.y0, v.ty, sm(e));
       U.uGrow.value = 0.02 + 0.98 * ease.outBack(clamp((e - 0.5) / 0.4));
       if (e > 0.55 && !D.whoosh) { D.whoosh = true; if (!document.hidden) sfx.whoosh?.(); }
-      if (e >= 1) {
-        U.uGrow.value = 1;
-        this.mode = 'follow';
-        Object.assign(g, v);
-        if (!CALM) this.fx.shake(0.22);
-        if (!document.hidden) sfx.thud?.();
-        this.hooks.onMode?.('follow');
-      }
+      if (e >= 1) this._land(!this.landFree); // (follow, unless the viewer touched the camera on the way down or kept it from the last street)
     } else if (this.mode === 'leave') {
       const Lv = this.leaveTo;
       Lv.t += real;
@@ -1394,11 +1909,15 @@ export class Stage {
       U.uGrow.value = 1 - 0.98 * sm(clamp((e - 0.3) / 0.55));
       if (e >= 1 && !Lv.done) { Lv.done = true; Lv.resolve(); }
     } else {
-      U.uGrow.value = 1;
+      // (a drop the viewer cut short: the buildings finish rising)
+      if (this.grow) { this.grow.v = Math.min(1, this.grow.v + real * 1.25); U.uGrow.value = this.grow.v; if (this.grow.v >= 1) this.grow = null; }
+      else U.uGrow.value = 1;
       this._keys(real);
-      let rate = this.mode === 'free' ? 10 : 3.2, rateT = rate, snap = false;
+      if (this.mode === 'walk') this._walkStep(real * (this.debugSpeed || 1)); // (on the viewer's clock: a scene's slow motion does not slow his feet)
+      let rate = this._own ? 10 : 3.2, rateT = rate, snap = false;
       if (this.mode === 'follow') {
-        const busy = [...this.gags].some((q) => q.ctx === this.camCtx);
+        let busy = false;
+        for (const q of this.gags) if (q.ctx === this.camCtx) { busy = true; break; }
         this.idleT = busy ? 0 : this.idleT + real;
         if (this.idleT > 3 && this.time - this.lastSwitch > 5 && !this.cine) {
           let nb = null;
@@ -1485,11 +2004,24 @@ export class Stage {
           else if (this.time > this.cutEnd && !this.only && !this.cine) this._setMode('free');
         }
       } else {
-        g.ty = W.landY(g.tx, g.tz) + 1.5; g.fov = FOV; g.roll = 0;
+        // The free camera: nothing here moves the view by itself. Its lens is the normal one (a cutscene's was folded into the
+        // distance at the take-over). The aim height and the horizon follow the viewer's own moves: as the target is moved, its
+        // height eases to 1.5 m over the ground under it (fully after 8 m of moving), and as the camera is turned or tilted, the
+        // tilted horizon of a cutscene shot levels out (fully after 0.35 rad). Standing still, both stay exactly as they are.
+        const L = this._fl || (this._fl = { on: false, tx: 0, tz: 0, az: 0, el: 0 });
+        if (L.on) {
+          const moved = Math.hypot(g.tx - L.tx, g.tz - L.tz), turned = Math.abs(angDiff(L.az, g.az)) + Math.abs(g.el - L.el);
+          if (moved > 0) g.ty += (W.landY(g.tx, g.tz) + 1.5 - g.ty) * Math.min(1, moved / 8);
+          if (turned > 0 && g.roll) g.roll *= Math.max(0, 1 - turned / 0.35);
+        }
+        L.on = true; L.tx = g.tx; L.tz = g.tz; L.az = g.az; L.el = g.el;
+        g.fov = FOV;
+        // walking: the camera looks at him, a little over his feet (his height is already eased over kerbs and steps)
+        if (this.walker) { const p = this.walker.g.position; g.tx = p.x; g.tz = p.z; g.ty = this.walker.y + WALK_AIM; }
       }
       // high up, the free camera turns to look straight down with north up: the same view as the map it hands over to
       let gel = g.el, gaz = g.az;
-      if (this.mode === 'free') gel = lerp(g.el, TOP, sm(clamp((r.dist - 1500) / 1100)));
+      if (this._own) gel = lerp(g.el, TOP, sm(clamp((r.dist - 1500) / 1100)));
       this.viewEl = gel;
       if (snap) { r.tx = g.tx; r.tz = g.tz; r.ty = g.ty; r.az = gaz; r.el = gel; r.dist = g.dist; r.fov = g.fov; r.roll = g.roll; }
       else {
@@ -1500,15 +2032,16 @@ export class Stage {
         r.fov += ((g.fov || FOV) - r.fov) * k; r.roll += ((g.roll || 0) - r.roll) * k;
       }
       snapCut = snap;
-      if (this.mode === 'free' && r.dist >= EXIT && !this.exiting) { this.exiting = true; this.hooks.onExit?.(); }
-      if (this.mode === 'free' && !this.exiting && this.hooks.onRoam && (this.roamT -= real) <= 0) {
+      if (this._own && r.dist >= EXIT && !this.exiting) { if (this.mode === 'walk') this.walkEnd(); this.exiting = true; this.hooks.onExit?.(); } // (the walk ends before the way out begins)
+      if (this._own && !this.exiting && this.hooks.onRoam && (this.roamT -= real) <= 0) {
         this.roamT = 0.25;
         const pr = W.path.project(r.tx, r.tz);
         // how far the camera's target is from the street that is open (leaving it past either end counts too)
         this.hooks.onRoam({ lngLat: W.toLngLat(r.tx, r.tz), dist: r.dist, off: pr.d + Math.max(0, W.path.sA - pr.s, pr.s - W.path.sB) });
       }
     }
-    const sh = this.fx.shakeAmt * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
+    // a scene shakes the picture only while the camera follows the action: never the viewer's own camera (free, or walk to come)
+    const sh = (this.mode === 'follow' ? this.fx.shakeAmt : 0) * Math.max(1, r.dist / 70), ce = Math.cos(r.el);
     const tx = r.tx + (Math.random() - 0.5) * sh, ty = r.ty + (Math.random() - 0.5) * sh, tz = r.tz + (Math.random() - 0.5) * sh;
     // Shots are framed for a wide picture. On a tall, narrow screen (a phone held upright) the same shot would cut
     // its subjects off left and right: stand further back and widen the lens until the same width of street fits.
@@ -1517,7 +2050,9 @@ export class Stage {
     const aK = Math.sqrt(this.aspK), camD = r.dist * aK;
     const cx = tx + camD * Math.sin(r.az) * ce, cz = tz + camD * Math.cos(r.az) * ce;
     let cy = ty + camD * Math.sin(r.el);
-    if (r.dist < 80) cy = Math.max(cy, W.landY(cx, cz) + 0.35); // never under the ground
+    // never under the ground, at any distance: the lens is lifted, the point it looks at stays (zooming out from a low angle, the
+    // camera backs off along the ground, 0.35 m over it, still aiming at the same point: the view levels out as it goes)
+    cy = Math.max(cy, W.landY(cx, cz) + 0.35);
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(tx, ty, tz);
     if (r.roll) this.camera.rotateZ(r.roll);
@@ -1527,6 +2062,7 @@ export class Stage {
     this.camera.far = r.dist * 7 + 9000;
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
+    this._camFrame = W.frame; // (the frame these camera matrices are in: overhead.js tests what is in view right after a focus shift)
     this._skyFrame(real);
     this.scene.fog.near = r.dist * 1.6 + 180;
     this.scene.fog.far = r.dist * 7 + 2400;
@@ -1536,19 +2072,30 @@ export class Stage {
     this.crowd.update(dt, r.tx, r.tz, r.dist);
 
     // ---- things in the way duck; shadows follow the camera
+    // the lens guard (free mode only): a building the lens is in, or is about to be in, lies down whatever the cutaway below
+    // decides (a wing of a big complex, the end of a long block); the camera itself is never moved
+    // (fed the camera WITHOUT the shake: a shaking lens would swing the guard's look-ahead about)
+    {
+      const gx = r.tx + camD * Math.sin(r.az) * ce, gz = r.tz + camD * Math.cos(r.az) * ce;
+      let gy = r.ty + camD * Math.sin(r.el);
+      if (!sh) gy = cy; // (no shake: the camera's own position, ground clamp included)
+      else gy = Math.max(gy, W.landY(gx, gz) + 0.35); // (the camera's own ground guard above, at every distance; a shake happens only while following)
+      lensGuard(W, real, this._own, gx, gy, gz, r.tx, r.ty, r.tz);
+    }
     U.uFocus.value.set(r.tx, 0, r.tz);
     U.uCamDir.value.set(Math.sin(r.az), Math.cos(r.az));
     U.uTan.value = Math.tan(clamp(r.el, 0.1, 1.45));
     U.uR.value = shotOn ? r.dist * 0.3 + 3 : r.dist * 0.6 + 20; // a directed shot only clears its own sight line
     U.uHalf.value = shotBlocked ? 0 : 0.5; // ...unless something is in the way: then everything on the camera's side of the subject ducks
     // The cutaway is only for watching the street from close by. It fades out as the camera climbs, and when the
-    // camera wanders off the street there is nothing to keep in view, so everything stands up again.
+    // camera wanders off the streets there is nothing to keep in view, so everything stands up again. Any street counts,
+    // not only the open one: crossing onto the next street must not stand everything up until the focus has moved there.
     let need = clamp((1.3 - r.el) / 0.15) * clamp((190 - r.dist) / 80);
-    if (need > 0 && this.mode === 'free') need *= clamp((46 - W.path.project(r.tx, r.tz).d) / 26);
+    if (need > 0 && this._own) need *= clamp((46 - Math.min(W.path.project(r.tx, r.tz).d, streetNear(W, r.tx, r.tz))) / 26);
     if (shotOn || shotBlocked) need = Math.max(need, clamp((1.3 - r.el) / 0.15));
     this.cutK = snapCut ? need : (this.cutK ?? need) + (need - (this.cutK ?? need)) * (1 - Math.exp(-real * 6));
     U.uCut.value = this.cutK < 0.004 ? 0 : this.cutK;
-    for (const s of W.signs) s.m.visible = U.uGrow.value > 0.9 && cutWeight(s.x, s.z) < 0.5;
+    for (const s of W.signs) s.m.visible = U.uGrow.value > 0.9 && cutWeight(s.x, s.z) < 0.5 && duckAt(s.x, s.z) < 0.5;
     const half = clamp(r.dist * 0.55, 45, 260), sc = this.sun.shadow.camera;
     this.sun.castShadow = r.dist < 1300;
     if (Math.abs(half - (this._half || 0)) > half * 0.06) {
@@ -1572,6 +2119,11 @@ export class Stage {
     this._pins();
     if (this.audit) this._beatTick();
     this.renderer.render(this.scene, this.camera);
+    if (!_zooDone && this._warmFrom != null) this._warmStep();
+    // what this frame cost besides building tiles: the streamer fits next frame's tile work into what is left (sliceMs)
+    this._cpuLast = performance.now() - tF;
+    const st1 = this.W && this.W.stream;
+    if (st1) st1.frameOther = Math.max(0, this._cpuLast - (st1.tileMs || 0));
   }
 }
 export { preload };

@@ -1,7 +1,7 @@
 // Pickpocketing: a fat wallet in a back pocket, a pickpocket on tiptoe, a moth for a payday, and a cop with his hand up.
 // Storyboard: storyboards/pickpocket.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
@@ -338,6 +338,7 @@ export default function (T) {
       } finally {
         cam.release();
         if (vw.parent) vw.parent.remove(vw);
+        disposeTree(vw); // nothing uses the wallet after the scene, finished or cancelled (a second dispose through the thief's drop is harmless)
         R.free(done);
       }
     },

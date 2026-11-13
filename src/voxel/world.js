@@ -5,10 +5,11 @@ import { Vox, MAT, clamp, makeRng, hashStr, SHARED } from './kit.js';
 import * as P from './props.js';
 import { Path, Grid, obbOf, rectsOf, ringArea, inRing, chain, polyLen } from './geo.js';
 import { crossSection, dress } from './street.js';
-import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf } from './landmarks.js';
+import { drawTyped, drawParts, drawFeature, drawBarriers, TYPED, specialOf, typeOf } from './landmarks.js';
 import { faceNearestRoad } from './statues/kit.js';
 import { SPECIAL_PARTS } from './special-parts.js';
-import { furnishTile } from './furnish.js';
+import { furnishTile, furnishSteps, catenarySpots } from './furnish.js';
+import { buildOcc, spillOf, joinOcc, makeGround } from './ground.js';
 import { signFor, lookOf as shopLook } from './brands.js';
 import { POI_CATS, POI_FLAG } from './poicats.js';
 
@@ -236,6 +237,23 @@ function tileKeys(f, margin) {
 
 // ---------------------------------------------------------------- cutaway materials
 // Buildings and trees between the camera and the street duck out of the way; everything rises from flat on arrival.
+
+// The lens guard (see lensGuard below). Thresholds in metres and seconds.
+const DUCK_MAX = 12; // buildings that can be down at once: the length of U.uDuck and of the shader's loop
+const DUCK = {
+  MATCH: 0.05, // m: how close a vertex's tag centre must be to a guard entry (the same float numbers on both sides; 1e-3 m error)
+  PAD_IN: 1.5, // m: a building whose box comes this close to the lens (or to a point ahead of it) goes down...
+  PAD_OUT: 3, // m: ...and stays held while within this, so a lens grazing its edge does not make it flicker
+  HOLD: 0.6, // s: held this long after the lens is clear
+  EASE: 0.4, // s: down, and up again, at the cutaway's own pace (smoothstepped both ways: no pop)
+  AHEAD: 6, // m: a point this far ahead of the lens on the sight line (at most 30 % of the way to the target)
+  LOOK: [0.15, 0.3, 0.45], // s: where the lens will be on its current velocity while the ease runs
+  VMAX: 60, // m/s: the look-ahead's speed clamp
+  REACH: 130, // m: how far a building may stick out of the tile that draws it
+  CELL: 8, // m: cell of the box index
+  INDEX_MS: 1.5, // ms a frame may spend building box indexes (nearest mesh first; a big mesh is built in slices over several frames)
+  VEL_S: 0.15, // s: time constant of the lens velocity's smoothing (camera shake and frame-time jitter must not swing the look-ahead)
+};
 export const U = {
   uFocus: { value: new THREE.Vector3() }, uCamDir: { value: new THREE.Vector2(0, 1) },
   uTan: { value: 1 }, uR: { value: 60 }, uCut: { value: 1 }, uGrow: { value: 1 },
@@ -254,6 +272,9 @@ export const U = {
   uWin: { value: new THREE.Vector3(0.3, 0.1, 0.5) }, uTime: { value: 0 },
   // the lamps nearest to what the camera looks at (written by the stage): x, y (head), z, reach; how many; and how far the set reaches
   uLampA: { value: Array.from({ length: 24 }, () => new THREE.Vector4()) }, uLampN: { value: 0 }, uLampR: { value: 60 },
+  // buildings the lens guard lays down whatever the cutaway decided (see lensGuard): tag centre x, z in scene coords and how far
+  // down (0..1); how many are in use (the shader's loop stops there, so with none down it costs nothing)
+  uDuck: { value: Array.from({ length: DUCK_MAX }, () => new THREE.Vector3()) }, uDuckN: { value: 0 },
 };
 /** Warm light from the lamps of U.uLampA at a point (p) facing n; `wrap` softens the dark side (1 = lights everything alike). */
 export const LAMP_GLSL = `
@@ -290,7 +311,7 @@ function cutPatch(mat, tint = true, tile = false) {
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + (windows ? '\nvarying vec3 vLW;' : '') + TERR_GLSL)
+      .replace('#include <common>', '#include <common>\nattribute vec4 aB;\nattribute float aW;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nuniform float uTan;\nuniform float uR;\nuniform float uCut;\nuniform float uGrow;\nuniform float uHalf;\nuniform vec4 uClip;\nuniform vec3 uDuck[' + DUCK_MAX + '];\nuniform float uDuckN;\nvarying float vCut;\nvarying float vWU;\nvarying float vWY;\nflat varying vec3 vWF;' + (windows ? '\nvarying vec3 vLW;' : '') + TERR_GLSL)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vCut = 0.0; vWU = aW; vWY = position.y; vWF = vec3(abs(aW), aB.z - 2.0, fract(aB.x * 0.137 + aB.y * 0.291));
         if (aB.z > 0.0) {
@@ -302,6 +323,12 @@ function cutPatch(mat, tint = true, tile = false) {
           float cutH = max(0.3, (cutT - cutR - 7.0) * uTan);
           float cutW = uCut * smoothstep(-1.0, 3.0, cutT - cutR * uHalf) * (1.0 - smoothstep(uR, uR * 1.5, cutL));
           float cutK = smoothstep(0.7, 1.0, cutH / aB.z);
+          // the lens guard: a building the lens is in (or about to be in) lies down whatever the cutaway decided
+          if (aB.w >= 0.0) for (int i = 0; i < ${DUCK_MAX}; i++) {
+            if (float(i) >= uDuckN) break;
+            vec3 q = uDuck[i];
+            if (abs(q.x - bXZ.x) + abs(q.y - bXZ.y) < ${DUCK.MATCH.toFixed(3)}) { cutW = max(cutW, q.z); cutK *= 1.0 - q.z; }
+          }
           if (aB.w < 0.0) {
             // trees shrink to shrubs (their place on the ground is in the instance matrix)
             float cutS = mix(1.0, mix(0.2, 1.0, cutK), cutW);
@@ -357,7 +384,7 @@ function cutPatch(mat, tint = true, tile = false) {
         outgoingLight = mix(outgoingLight, wLit, wGlow);
         #include <opaque_fragment>`);
   };
-  mat.customProgramCacheKey = () => 'cut12' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
+  mat.customProgramCacheKey = () => 'cut13' + (tint ? 't' : '') + (tile ? 'T' : '') + (windows ? 'w' : '');
   return mat;
 }
 /** Far-away building blocks pick their own level of detail: see U.uNear. */
@@ -428,6 +455,202 @@ export function cutWeight(x, z, r = 5) {
   const ss = (a, b, v) => { const k = clamp((v - a) / (b - a)); return k * k * (3 - 2 * k); };
   const hmax = Math.max(0.3, (t - r - 7) * U.uTan.value);
   return U.uCut.value * ss(-1, 3, t - r * U.uHalf.value) * (1 - ss(U.uR.value, U.uR.value * 1.5, l)) * (hmax < 4 ? 1 : 0);
+}
+
+// ---------------------------------------------------------------- the lens guard
+// The cutaway decides once per building, from its centre and half its short side. A wing of a big complex (the Tweede Kamer
+// between Hofweg and Plein, the Stadhuis) or the end of a long block can then stand right at the lens while the building's
+// centre is far off the sight line, and the picture fills with a wall or a roof. In free mode the stage asks every frame which
+// buildings the lens is in, or is about to be in, and lays exactly those down (U.uDuck, matched in cutPatch on the building's
+// own cutaway tag), whatever the cutaway decided. The camera itself never moves. The buildings are found in the tile meshes'
+// own geometry: every Vox box is 24 vertices carrying its owner's tag in `aB` (kit.js), the very numbers the shader matches on,
+// so plain buildings, typed ones, hand-made landmarks, building parts, features and detailed house fronts are all covered.
+const _boxIx = new WeakMap();
+const cellKey = (i, j) => (i + 1024) * 4096 + (j + 1024);
+const IX_NONE = { done: true, cells: null }; // a mesh without building boxes (or a glow mesh: see lensProbe)
+const _xs = new Float64Array(4), _zs = new Float64Array(4);
+/**
+ * The tagged boxes of a tile mesh, from its position and aB arrays (which stay on the CPU): b = 10 numbers a box (centre x, z,
+ * axis ux, uz, half sizes, bottom, top, tag x, tag z; tile-local) and cells: cell key -> the box indices there (views into one
+ * Int32Array). Built in slices (indexStep) so no frame spends more than DUCK.INDEX_MS on it; storage is sized once per mesh.
+ */
+function indexStart(mesh) {
+  const g = mesh.geometry, P = g && g.attributes.position, A = g && g.attributes.aB;
+  if (!P || !A || P.count < 24) return IX_NONE;
+  const n = Math.floor(P.count / 24);
+  return { done: false, phase: 0, p: P.array, t: A.array, n, v: 0, k: 0, i: 0, b: new Float32Array(n * 10), count: new Map(), at: null, all: null, cells: null };
+}
+/** Cells of box k: calls fn(key) for each (no closure is made per box: fn is one of two fixed functions). */
+function boxCells(b, k, fn, ix) {
+  const o = k * 10, C = DUCK.CELL, r = Math.hypot(b[o + 4], b[o + 5]) + DUCK.PAD_OUT, cx = b[o], cz = b[o + 1];
+  for (let i = Math.floor((cx - r) / C); i <= Math.floor((cx + r) / C); i++) for (let j = Math.floor((cz - r) / C); j <= Math.floor((cz + r) / C); j++) fn(ix, cellKey(i, j), k);
+}
+const countCell = (ix, key) => { ix.count.set(key, (ix.count.get(key) || 0) + 1); };
+const fillCell = (ix, key, k) => { const a = ix.at.get(key); ix.all[a] = k; ix.at.set(key, a + 1); };
+/** Work on an index until `until` (performance.now() value); true when it is complete. */
+function indexStep(ix, until) {
+  const p = ix.p, t = ix.t, b = ix.b;
+  if (ix.phase === 0) { // the boxes
+    for (; ix.v < ix.n * 24; ix.v += 24) {
+      if ((ix.v & 767) === 0 && performance.now() > until) return false; // (a time check every 32 boxes)
+      const v = ix.v;
+      if (!(t[v * 4 + 2] > 0) || t[v * 4 + 3] < 0) continue; // untagged; trees (aB.w < 0) are not buildings
+      let y0 = Infinity, y1 = -Infinity, c = 0;
+      for (let q = 0; q < 24; q++) {
+        const o = (v + q) * 3, x = p[o], z = p[o + 2];
+        if (p[o + 1] < y0) y0 = p[o + 1];
+        if (p[o + 1] > y1) y1 = p[o + 1];
+        let seen = false;
+        for (let e = 0; e < c; e++) if (Math.abs(_xs[e] - x) < 1e-3 && Math.abs(_zs[e] - z) < 1e-3) { seen = true; break; }
+        if (!seen && c < 4) { _xs[c] = x; _zs[c] = z; c++; }
+      }
+      if (c < 4) continue;
+      // corner 0 and its two neighbours (the farthest of the other three is the opposite corner); the nearer one gives the axis
+      const d1 = (_xs[1] - _xs[0]) ** 2 + (_zs[1] - _zs[0]) ** 2, d2 = (_xs[2] - _xs[0]) ** 2 + (_zs[2] - _zs[0]) ** 2, d3 = (_xs[3] - _xs[0]) ** 2 + (_zs[3] - _zs[0]) ** 2;
+      let ea = 1, eb = 2;
+      if (d1 >= d2 && d1 >= d3) { ea = 2; eb = 3; } else if (d2 >= d1 && d2 >= d3) { ea = 1; eb = 3; }
+      const da = ea === 1 ? d1 : ea === 2 ? d2 : d3, db = eb === 2 ? d2 : d3;
+      if (db < da) { const s = ea; ea = eb; eb = s; }
+      const ax = _xs[ea] - _xs[0], az = _zs[ea] - _zs[0], l1 = Math.hypot(ax, az), l2 = Math.hypot(_xs[eb] - _xs[0], _zs[eb] - _zs[0]);
+      if (!(l1 > 1e-4)) continue;
+      const o = ix.k * 10;
+      b[o] = (_xs[0] + _xs[1] + _xs[2] + _xs[3]) / 4; b[o + 1] = (_zs[0] + _zs[1] + _zs[2] + _zs[3]) / 4; b[o + 2] = ax / l1; b[o + 3] = az / l1;
+      b[o + 4] = l1 / 2; b[o + 5] = l2 / 2; b[o + 6] = y0; b[o + 7] = y1; b[o + 8] = t[v * 4]; b[o + 9] = t[v * 4 + 1];
+      ix.k++;
+    }
+    ix.phase = 1; ix.i = 0;
+  }
+  if (ix.phase === 1) { // how many boxes each cell gets
+    for (; ix.i < ix.k; ix.i++) { if ((ix.i & 31) === 0 && performance.now() > until) return false; boxCells(b, ix.i, countCell, ix); }
+    let total = 0;
+    ix.at = new Map();
+    for (const [key, n] of ix.count) { ix.at.set(key, total); total += n; }
+    ix.all = new Int32Array(total);
+    ix.phase = 2; ix.i = 0;
+  }
+  if (ix.phase === 2) { // the box indices, cell by cell in one array
+    for (; ix.i < ix.k; ix.i++) { if ((ix.i & 31) === 0 && performance.now() > until) return false; boxCells(b, ix.i, fillCell, ix); }
+    ix.cells = new Map();
+    for (const [key, n] of ix.count) { const end = ix.at.get(key); ix.cells.set(key, ix.all.subarray(end - n, end)); }
+    ix.count = ix.at = null; ix.p = ix.t = null;
+    ix.done = true;
+  }
+  return true;
+}
+// what one frame's probes found: buildings (tag in map coords) and how near their boxes came (m; negative: inside)
+const _cand = { n: 0, mx: new Float64Array(64), my: new Float64Array(64), d: new Float64Array(64) };
+const _want = { mesh: null, d: Infinity }; // the nearest mesh this frame's probes needed but found without a finished index
+let _job = null; // the mesh whose index is being built
+/** Probe one point (map x, y; height z) against the boxes of the tiles on screen; nearer than `pad` goes into _cand. */
+function lensProbe(stream, px, py, pz, pad) {
+  const city = stream.city, C = DUCK.CELL;
+  for (let tx = Math.floor((px - DUCK.REACH) / TILE); tx <= Math.floor((px + DUCK.REACH) / TILE); tx++) {
+    for (let ty = Math.floor((py - DUCK.REACH) / TILE); ty <= Math.floor((py + DUCK.REACH) / TILE); ty++) {
+      const c = _byNum.get(tileNum(tx, ty));
+      if (!c || c.g.parent !== stream.group) continue; // only what is on screen
+      const lx = px - c.ox, lz = c.oy + TILE - py, key = cellKey(Math.floor(lx / C), Math.floor(lz / C)), ch = c.g.children;
+      for (let m = 0; m < ch.length; m++) {
+        const mesh = ch[m];
+        // (glow meshes are skipped: their boxes are window lights inside the walls of buildings the solid meshes already hold)
+        if (!mesh.isMesh || mesh.isInstancedMesh || !mesh.visible || mesh.material.isMeshBasicMaterial || !mesh.geometry.attributes.aB) continue;
+        const bs = mesh.geometry.boundingSphere; // (set by buildTile: tile-wide for a tile's meshes, about 90 m for a cell's)
+        const bd = bs ? Math.sqrt((lx - bs.center.x) ** 2 + (lz - bs.center.z) ** 2) - bs.radius : 0;
+        if (bd > pad) continue;
+        let ix = _boxIx.get(mesh);
+        if (ix === undefined) { ix = indexStart(mesh); _boxIx.set(mesh, ix); }
+        if (!ix.done) { if (bd < _want.d) { _want.d = bd; _want.mesh = mesh; } continue; } // (indexed nearest first, see lensGuard)
+        const list = ix.cells && ix.cells.get(key);
+        if (!list) continue;
+        const b = ix.b;
+        for (let q = 0; q < list.length; q++) {
+          const o = list[q] * 10, dx = lx - b[o], dz = lz - b[o + 1];
+          const ea = Math.abs(dx * b[o + 2] + dz * b[o + 3]) - b[o + 4], eb = Math.abs(-dx * b[o + 3] + dz * b[o + 2]) - b[o + 5];
+          if (ea > pad || eb > pad) continue;
+          const mx = c.ox + b[o + 8], my = c.oy + TILE - b[o + 9], base = city.landAt(mx, my) + 0.1; // the shader seats it on the ground under its tag
+          const ey = Math.max(base + b[o + 6] - pz, pz - base - b[o + 7]), e = Math.max(ea, eb, ey); // (at full height: a building that is down stays found)
+          if (e > pad) continue;
+          let f = 0;
+          while (f < _cand.n && (Math.abs(_cand.mx[f] - mx) > 0.01 || Math.abs(_cand.my[f] - my) > 0.01)) f++;
+          if (f === _cand.n) { if (f >= _cand.mx.length) continue; _cand.n++; _cand.mx[f] = mx; _cand.my[f] = my; _cand.d[f] = e; }
+          else if (e < _cand.d[f]) _cand.d[f] = e;
+        }
+      }
+    }
+  }
+}
+/** Spend at most DUCK.INDEX_MS on box indexes: the one in progress, then the nearest one this frame's probes were missing. */
+function indexWork() {
+  const until = performance.now() + DUCK.INDEX_MS;
+  for (let n = 0; n < 4; n++) {
+    if (!_job || !_job.parent) { _job = _want.mesh && _want.mesh.parent ? _want.mesh : null; _want.mesh = null; _want.d = Infinity; } // (a dropped tile's mesh has no parent)
+    if (!_job) return;
+    const ix = _boxIx.get(_job);
+    if (!ix || ix.done || indexStep(ix, until)) _job = null;
+    if (performance.now() > until) return;
+  }
+}
+// the buildings that are down or on their way: a fixed pool (no allocation per frame); tags in MAP coords, so a building that is
+// down stays down through a focus shift (the scene frame changes then, the map does not)
+const _ducks = Array.from({ length: DUCK_MAX }, () => ({ on: false, mx: 0, my: 0, w: 0, hold: 0 }));
+const _lens = { has: false, mx: 0, my: 0, vx: 0, vy: 0 };
+const smooth = (w) => w * w * (3 - 2 * w);
+/**
+ * Once per frame, after the camera is placed: lens (cx, cy, cz) and target (tx, ty, tz) in scene coords, WITHOUT camera shake.
+ * `active`: free mode; otherwise nothing new goes down and whatever is down rises again at once, at the same smooth pace.
+ */
+export function lensGuard(W, real, active, cx, cy, cz, tx, ty, tz) {
+  const f = W.frame, S = W.stream;
+  if (active && S && !S.dead) {
+    const lmx = f.ox + cx * f.dx + cz * f.dy, lmy = f.oy + cx * f.dy - cz * f.dx;
+    if (_lens.has && real > 1e-4) {
+      // the lens's velocity, smoothed (frame-time jitter must not swing the look-ahead), at most DUCK.VMAX in any direction
+      const k = 1 - Math.exp(-real / DUCK.VEL_S);
+      _lens.vx += ((lmx - _lens.mx) / real - _lens.vx) * k; _lens.vy += ((lmy - _lens.my) / real - _lens.vy) * k;
+      const sp = Math.hypot(_lens.vx, _lens.vy);
+      if (sp > DUCK.VMAX) { _lens.vx *= DUCK.VMAX / sp; _lens.vy *= DUCK.VMAX / sp; }
+    } else { _lens.vx = 0; _lens.vy = 0; }
+    const vx = _lens.vx, vy = _lens.vy;
+    _lens.has = true; _lens.mx = lmx; _lens.my = lmy;
+    _cand.n = 0; _want.mesh = null; _want.d = Infinity;
+    const pad = DUCK.PAD_OUT;
+    lensProbe(S, lmx, lmy, cy, pad);
+    const fx = tx - cx, fy = ty - cy, fz = tz - cz, fl = Math.hypot(fx, fy, fz) || 1, ah = Math.min(DUCK.AHEAD, fl * 0.3) / fl;
+    const ax = cx + fx * ah, az = cz + fz * ah;
+    lensProbe(S, f.ox + ax * f.dx + az * f.dy, f.oy + ax * f.dy - az * f.dx, cy + fy * ah, pad);
+    if (vx * vx + vy * vy > 0.01) for (let i = 0; i < DUCK.LOOK.length; i++) lensProbe(S, lmx + vx * DUCK.LOOK[i], lmy + vy * DUCK.LOOK[i], cy, pad);
+    indexWork();
+    for (let i = 0; i < _cand.n; i++) {
+      const mx = _cand.mx[i], my = _cand.my[i], d = _cand.d[i];
+      let e = null, free = null;
+      for (let j = 0; j < DUCK_MAX; j++) {
+        const q = _ducks[j];
+        if (q.on && Math.abs(q.mx - mx) < 0.01 && Math.abs(q.my - my) < 0.01) { e = q; break; }
+        if (!q.on && !free) free = q;
+      }
+      if (e) { e.hold = DUCK.HOLD; continue; } // within PAD_OUT: held (hysteresis)
+      if (d > DUCK.PAD_IN) continue; // not yet near enough to go down
+      // (with all DUCK_MAX in use it waits for a slot rather than make another building pop up)
+      if (free) { free.on = true; free.mx = mx; free.my = my; free.w = 0; free.hold = DUCK.HOLD; }
+    }
+  } else {
+    _lens.has = false;
+    for (let j = 0; j < DUCK_MAX; j++) _ducks[j].hold = 0; // out of free mode: no holding, whatever is down starts rising now
+  }
+  let n = 0;
+  for (let j = 0; j < DUCK_MAX; j++) {
+    const q = _ducks[j];
+    if (!q.on) continue;
+    q.hold -= real;
+    q.w = clamp(q.w + (q.hold > 0 ? real : -real) / DUCK.EASE);
+    if (q.w <= 0 && q.hold <= 0) { q.on = false; continue; }
+    U.uDuck.value[n++].set((q.mx - f.ox) * f.dx + (q.my - f.oy) * f.dy, (q.mx - f.ox) * f.dy - (q.my - f.oy) * f.dx, smooth(q.w));
+  }
+  U.uDuckN.value = n;
+}
+/** How far down the lens guard has a building with its tag at scene (x, z) (0..1): signs on a front that is down hide with it. */
+export function duckAt(x, z) {
+  for (let i = 0; i < U.uDuckN.value; i++) { const q = U.uDuck.value[i]; if (Math.abs(q.x - x) + Math.abs(q.y - z) < DUCK.MATCH) return q.z; }
+  return 0;
 }
 
 // ---------------------------------------------------------------- building looks
@@ -589,12 +812,17 @@ function assignShops(key, t, F, dice) {
     if (NO_FRONT.has(cat) && cat !== 'atm') continue;
     // the building it lies in, else the nearest one within a few metres
     let owner = -1, bd = 5.5;
-    for (const [bi, us] of F.byB) {
-      if (!us.some((u) => Math.hypot(u.cx - px, u.cz - pz) < 60)) continue;
-      const ring = F.rings.get(bi);
-      if (inRing(px, pz, ring)) { owner = bi; break; }
-      const d = ringDist(px, pz, ring);
-      if (d < bd) { bd = d; owner = bi; }
+    // (first the buildings that had fronts before, so each place goes where it went; then the late ones, F.late)
+    for (const pass of [false, true]) {
+      if (owner >= 0) break;
+      for (const [bi, us] of F.byB) {
+        if ((F.late && F.late.has(bi)) !== pass) continue;
+        if (!us.some((u) => Math.hypot(u.cx - px, u.cz - pz) < 60)) continue;
+        const ring = F.rings.get(bi);
+        if (inRing(px, pz, ring)) { owner = bi; break; }
+        const d = ringDist(px, pz, ring);
+        if (d < bd) { bd = d; owner = bi; }
+      }
     }
     if (owner < 0) continue;
     let us = F.byB.get(owner);
@@ -839,15 +1067,20 @@ const _fronts = new WeakMap();
 function frontsOf(key, t) {
   let F = _fronts.get(t);
   if (F) return F;
-  F = { units: [], byB: new Map(), rings: new Map() };
+  F = { units: [], byB: new Map(), rings: new Map(), late: new Set() };
   _fronts.set(t, F);
   if (!t.bf || !t.b) return F;
-  t.b.forEach((e, bi) => {
+  // buildings the data types as a tower or a windmill that are not one (landmarks.js typeOf) get their fronts after all
+  // the others: their units come last in F.units and in every cell, so the close-up fronts drawn before them (one
+  // shared builder per cell, jitter dice in drawing order) are what they were; and they only take a shop no other
+  // building claims (assignShops)
+  const late = [];
+  const one = (e, bi) => {
     const bf = t.bf[bi];
     if (isStore(t, bi)) { if (!(t.bp && t.bp[bi]) && !specialOf(key, t, bi)) storeFronts(key, t, bi, F); return; }
     if (!(bf >= 0) || e[0] < 3.2) return;
     // a church stays a church: buildings with a type or a landmark's own shape keep their own drawer
-    if ((t.bp && t.bp[bi]) || (t.bt && TYPED.has(t.bt[bi])) || specialOf(key, t, bi)) return;
+    if ((t.bp && t.bp[bi]) || TYPED.has(typeOf(t, bi)) || specialOf(key, t, bi)) return;
     const ring = [];
     for (let i = 3; i + 1 < e.length; i += 2) ring.push([e[i] / 10, TILE - e[i + 1] / 10]);
     if (ring.length < 3) return;
@@ -889,7 +1122,9 @@ function frontsOf(key, t) {
       if (backs.length) mine[0].backs = { list: backs, th: Math.atan2(-o.uz, o.ux), cx: o.cx, cz: o.cz, rad: Math.min(o.w, o.d) / 2, h: b.h, wall: look.wall };
       F.byB.set(bi, mine); F.rings.set(bi, ring); F.units.push(...mine);
     }
-  });
+  };
+  t.b.forEach((e, bi) => { if (t.bt && TYPED.has(t.bt[bi]) && !TYPED.has(typeOf(t, bi))) late.push(bi); else one(e, bi); });
+  for (const bi of late) { F.late.add(bi); one(t.b[bi], bi); }
   const dice = (u, salt) => hashStr(salt + '|' + key + '|' + u.bi + '|' + u.i);
   assignShops(key, t, F, dice);
   return F;
@@ -904,7 +1139,7 @@ function frontInfo(u, night) {
   _dry.v.setT(); _dry.gl.setT(); _dry.v.setB(); _dry.gl.setB(); _dry.v.n = 0; _dry.gl.n = 0;
   return hi; // a dry run makes no sign plane (and so no texture)
 }
-export { frontsOf, drawHero, frontInfo, unitRng, buildTile, loadCity }; // for the node checks in test/
+export { frontsOf, drawHero, frontInfo, unitRng, buildTile, loadCity, shelterPlaces }; // for the node checks in test/
 /** Is a tree trunk within r metres of this point (map metres)? Only knows the tiles that are built. */
 function treeNearMap(mx, my, r) {
   const t0x = Math.floor((mx - r) / TILE), t1x = Math.floor((mx + r) / TILE), t0y = Math.floor((my - r) / TILE), t1y = Math.floor((my + r) / TILE);
@@ -1090,6 +1325,35 @@ function paintMarks(grid, r) {
     s += l;
   }
 }
+/** The building of tile t (flats: its footprints in tile coordinates) that a point stands in: { bi, h, area } or null. */
+function hostOf(t, flats, x, z) {
+  for (let bi = 0; bi < flats.length; bi++) {
+    const f = flats[bi];
+    if (f.length < 6 || !inFlat(x, z, f)) continue;
+    let a = 0;
+    for (let i = 0, n = f.length >> 1, k = n - 1; i < n; k = i++) a += f[k * 2] * f[i * 2 + 1] - f[i * 2] * f[k * 2 + 1];
+    return { bi, h: t.b[bi][0], area: Math.abs(a) / 2 };
+  }
+  return null;
+}
+const MAST_HUT = { AREA: 30, H: 5 }; // a building smaller and lower than this round a mast's point is its equipment cabin
+/** Draw for the side effects only: into throwaway builders that take over vx/glx's state and give it back. */
+function shadowDraw(vx, glx, draw) {
+  const dv = new Vox(1, true), dg = new Vox(1, true);
+  dv.dry = dg.dry = true; // (throwaways: nothing drawn into them is shown)
+  for (const [d, s] of [[dv, vx], [dg, glx]]) { d._s = s._s; d.B = s.B; d.T = s.T; d.Wm = s.Wm; }
+  draw(dv, dg);
+  for (const [d, s] of [[dv, vx], [dg, glx]]) { s._s = d._s; s.B = d.B; s.T = d.T; s.Wm = d.Wm; }
+}
+/** A typed drawer run for its side effects only (shadowDraw), with the fallback the building loop has. */
+function shadowTyped(vx, glx, b, type, look, night, lod) {
+  shadowDraw(vx, glx, (dv, dg) => {
+    let done = false;
+    try { done = drawTyped(dv, dg, b, type, { wall: look.wall, roof: look.roof }, look.rnd, night, null); } catch (err) { done = false; }
+    dv.setT(); dg.setT(); dv.setW(0);
+    if (!done) drawGeneric(dv, dg, b, look, night, lod === 2);
+  });
+}
 /** Rails and building footprints go on last. */
 function paintTop(grid, rails, footprints) {
   for (const r of rails) {
@@ -1099,6 +1363,275 @@ function paintTop(grid, rails, footprints) {
     grid.stroke(r.a, grid.cell, C.RAIL, null, -0.72);
   }
   for (const fp of footprints) grid.fill([fp], C.BUILDING);
+}
+
+// ---------------------------------------------------------------- the map's stop shelters
+// A map shelter (tile `f` type 10) is a bare node: tram stop nodes lie on the track, bus stop nodes on the edge of the
+// carriageway, and none has a direction of its own (a = 0 in every tile). shelterPlaces() gives each one a place and a
+// heading from the tile's own data, once per tile, for the drawer (buildTile) and for furnish.js (the shelter's room among
+// the furniture and its `props` entry), so both put it at the same spot:
+//  - the line it belongs to is a street centre line (classes 2-7, 9, 13: no motorway, no pedestrian street) or a track, no
+//    tunnel, within SHEL.REACH of the node;
+//  - it stands beside that line with its long side along it and its open side towards it, across the kerb (or beside the
+//    rail bed): the roof's open edge SHEL.GAP_MIN..GAP_MAX from the edge of the road surface or the bed;
+//  - every point under the roof is walkable ground (WALK, CURB, PLAZA, PED, FOOT, or LAND: the grid paints only 1.8 m of
+//    pavement beyond a kerb, and plain urban ground beyond it), at least SHEL.WALK_MIN of it, and no carriageway, cycle
+//    path, rail bed, water or building cell lies within SHEL.CLEAR of the roof, and no water within SHEL.QUAY (where
+//    furnish.js puts quay posts and mooring bollards); it keeps clear of trunks (mapped, and the ones buildTile sprinkles
+//    on grass, woods and dunes), walls and fences, building outlines, the other point features, the street lamps
+//    (lampsOf), every spot where furnish.js may stand a tram catenary mast (catenarySpots) and the shelters placed before it;
+//  - the line nearest to where it ends up runs within SHEL.PARALLEL degrees of the one it faces, in front of it;
+//  - of all such places the cheapest wins: distance from the node, plus SHEL.SIDE for the far side of the line from the
+//    node, plus SHEL.LAND per share of plain ground under the roof, plus a little per metre of gap.
+// Two nodes within SHEL.PAIR of each other are one stop: a shelter on each side of the line is real and both stay; one that
+// would stand on the same side as an earlier one is a double and is left out. A node with no such place within SHEL.MOVE
+// gets the next-best honest place if it lies between two tracks with room for an island platform (SHEL.ISLAND: the
+// platform is not in the ground data, but the strip between the rail beds is): parallel to the tracks, its open side to
+// the nearer one, its roof SHEL.ISLAND.TRACK from either track's centre line; otherwise it is left out as well (a shelter
+// on the track is worse than none). Pure function of the tile: the ground comes from a private half-metre grid around
+// each group of nodes, painted once by the same paintBase/paintTop as the tile itself, so the place is the same at every
+// level of detail and on the phone, and no neighbouring tile is read.
+// Returns a Map: feature index -> { x, z, rot, rx, rz, ... } or { drop: why, rx, rz }.
+const SHEL = {
+  HX: 2.1, HZ: 0.9, // half the roof of landmarks.js shelter(): 4.2 x 1.8 m; long axis local x, open side local +z
+  REACH: 16, MOVE: 12, ALONG: 8, ALONG_STEP: 0.5,
+  GAP_MIN: 0.3, GAP_MAX: 3.0, GAP_STEP: 0.25,
+  PARALLEL: 12, WALK_MIN: 0.9, CLEAR: 0.45, TREE: 0.6, BARRIER: 0.3, PAIR: 4.6, WIN: 18,
+  SIDE: 1.5, LAND: 3, GAP_COST: 0.3, STEP: 0.25, LINES: 6,
+  QUAY: 2.0, // quay posts stand on walkable ground within 1.3 m (and half a cell) of water
+  LAMP: 0.4, MAST: 0.7, // clearance from a lamp post and from a catenary mast's spot (its pole and foot)
+  // an island platform: a tram is 2.4-2.65 m wide (half 1.33 m) and sways a little; the rail bed is 2.5 m (half 1.25 m).
+  // The roof keeps 1.6 m from each track's centre line, so the strip must be 2 x 1.6 + 1.8 = 5 m between the centre lines.
+  ISLAND: { TRACK: 1.6, REACH: 6, CLEAR: 0.3 },
+};
+const SHEL_WALK = mask(C.WALK, C.CURB, C.PLAZA, C.PED, C.FOOT, C.LAND);
+const SHEL_PAVE = mask(C.WALK, C.CURB, C.PLAZA, C.PED, C.FOOT);
+const SHEL_HARD = mask(C.ASPHALT, C.KLINKER, C.SERVICE, C.MARK, C.BIKELANE, C.CYCLE, C.RAILBED, C.RAIL, C.WATER, C.SEA, C.BUILDING, 255);
+const BAR_THICK = { 1: 0.3, 2: 0.08, 3: 0.8, 4: 0.6 }; // as drawBarriers draws them
+const FEAT_ROOM = { 1: 7, 8: 2, 11: 5 }; // how far the roof keeps from another point feature (fountains by their size, the rest 1.2 m)
+const _shelters = new WeakMap();
+function shelterPlaces(city, key, t, gnd, roads, rails, flats, mt, lamps) { return runJob(shelterJob(city, key, t, gnd, roads, rails, flats, mt, lamps)); }
+/** shelterPlaces as a job: the frame is handed back after each group's private grid and after each shelter (see buildTileJob). */
+function* shelterJob(city, key, t, gnd, roads, rails, flats, mt, lamps) {
+  let out = _shelters.get(t);
+  if (out) return out;
+  out = new Map();
+  try { yield* placeShelters(out, city, key, t, gnd, roads, rails, flats, mt, lamps); } catch (err) {
+    // (cached only when complete: on a failure every shelter of the tile is left out, the same way every time)
+    out = new Map();
+    (t.f || []).forEach((e, fi) => { if (e[0] === 10) out.set(fi, { drop: 'error', rx: e[1] / 10, rz: TILE - e[2] / 10 }); });
+  }
+  _shelters.set(t, out);
+  return out;
+}
+function* placeShelters(out, city, key, t, gnd, roads, rails, flats, mt, lamps) {
+  const feats = t.f || [];
+  if (!feats.some((e) => e[0] === 10)) return;
+  // the lines: street centre lines and tracks, each with its half width of surface (as paintBase / paintTop stroke them)
+  const lines = [];
+  const addLine = (a, hw, rail, cls) => {
+    const n = a.length >> 1, cum = new Float64Array(n);
+    for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + Math.hypot(a[i * 2] - a[i * 2 - 2], a[i * 2 + 1] - a[i * 2 - 1]);
+    lines.push({ a, n, cum, len: cum[n - 1], hw, rail, cls });
+  };
+  for (const r of roads) if (!(r.flags & 4) && r.a.length >= 4 && ((r.cls >= 1 && r.cls <= 9) || r.cls === 13)) addLine(r.a, r.w / 2, false, r.cls);
+  for (const r of rails) if (!(r.flags & 4) && r.a && r.a.length >= 4) addLine(r.a, (r.kind === 2 ? 3.2 : 2.5) / 2, true, 100 + r.kind);
+  const project = (L, x, z) => { // nearest point of a line: distance, arc length, point, unit tangent
+    let best = null;
+    for (let i = 0; i + 1 < L.n; i++) {
+      const ax = L.a[i * 2], az = L.a[i * 2 + 1], dx = L.a[i * 2 + 2] - ax, dz = L.a[i * 2 + 3] - az, l2 = dx * dx + dz * dz;
+      if (l2 < 1e-9) continue;
+      const u = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), qx = ax + dx * u, qz = az + dz * u, d = Math.hypot(x - qx, z - qz);
+      if (!best || d < best.d) { const l = Math.sqrt(l2); best = { d, s: L.cum[i] + u * l, x: qx, z: qz, tx: dx / l, tz: dz / l }; }
+    }
+    return best;
+  };
+  const pointAt = (L, s) => {
+    if (s < 0 || s > L.len) return null;
+    let i = 0;
+    while (i < L.n - 2 && L.cum[i + 1] < s) i++;
+    const l = L.cum[i + 1] - L.cum[i];
+    if (l < 1e-9) return null;
+    const u = (s - L.cum[i]) / l, ax = L.a[i * 2], az = L.a[i * 2 + 1], dx = L.a[i * 2 + 2] - ax, dz = L.a[i * 2 + 3] - az;
+    return { x: ax + dx * u, z: az + dz * u, tx: dx / l, tz: dz / l };
+  };
+  const nearestLine = (x, z) => {
+    let best = null;
+    for (const L of lines) { const q = project(L, x, z); if (q && (!best || q.d < best.d)) best = { L, ...q }; }
+    return best;
+  };
+  // what the roof must keep clear of: the mapped trees, and the trees buildTile sprinkles on woods, grass and dunes (the
+  // same dice in the same order as there; whether one stands is decided below by the ground of the node's own grid)
+  const trees = [], sprinkle = [], tr = makeRng(hashStr('trees|' + key));
+  for (let i = 0; t.t && i + 1 < t.t.length; i += 2) { trees.push(t.t[i] / 10, TILE - t.t[i + 1] / 10); tr(); }
+  for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
+    const jx = x + tr.range(-2.6, 2.6), jz = z + tr.range(-2.6, 2.6), r1 = tr();
+    tr();
+    if (r1 < 0.9) sprinkle.push(jx, jz, r1);
+  }
+  const bars = (t.x || []).map((e) => { const a = []; for (let i = 2; i + 1 < e.length; i += 2) a.push(e[i] / 10, TILE - e[i + 1] / 10); return { a, r: (BAR_THICK[e[0]] || 0.3) / 2 + SHEL.BARRIER }; });
+  const rings = flats.map((f) => { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (let i = 0; i + 1 < f.length; i += 2) { x0 = Math.min(x0, f[i]); x1 = Math.max(x1, f[i]); z0 = Math.min(z0, f[i + 1]); z1 = Math.max(z1, f[i + 1]); } return { f, x0, x1, z0, z1 }; }).filter((q) => q.f.length >= 6);
+  const others = [];
+  feats.forEach((e) => { if (e[0] !== 10) others.push(e[1] / 10, TILE - e[2] / 10, e[0] === 9 ? clamp((e[4] / 10) * 0.5 + 0.6, 1.5, 12) : FEAT_ROOM[e[0]] || 1.2); });
+  const posts = [];
+  const la = lamps && lamps.a; // (lampsOf: { a: [x, z, dx, dz, kind, ...], ghosts })
+  for (let i = 0; la && i + 1 < la.length; i += 5) posts.push(la[i], la[i + 1], SHEL.LAMP);
+  const spots = catenarySpots(key, rails);
+  for (let i = 0; i + 1 < spots.length; i += 2) posts.push(spots[i], spots[i + 1], SHEL.MAST);
+  const placed = []; // { x, z, nx, nz, rx, rz, fi }
+  const { HX, HZ, STEP } = SHEL, NX = Math.round((2 * HX) / STEP), NZ = Math.round((2 * HZ) / STEP);
+  // the nodes in groups whose windows overlap: one painted grid per group
+  const nodes = [];
+  feats.forEach((e, fi) => { if (e[0] === 10) nodes.push({ fi, x: e[1] / 10, z: TILE - e[2] / 10 }); });
+  const up = nodes.map((q, i) => i), top = (i) => (up[i] === i ? i : (up[i] = top(up[i])));
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (Math.abs(nodes[i].x - nodes[j].x) < 2 * SHEL.WIN && Math.abs(nodes[i].z - nodes[j].z) < 2 * SHEL.WIN) up[top(j)] = top(i);
+  const grids = new Map(), byFi = new Map();
+  nodes.forEach((q, i) => {
+    const k = top(i);
+    let G = grids.get(k);
+    if (!G) grids.set(k, (G = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity }));
+    G.x0 = Math.min(G.x0, q.x); G.x1 = Math.max(G.x1, q.x); G.z0 = Math.min(G.z0, q.z); G.z1 = Math.max(G.z1, q.z);
+    byFi.set(q.fi, G);
+  });
+  for (const G of grids.values()) {
+    yield;
+    const gx0 = Math.floor((G.x0 - SHEL.WIN) / 4) * 4, gz0 = Math.floor((G.z0 - SHEL.WIN) / 4) * 4;
+    const gw = Math.ceil((G.x1 + SHEL.WIN + 4 - gx0) / 4) * 8, gh = Math.ceil((G.z1 + SHEL.WIN + 4 - gz0) / 4) * 8;
+    G.g = new Grid(gx0, gz0, gw, gh, 0.5);
+    paintBase(city, G.g, mt, gnd.slice(), roads);
+    paintTop(G.g, rails, flats);
+    G.near = trees.slice();
+    for (let i = 0; i < sprinkle.length; i += 3) {
+      const x = sprinkle[i], z = sprinkle[i + 1], r1 = sprinkle[i + 2];
+      if (x < gx0 || z < gz0 || x > gx0 + gw * 0.5 || z > gz0 + gh * 0.5) continue;
+      const cl = G.g.get(x, z);
+      if (cl === C.FOREST || (cl === C.GRASS && r1 < 0.07) || (cl === C.DUNE && r1 < 0.06)) G.near.push(x, z);
+    }
+  }
+  const QUICK = [[0, 0], [-HX + 0.1, -HZ + 0.1], [HX - 0.1, -HZ + 0.1], [-HX + 0.1, HZ - 0.1], [HX - 0.1, HZ - 0.1], [0, HZ - 0.1], [0, -HZ + 0.1]];
+  const oneShelter = (e, fi) => {
+    if (e[0] !== 10) return;
+    const rx = e[1] / 10, rz = TILE - e[2] / 10, { g, near } = byFi.get(fi);
+    // c, s: cos and sin of the frame's turn; null if the roof cannot stand there, else its pavement share. An island
+    // platform (isl) may stand on any ground that is not hard (the platform itself is not in the data) and keeps its
+    // clearance from the rail beds' cells only
+    const fit = (cx, cz, c, s, isl = false) => {
+      const CL = isl ? SHEL.ISLAND.CLEAR : SHEL.CLEAR, ex = HX + Math.max(CL, SHEL.QUAY);
+      if (cx - HX - CL < 0.25 || cz - HX - CL < 0.25 || cx + HX + CL > TILE - 0.25 || cz + HX + CL > TILE - 0.25) return null;
+      for (const [lx, lz] of QUICK) if (SHEL_HARD[g.get(cx + lx * c + lz * s, cz - lx * s + lz * c)]) return null; // a quick look first
+      let walk = 0, pave = 0;
+      for (let i = 0; i < NX; i++) for (let j = 0; j < NZ; j++) {
+        const lx = -HX + (i + 0.5) * STEP, lz = -HZ + (j + 0.5) * STEP, px = cx + lx * c + lz * s, pz = cz - lx * s + lz * c, k = g.get(px, pz);
+        if (SHEL_HARD[k]) return null;
+        if (SHEL_WALK[k]) walk++;
+        if (SHEL_PAVE[k]) pave++;
+      }
+      if (!isl && walk < SHEL.WALK_MIN * NX * NZ) return null;
+      const dist = (px, pz) => { const dx = px - cx, dz = pz - cz, lx = dx * c - dz * s, lz = dx * s + dz * c; return Math.hypot(Math.max(Math.abs(lx) - HX, 0), Math.max(Math.abs(lz) - HZ, 0)); };
+      // hard cells near the roof (cell centres, as the check measures the kerb), and water further off (quay posts)
+      const R = ex + 0.5, i0 = Math.floor((cx - R - g.x0) / 0.5), i1 = Math.floor((cx + R - g.x0) / 0.5), j0 = Math.floor((cz - R - g.z0) / 0.5), j1 = Math.floor((cz + R - g.z0) / 0.5);
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const k = i < 0 || j < 0 || i >= g.w || j >= g.h ? 255 : g.a[j * g.w + i];
+        if (!SHEL_HARD[k]) continue;
+        const d = dist(g.x0 + (i + 0.5) * 0.5, g.z0 + (j + 0.5) * 0.5);
+        if (d < CL || (d < SHEL.QUAY && (k === C.WATER || k === C.SEA))) return null;
+      }
+      for (let i = 0; i < posts.length; i += 3) if (Math.abs(posts[i] - cx) < 3 && Math.abs(posts[i + 1] - cz) < 3 && dist(posts[i], posts[i + 1]) < posts[i + 2]) return null;
+      for (let i = 0; i < near.length; i += 2) if (Math.abs(near[i] - cx) < 4 && Math.abs(near[i + 1] - cz) < 4 && dist(near[i], near[i + 1]) < SHEL.TREE) return null;
+      for (let i = 0; i < others.length; i += 3) if (Math.hypot(others[i] - cx, others[i + 1] - cz) < others[i + 2] + 3 && dist(others[i], others[i + 1]) < others[i + 2]) return null;
+      for (const q of placed) if (Math.hypot(q.x - cx, q.z - cz) < SHEL.PAIR) return null;
+      for (const b of bars) {
+        const a = b.a;
+        for (let i = 0; i + 3 < a.length; i += 2) {
+          if (Math.min(a[i], a[i + 2]) > cx + 4 || Math.max(a[i], a[i + 2]) < cx - 4 || Math.min(a[i + 1], a[i + 3]) > cz + 4 || Math.max(a[i + 1], a[i + 3]) < cz - 4) continue;
+          const dx = a[i + 2] - a[i], dz = a[i + 3] - a[i + 1], m = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.2));
+          for (let q = 0; q <= m; q++) if (dist(a[i] + (dx * q) / m, a[i + 1] + (dz * q) / m) < b.r) return null;
+        }
+      }
+      for (const q of rings) {
+        if (q.x1 < cx - 3 || q.x0 > cx + 3 || q.z1 < cz - 3 || q.z0 > cz + 3) continue;
+        for (let i = 0; i < NX; i += 2) for (let j = 0; j < NZ; j += 2) {
+          const lx = -HX + (i + 0.5) * STEP, lz = -HZ + (j + 0.5) * STEP;
+          if (inFlat(cx + lx * c + lz * s, cz - lx * s + lz * c, q.f)) return null;
+        }
+      }
+      return pave / (NX * NZ);
+    };
+    const own = [];
+    for (const L of lines) { if (L.cls === 1 || L.cls === 8) continue; const q = project(L, rx, rz); if (q && q.d <= SHEL.REACH) own.push({ L, ...q }); }
+    own.sort((p, q) => p.d - q.d);
+    // every candidate with its cost before the ground is looked at (the ground can only add to it), cheapest first
+    const cands = [];
+    for (const q of own.slice(0, SHEL.LINES)) {
+      const vv = (rx - q.x) * -q.tz + (rz - q.z) * q.tx; // which side of the line the node lies on
+      for (const side of [1, -1]) {
+        const pref = Math.abs(vv) < 1 || Math.sign(vv) === side ? 0 : SHEL.SIDE;
+        for (let k = 0; k <= (2 * SHEL.ALONG) / SHEL.ALONG_STEP; k++) {
+          const along = (k & 1 ? 1 : -1) * Math.ceil(k / 2) * SHEL.ALONG_STEP, P = pointAt(q.L, q.s + along);
+          if (!P) continue;
+          const sx = -P.tz * side, sz = P.tx * side;
+          for (let gi = 0; SHEL.GAP_MIN + gi * SHEL.GAP_STEP <= SHEL.GAP_MAX + 1e-9; gi++) {
+            const gap = SHEL.GAP_MIN + gi * SHEL.GAP_STEP, dd = q.L.hw + gap + HZ, cx = P.x + sx * dd, cz = P.z + sz * dd, move = Math.hypot(cx - rx, cz - rz);
+            if (move <= SHEL.MOVE) cands.push({ cost0: move + pref + SHEL.GAP_COST * gap, cx, cz, sx, sz, P, q, move, gap, n: cands.length });
+          }
+        }
+      }
+    }
+    cands.sort((p, q) => p.cost0 - q.cost0 || p.n - q.n);
+    let best = null;
+    for (const k of cands) {
+      if (best && k.cost0 >= best.cost) break;
+      const { cx, cz, sx, sz, P, q } = k, rot = Math.atan2(-sx, -sz);
+      const pave = fit(cx, cz, Math.cos(rot), Math.sin(rot));
+      if (pave === null) continue;
+      const cost = k.cost0 + SHEL.LAND * (1 - pave);
+      if (best && cost >= best.cost) continue;
+      // the line nearest the roof must be the one it faces, or run alongside it in front of the open side
+      const nl = nearestLine(cx, cz);
+      if (nl && nl.L !== q.L) {
+        const par = Math.abs(nl.tx * P.tx + nl.tz * P.tz) >= Math.cos((SHEL.PARALLEL * Math.PI) / 180);
+        if (!par || -sx * (nl.x - cx) - sz * (nl.z - cz) <= 0) continue;
+      }
+      best = { cost, x: cx, z: cz, rot, nx: -sx, nz: -sz, move: k.move, gap: k.gap, pave, line: q.L.rail ? 'rail' : 'road', cls: q.L.cls };
+    }
+    // no place beside a line: an island platform between two tracks, if the strip between them is wide enough
+    const pair0 = placed.find((p) => Math.hypot(p.rx - rx, p.rz - rz) < SHEL.PAIR);
+    if (!best && !pair0) {
+      const rl = own.filter((q) => q.L.rail && q.d <= SHEL.ISLAND.REACH);
+      for (let a = 0; a < rl.length && !best; a++) for (let b = 0; b < rl.length && !best; b++) {
+        const A = rl[a], B = rl[b];
+        if (A.L === B.L || Math.abs(A.tx * B.tx + A.tz * B.tz) < Math.cos((SHEL.PARALLEL * Math.PI) / 180)) continue;
+        // the node between the two (a tram stop's node lies on its own track: up to 1 m outside A counts)
+        const bx = B.x - A.x, bz = B.z - A.z, bl = Math.hypot(bx, bz) || 1;
+        if ((bx * (rx - A.x) + bz * (rz - A.z)) / bl < -1 || (B.x - rx) * bx + (B.z - rz) * bz <= 0) continue;
+        if (A.d > B.d) continue; // A: the nearer track, the one it faces
+        for (let k = 0; k <= (2 * SHEL.ALONG) / SHEL.ALONG_STEP && !best; k++) {
+          const along = (k & 1 ? 1 : -1) * Math.ceil(k / 2) * SHEL.ALONG_STEP, P = pointAt(A.L, A.s + along);
+          if (!P) continue;
+          const toB = project(B.L, P.x, P.z);
+          if (!toB) continue;
+          let sx = toB.x - P.x, sz = toB.z - P.z; const w = Math.hypot(sx, sz);
+          if (w < 2 * SHEL.ISLAND.TRACK + 2 * HZ) continue;
+          sx /= w; sz /= w;
+          const dd = SHEL.ISLAND.TRACK + HZ, cx = P.x + sx * dd, cz = P.z + sz * dd, move = Math.hypot(cx - rx, cz - rz);
+          if (move > SHEL.MOVE) continue;
+          const toB2 = project(B.L, cx, cz);
+          if (!toB2 || toB2.d < SHEL.ISLAND.TRACK + HZ - 1e-6) continue;
+          const rot = Math.atan2(-sx, -sz), pave = fit(cx, cz, Math.cos(rot), Math.sin(rot), true);
+          if (pave === null) continue;
+          const nl = nearestLine(cx, cz);
+          if (nl && nl.L !== A.L && nl.L !== B.L && Math.abs(nl.tx * P.tx + nl.tz * P.tz) < Math.cos((SHEL.PARALLEL * Math.PI) / 180)) continue;
+          best = { cost: move, x: cx, z: cz, rot, nx: -sx, nz: -sz, move, gap: SHEL.ISLAND.TRACK - A.L.hw, pave, line: 'rail', cls: A.L.cls, island: +w.toFixed(2) };
+        }
+      }
+    }
+    const pair = pair0;
+    if (pair && (!best || best.nx * pair.nx + best.nz * pair.nz > 0)) { out.set(fi, { drop: 'double', of: pair.fi, rx, rz }); return; }
+    if (!best) { out.set(fi, { drop: 'noPlace', rx, rz }); return; }
+    placed.push({ x: best.x, z: best.z, nx: best.nx, nz: best.nz, rx, rz, fi });
+    out.set(fi, { x: best.x, z: best.z, rot: best.rot, rx, rz, move: best.move, gap: best.gap, pave: best.pave, line: best.line, cls: best.cls, pairOf: pair ? pair.fi : undefined, island: best.island });
+  };
+  for (let fi = 0; fi < feats.length; fi++) if (feats[fi][0] === 10) { yield; oneShelter(feats[fi], fi); }
 }
 // How far each kind of ground stands above the road surface, in metres. Pavements sit on kerbs, grass and
 // woodland lie higher and uneven, dunes roll: the ground is a stepped surface, not one flat sheet.
@@ -1114,7 +1647,7 @@ STEP[C.FARM] = 0.16; ROUGH[C.FARM] = 0.1;
 const LOWLY = new Uint8Array(256); // surfaces that lie at road level (they get a dark gutter line along a kerb)
 for (let c = 0; c < 256; c++) LOWLY[c] = STEP[c] < 0.06 ? 1 : 0;
 
-function groundTexture(grid) {
+function* groundTextureJob(grid) {
   const w = grid.w, h = grid.h, a = grid.a, cell = grid.cell, data = new Uint8Array(w * h * 4);
   // soft shade on the ground around buildings: how much building lies within about 1.7 m
   const rad = Math.max(1, Math.round(1.7 / cell)), full = (2 * rad + 1) ** 2, row = new Uint16Array(w * h), occ = new Uint16Array(w * h);
@@ -1137,6 +1670,7 @@ function groundTexture(grid) {
   }
   for (let j = 0, o = 0; j < h; j++) {
     const bz = Math.floor(j * cell);
+    if (j && !(j & 63)) yield;
     for (let i = 0; i < w; i++, o += 4) {
       const q = j * w + i, k0 = a[q], p = LUT[k0] || LUT[0], bx = Math.floor(i * cell);
       let alt = false;
@@ -1207,8 +1741,10 @@ function poolPatch(mat, pool, k) {
  * its texture (kerbs, verges and rough ground are real steps), the water surface lying lower, and walls along
  * every shore. `mt` turns grid coords into map metres. Leaves `grid.off` (height of every cell above the terrain).
  */
-function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
-  const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell, tex = groundTexture(grid), meshes = [], pool = poolTexture(lamps);
+function* buildGroundJob(city, grid, { mt, gs = 4, lamps = null }) {
+  const { x0, z0, w, h, cell, a } = grid, W = w * cell, H = h * cell;
+  const tex = yield* groundTextureJob(grid), meshes = [], pool = poolTexture(lamps);
+  yield;
   const n = Math.max(1, Math.round(gs / cell)), nbx = Math.ceil(w / n), nbz = Math.ceil(h / n), lw = nbx + 1;
   // terrain heights on the block lattice; inside a block the ground is interpolated, so pieces meet without cracks
   const lat = new Float32Array(lw * (nbz + 1));
@@ -1247,7 +1783,9 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
       tri(v0, false);
     };
     const used = new Uint8Array(n * n);
-    for (let bj = 0; bj < nbz; bj++) for (let bi = 0; bi < nbx; bi++) {
+    for (let bj = 0; bj < nbz; bj++) {
+    if (bj && !(bj & 15)) yield;
+    for (let bi = 0; bi < nbx; bi++) {
       const i0 = bi * n, j0 = bj * n, i1 = Math.min(w, i0 + n), j1 = Math.min(h, j0 + n), bw = i1 - i0, bh = j1 - j0, k = bj * lw + bi;
       // the block's slope gives its top faces their shading
       let nx = -((lat[k + 1] - lat[k]) + (lat[k + lw + 1] - lat[k + lw])) / (2 * bw * cell), nz = -((lat[k + lw] - lat[k]) + (lat[k + lw + 1] - lat[k + 1])) / (2 * bh * cell), ny = 1;
@@ -1269,6 +1807,7 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
         for (let y = jj; y < y1; y++) for (let q = ii; q < x1; q++) used[y * n + q] = 1;
         top(i0 + ii, j0 + jj, i0 + x1, j0 + y1, o, nx, ny, nz);
       }
+    }
     }
     // the risers: a vertical face wherever two neighbouring cells of land differ in height
     const riserX = (i, ja, jb, oL, oR) => {
@@ -1293,6 +1832,7 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
     };
     for (let i = 1; i < w; i++) {
       let j0 = -1, a0 = 0, b0 = 0;
+      if (!(i & 127)) yield;
       for (let j = 0; j <= h; j++) {
         let oL = 0, oR = 0, edge = false;
         if (j < h) { const q = j * w + i; if (!WET[a[q - 1]] && !WET[a[q]]) { oL = off[q - 1]; oR = off[q]; edge = Math.abs(oL - oR) > 0.012; } }
@@ -1302,6 +1842,7 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
     }
     for (let j = 1; j < h; j++) {
       let i0 = -1, a0 = 0, b0 = 0;
+      if (!(j & 127)) yield;
       for (let i = 0; i <= w; i++) {
         let oU = 0, oD = 0, edge = false;
         if (i < w) { const q = j * w + i; if (!WET[a[q - w]] && !WET[a[q]]) { oU = off[q - w]; oD = off[q]; edge = Math.abs(oU - oD) > 0.012; } }
@@ -1321,6 +1862,7 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
     land.renderOrder = -2;
     meshes.push(land);
   }
+  yield;
   // where is the water?
   const ws = 8, cx = Math.ceil(W / ws), cz = Math.ceil(H / ws), wet = new Uint8Array(cx * cz);
   let any = false;
@@ -1378,6 +1920,7 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
     const tone = (land) => 1 + BANK[land];
     for (let i = 1; i < w; i++) {
       let j0 = -1, g0 = 0;
+      if (!(i & 127)) yield;
       for (let j = 0; j <= h; j++) {
         let g = 0;
         if (j < h) { const l = WET[a[j * w + i - 1]], r = WET[a[j * w + i]]; if (l !== r) g = (l ? 1 : -1) * tone(a[j * w + (l ? i : i - 1)]); }
@@ -1387,6 +1930,7 @@ function buildGround(city, grid, { mt, gs = 4, lamps = null }) {
     }
     for (let j = 1; j < h; j++) {
       let i0 = -1, g0 = 0;
+      if (!(j & 127)) yield;
       for (let i = 0; i <= w; i++) {
         let g = 0;
         if (i < w) { const u = WET[a[(j - 1) * w + i]], d = WET[a[j * w + i]]; if (u !== d) g = (u ? 1 : -1) * tone(a[(u ? j : j - 1) * w + i]); }
@@ -1454,10 +1998,30 @@ function treeMesh(pts, rnd, cap, yAt, mat = CUT.solid, depth = CUT.depth, far = 
  * st: street properties; geometry: its MultiLineString coordinates (lon/lat).
  * Returns the scene group plus everything the stage and the gags need to play on it.
  */
+// Hand the main thread back and continue as soon as it is free: scheduler.yield where it exists, else a MessageChannel message
+// (a setTimeout(0) is clamped to 4 ms after a few nested ones), else setTimeout.
+let _mc = null;
+const _mq = [];
+function yieldTask() {
+  if (globalThis.scheduler && typeof globalThis.scheduler.yield === 'function') return globalThis.scheduler.yield();
+  if (typeof MessageChannel !== 'undefined') {
+    // (Node: the port holds the process only while a message is on its way)
+    if (!_mc) { _mc = new MessageChannel(); _mc.port1.onmessage = () => { const f = _mq.shift(); if (!_mq.length && _mc.port1.unref) _mc.port1.unref(); if (f) f(); }; }
+    if (_mc.port1.ref) _mc.port1.ref();
+    return new Promise((r) => { _mq.push(r); _mc.port2.postMessage(0); });
+  }
+  return new Promise((r) => setTimeout(r, 0));
+}
 export async function buildWorld(st, geometry, { night = false, seed = '', lite = false, soft = false } = {}) {
   const city = await loadCity(), ix = city.ix;
-  // a world built while another one is on screen takes breathers, so the picture keeps moving
-  const breathe = soft ? () => new Promise((r) => setTimeout(r, 12)) : () => null;
+  // Every open hands the main thread back at least every BREATHE_MS (pause), so the page keeps moving (the map's flight,
+  // input) while a street is built: the corridor tiles are built in slices (buildTileJob) with a pause whenever the budget
+  // is used up. A world built while another one is on screen (soft: a focus shift) also takes its breathers of 12 ms
+  // between the steps, as before.
+  let lastB = performance.now();
+  const rest = (ms) => (ms ? new Promise((r) => setTimeout(r, ms)) : yieldTask()).then(() => { lastB = performance.now(); });
+  const pause = () => (performance.now() - lastB < BREATHE_MS ? null : rest(soft ? 12 : 0));
+  const breathe = soft ? () => rest(12) : pause;
   const t0 = performance.now();
   const rnd = makeRng(hashStr((st.name || '') + '|' + (st.buurt || '') + '|' + seed));
   const f = frameFor(ix, geometry);
@@ -1510,6 +2074,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   // ---- decode the rest
   const roads = [], rails = [], pois = [];
   for (const [key, t] of tiles) {
+    { const p = pause(); if (p) await p; }
     if (!t) continue;
     const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
     const flat = (e, from) => {
@@ -1624,7 +2189,11 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
       corridor.push(key);
       const had = _built.get(key);
       if (had && had.lod === 0) continue;
-      ensureTile(city, key, t, 0, night, lite);
+      // (the same tile ensureTile builds, in slices, through the shared record: the streamer on screen may be building it too)
+      const J = tileJob(city, key, t, 0, night, lite);
+      J.world = true;
+      while (!stepJob(J, lastB + BREATHE_MS)) await rest(soft ? 12 : 0);
+      finishJob(J);
       await breathe();
     }
   }
@@ -1685,6 +2254,7 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
   {
     const cand = [];
     for (const [key, t] of tiles) {
+      { const p = pause(); if (p) await p; }
       if (!t) continue;
       const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
       const pt = (x, z) => f.S(ox + x, oy + TILE - z);
@@ -1740,6 +2310,8 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     /** Is a tree trunk within r metres of this scene position? */
     treeNear: (x, z, r = 1.2) => { const m = f.M(x, z); return treeNearMap(m[0], m[1], r); },
     anchors: { houses: [], shops: [], racks: [], benches: [], bins: [], parked: [], lamps: [], stalls: [], chimneys: [], atms: [], boxes: [] },
+    /** May something stand at a scene position, and how high is the ground there: see ground.js. */
+    ground: makeGround({ frame: f, city, tileAt: (mx, my) => _byNum.get(tileNum(Math.floor(mx / TILE), Math.floor(my / TILE))) || null, C, WET }),
     northAz: Math.atan2(-f.dy, f.dx),
     toScene: (lon, lat) => f.S((lon - ix.proj.lon0) * ix.proj.kx, (lat - ix.proj.lat0) * ix.proj.ky),
     toLngLat: (x, z) => { const m = f.M(x, z); return [ix.proj.lon0 + m[0] / ix.proj.kx, ix.proj.lat0 + m[1] / ix.proj.ky]; },
@@ -1773,6 +2345,8 @@ export async function buildWorld(st, geometry, { night = false, seed = '', lite 
     start: (n) => { if (W.stream) W.stream.rebake(n); },
     step: (ms, cap) => (W.stream ? W.stream.stageStep(ms, cap) : 0),
     commit: (n) => { if (W.stream) W.stream.commit(); W.night = n; },
+    /** Swap staged tiles in, nearest first, until `bytes` of new geometry went in this frame; returns how many are left. */
+    commitSome: (bytes, first) => (W.stream ? W.stream.commitSome(bytes, first) : 0),
   };
   W.ms = { fetch: Math.round(t1 - t0), build: Math.round(performance.now() - t1) };
   W.dispose = () => {
@@ -2000,6 +2574,7 @@ function dropTile(key) {
 export const tileOf = (key) => _built.get(key) || null;
 /** Let go of all but the `keep` most recently used tiles (called when the street view closes: the map page needs the memory). */
 export function trimTiles(keep) {
+  _handover = null; // the street was closed, not swapped: the next one starts from the sky, a few tiles per frame
   for (const key of [..._built.keys()]) { if (_built.size <= keep) break; dropTile(key); }
   // the tiles that stay give up their detailed house fronts: those are heavy, and are rebuilt in a moment when needed
   for (const c of _built.values()) if (c.cells) for (const cell of c.cells) { dropJob(cell); if (cell.detail) plainCell(c, cell); }
@@ -2032,22 +2607,97 @@ function classAt(mx, my) {
   const g = c.grid, i = Math.floor((mx - c.ox) / g.cell), j = Math.floor((c.oy + TILE - my) / g.cell);
   return i >= 0 && j >= 0 && i < g.w && j < g.h ? g.a[j * g.w + i] : 255;
 }
+// The free camera's cutaway follows what the camera looks at, not which street happens to be open: its strength depends on how far
+// the target is from the nearest street surface of any kind (carriageway, cycle path or lane, pavement, pedestrian street, square),
+// read from the ground classes of the tiles (classAt). Footpaths and dirt tracks do not count (they run through parks), nor parking.
+const STREET_CLS = new Uint8Array(256);
+for (const k of [C.ASPHALT, C.KLINKER, C.SERVICE, C.CYCLE, C.PED, C.WALK, C.CURB, C.MARK, C.BIKELANE, C.PLAZA]) STREET_CLS[k] = 1;
+const STREET = { MAX: 46, STEP: 2, ARC: 3, REUSE: 1 }; // m: search radius (the cutaway is gone beyond it), ring step, spacing on a ring, target move before a new search
+const _street = { mx: NaN, my: NaN, d: Infinity };
+/** Distance (m, in STREET.STEP steps) from the scene point (x, z) to the nearest street surface, Infinity beyond STREET.MAX. No allocation. */
+export function streetNear(W, x, z) {
+  const f = W.frame, mx = f.ox + x * f.dx + z * f.dy, my = f.oy + x * f.dy - z * f.dx;
+  if (Math.abs(mx - _street.mx) < STREET.REUSE && Math.abs(my - _street.my) < STREET.REUSE) return _street.d;
+  _street.mx = mx; _street.my = my; _street.d = Infinity;
+  for (let r = 0; r <= STREET.MAX; r += STREET.STEP) {
+    const n = r === 0 ? 1 : Math.max(6, Math.ceil((2 * Math.PI * r) / STREET.ARC)), a0 = (r / STREET.STEP) * 0.5;
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i * 2 * Math.PI) / n;
+      if (STREET_CLS[classAt(mx + r * Math.cos(a), my + r * Math.sin(a))]) { _street.d = r; return r; }
+    }
+  }
+  return Infinity;
+}
 /**
  * One 256 m tile, in its own coordinates. Three levels of detail, all painted and coloured by the same rules:
  * 0 close (half-metre ground with kerbs and road markings), 1 normal (1 m), 2 far (2 m, plain roofs, simple trees).
  */
-function buildTile(city, key, t, night, lite, lod = 1) {
+/** One tile, built in one go (buildTileJob run to the end): every caller that does not slice, the Node checks, the snapshot. */
+function buildTile(city, key, t, night, lite, lod = 1) { return runJob(buildTileJob(city, key, t, night, lite, lod)); }
+/** Run a job (a generator that only hands the frame back) to its end. */
+function runJob(it) {
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+const SLICED = { sliced: true }; // (buildTileJob's option for the callers that step it within a time budget)
+// A rebaked tile (buildTileJob with opt.base) shares the parts that are the same by day and by night with the tile it
+// replaces: these count their owners, and the last one frees them (dispose).
+const _owners = new WeakMap();
+const own = (x) => { if (x) _owners.set(x, (_owners.get(x) || 1) + 1); };
+const letGo = (x) => { const n = _owners.get(x) || 1; if (n > 1) { _owners.set(x, n - 1); return false; } _owners.delete(x); return true; };
+/**
+ * A mesh, an instanced mesh or a group of them from `base`, again: a new object on the same geometry and material (counted:
+ * own), its own copy of the instance data, the flags as built (visible), the transform only where one was set (a copy of a
+ * default one would turn its zero rotations into -0).
+ */
+function again(o) {
+  let c;
+  if (o.isInstancedMesh) {
+    c = new THREE.InstancedMesh(o.geometry, o.material, o.count);
+    c.instanceMatrix.copy(o.instanceMatrix);
+    if (o.instanceColor) c.instanceColor = o.instanceColor.clone();
+    if (o.boundingSphere) c.boundingSphere = o.boundingSphere.clone();
+    if (o.boundingBox) c.boundingBox = o.boundingBox.clone();
+  } else if (o.isMesh) c = new THREE.Mesh(o.geometry, o.material);
+  else c = new THREE.Group();
+  c.name = o.name; c.castShadow = o.castShadow; c.receiveShadow = o.receiveShadow; c.renderOrder = o.renderOrder; c.frustumCulled = o.frustumCulled;
+  c.matrixAutoUpdate = o.matrixAutoUpdate; c.layers.mask = o.layers.mask; c.userData = JSON.parse(JSON.stringify(o.userData));
+  if (o.customDepthMaterial) c.customDepthMaterial = o.customDepthMaterial;
+  if (o.position.x || o.position.y || o.position.z) c.position.copy(o.position);
+  if (o.quaternion.x || o.quaternion.y || o.quaternion.z || o.quaternion.w !== 1) c.quaternion.copy(o.quaternion);
+  if (o.scale.x !== 1 || o.scale.y !== 1 || o.scale.z !== 1) c.scale.copy(o.scale);
+  if (o.geometry) own(o.geometry);
+  if (o.material && o.material.map) own(o.material);
+  for (const k of o.children) c.add(again(k));
+  return c;
+}
+/**
+ * buildTile as a job: it hands the frame back (a bare `yield`) between its steps (every 16 buildings and parts, every
+ * shelter and feature, inside the ground, the furniture with `opt.sliced`, every 4 cells). What it builds does not depend
+ * on where it is cut: no step reads a clock, and nothing it reads is changed by another tile's build or by the frame.
+ */
+function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
   const rnd = makeRng(hashStr('tile|' + key));
   const g = new THREE.Group();
-  const c = [0.5, 1, 2][lod] * (lite ? 2 : 1), n = Math.round(TILE / c), grid = new Grid(0, 0, n, n, c);
+  // opt.base: the same tile (key, data, level, phone or not) built for the other light. Only what differs by day and by night is
+  // built again: the typed buildings, parts, features and barriers (vx/glx) and the furniture. The ground, the grid, the
+  // lamps, the trees, the ordinary buildings and the plain street-front cells are the same, byte for byte, and are taken
+  // over as new objects on base's geometry (see again); the dice are drawn in the same order, so what is built comes out as
+  // a fresh build would (Node: rebake-proof.mjs).
+  const B = opt && opt.base && opt.base.parts && opt.base.key === key && opt.base.src === t && opt.base.lod === lod && opt.base.lite === !!lite && !opt.base.disposed ? opt.base : null;
+  // with base: a placeholder in the child order now, base's object taken over at the very end (see the last step)
+  const slots = [], takeOver = (src, set) => { const mk = new THREE.Object3D(); g.add(mk); slots.push([mk, src, set]); };
+  const c = [0.5, 1, 2][lod] * (lite ? 2 : 1), n = Math.round(TILE / c), grid = B ? B.grid : new Grid(0, 0, n, n, c);
   // tile data is in decimetres from the tile's south-west corner; the tile's own coordinates run east and south from its north-west corner
   const loc = (e, from) => { const a = new Float32Array(e.length - from); for (let i = from; i + 1 < e.length; i += 2) { a[i - from] = e[i] / 10; a[i - from + 1] = TILE - e[i + 1] / 10; } return a; };
   const mt = (gx, gz) => [ox + gx, oy + TILE - gz];
   const gnd = (t.g || []).map((e) => ({ cls: e[0], area: e[1], rings: e.slice(2).map((r) => loc(r, 0)) }));
   const roads = (t.r || []).map((e) => ({ cls: e[0], w: e[1] / 10, name: e[2] >= 0 && t.n ? t.n[e[2]] : '', flags: e[3], a: loc(e, 4) }));
   const rails = (t.l || []).map((e) => ({ kind: e[0], flags: e[1], a: loc(e, 2) }));
-  paintBase(city, grid, mt, gnd, roads);
+  if (!B) paintBase(city, grid, mt, gnd, roads);
+  yield;
   const v = new Vox(rnd.int(1, 9999), true), gl = new Vox(rnd.int(1, 9999), true), flats = [];
   // buildings that are something in particular (a church, a fuel station, a landmark with its own shape) and the things
   // that stand between buildings (walls, masts, fountains) go into a mesh of their own: they are never handed over to a
@@ -2057,7 +2707,9 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   // store blocks (storeFronts) are plain blocks at their real height from afar and shop fronts from near; a retail building
   // that found no street to front on stays the supermarket it was. Asked at every level of detail, so nothing changes shape.
   const stores = t.bt && t.bt.some((x, bi) => isStore(t, bi)) ? F || frontsOf(key, t) : null;
-  (t.b || []).forEach((e, bi) => {
+  const occB = [], plainLater = [], seenCell = B ? new Set() : null;
+  let mainCells = 0;
+  const oneBuilding = (e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
     for (let i = 0; i + 1 < flat.length; i += 2) ring.push([flat[i], flat[i + 1]]);
@@ -2068,7 +2720,17 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     b.o = obbOf(ring);
     b.area = ringArea(ring);
     b.rects = boxy(b.o) ? [{ x: 0, z: 0, w: b.o.w, d: b.o.d }] : rectsOf(ring, b.o);
-    const look = lookOf(key, bi, b), type = t.bt ? t.bt[bi] : 0;
+    occB.push({ bi, ring, o: b.o, rects: b.rects }); // (as drawn, for the ground raster: ground.js)
+    const look = lookOf(key, bi, b), type = typeOf(t, bi), mapped = t.bt ? t.bt[bi] | 0 : 0;
+    if (!sp && mapped !== type && TYPED.has(mapped)) {
+      // typed as a tower or a windmill but not shaped like one (landmarks.js typeOf): an ordinary building, drawn after all
+      // the others (plainLater). Its old drawer still runs here, into throwaway builders that start from the state of
+      // vx/glx and hand it back (the jitter dice, the tag, the frame), so everything drawn into vx/glx after it comes out
+      // as it did; it gets dice of its own (a fresh lookOf), so this building's own look is the one an untyped one gets
+      shadowTyped(vx, glx, b, mapped, lookOf(key, bi, b), night, lod);
+      if (!B) plainLater.push({ b, look, bi });
+      return;
+    }
     if (sp || (type && TYPED.has(type) && !(stores && isStore(t, bi) && stores.byB.has(bi)))) {
       const n0 = vx.n, g0 = glx.n;
       let done = false;
@@ -2082,16 +2744,29 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     // buildings with a street front go into a mesh per 64 m cell: near the camera that cell swaps to the detailed fronts
     if (cellVox && F.byB.has(bi)) {
       const ci = cellOf(b.o.cx, b.o.cz);
+      if (B) { if (!seenCell.has(ci)) { seenCell.add(ci); rnd.int(1, 9999); rnd.int(1, 9999); } return; } // (its cell is base's: the cell's two dice only)
       let cv = cellVox.get(ci);
-      if (!cv) cellVox.set(ci, (cv = { v: new Vox(rnd.int(1, 9999), true), gl: new Vox(rnd.int(1, 9999), true) }));
+      if (!cv) { cellVox.set(ci, (cv = { v: new Vox(rnd.int(1, 9999), true), gl: new Vox(rnd.int(1, 9999), true) })); mainCells++; }
       drawGeneric(cv.v, cv.gl, b, look, night, false);
       return;
     }
-    drawGeneric(v, gl, b, look, night, lod === 2);
-  });
+    if (!B) drawGeneric(v, gl, b, look, night, lod === 2);
+  };
+  { const TB = t.b || []; for (let bi = 0; bi < TB.length; bi++) { if (bi && !(bi & 15)) yield; oneBuilding(TB[bi], bi); } }
+  // the buildings typed as a tower or a windmill that are not one, as ordinary buildings: after all the others, so no
+  // builder's dice move for those; a street-front cell that only such a building needs gets dice from its place
+  for (const q of plainLater) {
+    if (cellVox && F.byB.has(q.bi)) {
+      const ci = cellOf(q.b.o.cx, q.b.o.cz);
+      let cv = cellVox.get(ci);
+      if (!cv) cellVox.set(ci, (cv = { v: new Vox((hashStr('cell|' + key + '|' + ci) % 9999) + 1, true), gl: new Vox((hashStr('cellg|' + key + '|' + ci) % 9999) + 1, true) }));
+      drawGeneric(cv.v, cv.gl, q.b, q.look, night, false);
+    } else drawGeneric(v, gl, q.b, q.look, night, lod === 2);
+  }
+  yield;
   const xr = makeRng(hashStr('extras|' + key));
   const hidden = SPECIAL_PARTS[key];
-  (t.q || []).forEach((e, qi) => {
+  const onePart = (e, qi) => {
     // a landmark's own shape, part by part (towers, wings, domes), from the map's 3D building parts
     if (hidden && hidden.includes(qi)) return; // under a hand-made landmark
     const ring = [];
@@ -2102,39 +2777,71 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     const n0 = vx.n, g0 = glx.n;
     try { drawParts(vx, glx, [{ ring, h: e[0] / 10, min: e[1] / 10, roof: e[2], roofH: e[3] / 10, wall: e[4], roofCol: e[5] }], { wall: '#b9a58f', roof: '#5d646d' }, cx, cz, e[0] / 10, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
-  });
-  for (const e of t.f || []) {
+  };
+  { const TQ = t.q || []; for (let qi = 0; qi < TQ.length; qi++) { if (qi && !(qi & 15)) yield; onePart(TQ[qi], qi); } }
+  // the lamps of this tile: the crowd stands its posts there and the ground gets their pools of light (a pure function of
+  // the tile's data, worked out here because the shelters keep clear of the posts)
+  const lamps = B ? B.lamps : lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
+  // the map's stop shelters: where each stands and which way it looks (the same for furnish.js below; see shelterPlaces)
+  yield;
+  const shel = lod < 2 ? yield* shelterJob(city, key, t, gnd, roads, rails, flats, mt, lamps) : null;
+  const oneFeature = (e, fi) => {
     // free-standing things: fuel station canopies, windmills, masts, statues, fountains, shelters
-    if (lod === 2 && !(e[0] >= 2 && e[0] <= 9)) continue; // from far away only the tall ones matter (statues and fountains as a few boxes)
+    if (lod === 2 && !(e[0] >= 2 && e[0] <= 9)) return; // from far away only the tall ones matter (statues and fountains as a few boxes)
+    const sp = e[0] === 10 ? shel.get(fi) : null;
+    const old = { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180, lod };
+    // a feature left out is still drawn as before, into throwaway builders that take over vx/glx's state and hand it back
+    // (the jitter dice of a lighthouse's tower, the tag and frame), so what vx/glx draw after it comes out as it did
+    const skip = () => shadowDraw(vx, glx, (dv, dg) => { try { drawFeature(dv, dg, old, xr, night); } catch (err) { /* as below */ } });
+    if (sp && sp.drop) return skip(); // no place for it beside its street or track: left out
+    const host = e[0] === 3 || e[0] === 5 || e[0] === 6 ? hostOf(t, flats, e[1] / 10, TILE - e[2] / 10) : null, extra = {};
+    if (host) {
+      // a mast in a plain building is an antenna on its roof; in a building with a shape of its own (a church, a school, a
+      // stadium, a landmark, one drawn from its parts) it is left out; a hut of a few square metres at its foot is its
+      // equipment cabin, and the mast stands free. A lighthouse in a building is left out. A chimney with no mapped
+      // height rises above the building it stands in.
+      if (e[0] === 5 && !(host.area < MAST_HUT.AREA && host.h < MAST_HUT.H)) {
+        if (typeOf(t, host.bi) || specialOf(key, t, host.bi) || (t.bp && t.bp[host.bi])) return skip();
+        extra.roof = host.h;
+      }
+      if (e[0] === 3) return skip();
+      if (e[0] === 6) extra.base = host.h;
+    }
     const n0 = vx.n, g0 = glx.n;
     // a compass direction (degrees clockwise from north) as a turn of the builder's frame, in the tile's east/south axes
-    try { drawFeature(vx, glx, { type: e[0], x: e[1] / 10, z: TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: Math.PI / 2 - (e[3] * Math.PI) / 180, lod, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
+    try { drawFeature(vx, glx, { type: e[0], x: sp ? sp.x : e[1] / 10, z: sp ? sp.z : TILE - e[2] / 10, a: e[3], b: e[4] / 10, c: e[5] / 10, rot: sp ? sp.rot : Math.PI / 2 - (e[3] * Math.PI) / 180, lod, ...extra, face: e[0] === 8 || e[0] === 9 ? faceNearestRoad(roads, e[1] / 10, TILE - e[2] / 10) ?? undefined : undefined }, xr, night); } catch (err) { vx.n = n0; glx.n = g0; }
     vx.setT(); glx.setT(); vx.setW(0);
-  }
+  };
+  { const TF = t.f || []; for (let fi = 0; fi < TF.length; fi++) { if (fi && !(fi & 7)) yield; oneFeature(TF[fi], fi); } }
   if (lod < 2 && t.x && t.x.length) {
     const n0 = vx.n;
     try { drawBarriers(vx, t.x.map((e) => ({ kind: e[0], h: e[1] / 10, a: loc(e, 2) })), xr); } catch (err) { vx.n = n0; }
     vx.setT(); vx.setW(0);
   }
-  paintTop(grid, rails, flats);
-  // the lamps of this tile: the crowd stands its posts there and the ground gets their pools of light
-  const lamps = lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
-  const G = buildGround(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
-  g.add(...G.meshes);
+  yield;
+  if (!B) paintTop(grid, rails, flats);
+  const G = B ? B.parts.G : yield* buildGroundJob(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
+  yield;
+  if (B) { for (const m of G.meshes) takeOver(m); } else g.add(...G.meshes);
   v.setT(); gl.setT();
   // buildings are lifted onto the terrain by the shader and may stick out of the tile: give them a generous bounding sphere
   const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(TILE / 2, 30, TILE / 2), 240); return m; };
-  if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add(m); }
-  if (!gl.empty) g.add(roomy(new THREE.Mesh(gl.geometry(), CUTT.glow)));
+  let vM = null, glM = null;
+  if (B) { if (B.parts.v) takeOver(B.parts.v, (q) => { vM = q; }); if (B.parts.gl) takeOver(B.parts.gl, (q) => { glM = q; }); }
+  else {
+    if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add((vM = m)); }
+    if (!gl.empty) g.add((glM = roomy(new THREE.Mesh(gl.geometry(), CUTT.glow))));
+  }
   vx.setB(); glx.setB();
   if (!vx.empty) { const m = roomy(vx.mesh(CUT.solid)); m.customDepthMaterial = CUT.depth; g.add(m); }
   if (!glx.empty) g.add(roomy(new THREE.Mesh(glx.geometry(), CUT.glow)));
+  yield;
   // trees: the mapped ones, plus woods and a sprinkle on grass. Their own dice, so they stand the same at every level of detail
   const tr = makeRng(hashStr('trees|' + key));
-  const pts = [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
+  const pts = B ? B.trees : [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
   const push = (gx, gz, size) => { if (ok[grid.get(gx, gz)]) pts.push(gx, gz, size); };
-  if (t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, tr.range(1.35, 1.95));
-  for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
+  if (!B && t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, tr.range(1.35, 1.95));
+  if (!B) for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
     const jx = x + tr.range(-2.6, 2.6), jz = z + tr.range(-2.6, 2.6), cl = grid.get(jx, jz), r1 = tr(), size = tr();
     if (cl === C.FOREST) { if (r1 < 0.9) push(jx, jz, 1.7 + size * 0.9); }
     else if (cl === C.GRASS) { if (r1 < 0.07) push(jx, jz, 1.3 + size * 0.7); }
@@ -2144,14 +2851,17 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     const i = Math.min(grid.w - 1, Math.max(0, Math.floor(gx / c))), j = Math.min(grid.h - 1, Math.max(0, Math.floor(gz / c)));
     return city.landAt(ox + gx, oy + TILE - gz) + grid.off[j * grid.w + i];
   };
-  const trees = treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
-  if (trees) g.add(trees);
+  let trees = B ? null : treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
+  if (B) { if (B.parts.trees) takeOver(B.parts.trees, (q) => { trees = q; }); } else if (trees) g.add(trees);
+  yield;
   // street furniture: every street has it, placed by the same rules from the tile's own data (see furnish.js)
-  let props = null;
+  let props = null, tCells = null;
   if (lod === 0) {
     const fv = new Vox(rnd.int(1, 9999)), fgl = new Vox(rnd.int(1, 9999)), fg = new THREE.Group();
     try {
-      props = furnishTile({ key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite }).props || [];
+      const fo = { key, grid, C, roads, rails, tile: t, ps: t.ps, trees: pts, pois: t.p || [], yAt, v: fv, gl: fgl, group: fg, night, lite, shelters: shel, lamps };
+      const fr = opt && opt.sliced ? yield* furnishSteps(fo) : furnishTile(fo); // (the same furniture: furnishTile is furnishSteps run to the end)
+      props = fr.props || []; tCells = fr.cells || null;
       fv.setT(); fgl.setT();
       if (!fv.empty) g.add(fv.mesh());
       if (!fgl.empty) g.add(fgl.mesh(MAT.glow));
@@ -2160,7 +2870,9 @@ function buildTile(city, key, t, night, lite, lod = 1) {
   }
   // the cells of buildings with street fronts: their plain version now, the detailed one on demand
   const cells = [];
-  if (cellVox) for (const [ci, cv] of cellVox) {
+  if (B) for (const q of B.cells) { const cell = { ci: q.ci, cx: q.cx, cz: q.cz, plain: [], units: q.units, detail: null, job: null }; for (const m of q.plain) takeOver(m, (k) => cell.plain.push(k)); cells.push(cell); }
+  else if (cellVox) for (const [ci, cv] of cellVox) {
+    if (cells.length && !(cells.length & 3)) yield;
     cv.v.setT(); cv.gl.setT();
     const plain = [], ccx = ((ci % CELLS) + 0.5) * CELL, ccz = (Math.floor(ci / CELLS) + 0.5) * CELL;
     // a cell is small: give it its own bounding sphere, so cells out of view cost nothing
@@ -2169,19 +2881,35 @@ function buildTile(city, key, t, night, lite, lod = 1) {
     if (!cv.gl.empty) { const m = snug(new THREE.Mesh(cv.gl.geometry(), CUTT.glow)); g.add(m); plain.push(m); }
     cells.push({ ci, cx: ccx, cz: ccz, plain, units: F.units.filter((u) => u.ci === ci), detail: null, job: null });
   }
-  return {
-    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t,
+  yield;
+  // what stands on each ground cell (finest level only) and the buildings that reach into the neighbours: see ground.js
+  const O = lod === 0 ? buildOcc({ grid, C, buildings: occB, fronts: F, props, cells: tCells, trees: pts, lamps, barriers: t.x }) : null;
+  if (B) {
+    // after the last yield, in one go: what is taken over from base becomes this tile's (again: counted owners). A job dropped
+    // before this point owns nothing of base's. If base was freed meanwhile, the tile is built in full after all.
+    if (B.disposed) return yield* buildTileJob(city, key, t, night, lite, lod, opt && opt.sliced ? SLICED : null);
+    for (const [mk, src, set] of slots) { const q = again(src), i = g.children.indexOf(mk); g.children[i] = q; q.parent = g; mk.parent = null; if (set) set(q); }
+    own(G.tex); own(G.pool);
+  }
+  const res = {
+    occ: O ? O.occ : null, spill: O ? O.spill : spillOf(occB, F),
+    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t, lite: !!lite,
+    // what a rebake for the other light takes over (opt.base): the same objects by day and by night
+    parts: { G, v: vM, gl: glM, trees, mainCells: B ? B.parts.mainCells : mainCells },
     dispose() {
       for (const cell of cells) { dropJob(cell); if (cell.detail) for (const sg of cell.detail.signs) P.releaseSign(sg.m); }
+      // (a geometry, a textured material or a texture that a rebake shares is freed by its last owner)
       g.traverse((o) => {
-        if (o.geometry) o.geometry.dispose();
+        if (o.geometry && letGo(o.geometry)) o.geometry.dispose();
         if (o.isInstancedMesh) o.dispose();
-        if (o.material && o.material.map) o.material.dispose();
+        if (o.material && o.material.map && letGo(o.material)) o.material.dispose();
       });
-      G.tex.dispose();
-      if (G.pool) G.pool.dispose();
+      if (letGo(G.tex)) G.tex.dispose();
+      if (G.pool && letGo(G.pool)) G.pool.dispose();
+      res.disposed = true; // (a rebake job that takes over from this tile builds in full instead)
     },
   };
+  return res;
 }
 /** Stand a tile in a street's frame. */
 function placeTile(c, f) {
@@ -2191,6 +2919,7 @@ function placeTile(c, f) {
   c.g.updateMatrixWorld(true);
 }
 let _stream = null; // the streamer of the world on screen
+let _handover = null; // the keys a streamer had on screen when it was disposed (Streamer constructor, dispose, trimTiles)
 /** Tiles carry a few things that differ by night (lanterns): when night falls or lifts, start afresh. */
 function syncNight(night) {
   if (_builtNight === night || _builtNight === null && !_built.size) { _builtNight = night; return; }
@@ -2198,11 +2927,17 @@ function syncNight(night) {
   for (const k of [..._built.keys()]) dropTile(k);
   _builtNight = night;
 }
+/** A tile was registered: its ground raster and its neighbours' share the buildings that reach across the edge (ground.js). */
+const joinTile = (c) => joinOcc(c, (tx, ty) => _byNum.get(tileNum(tx, ty)) || null);
 /** Make sure a tile exists at `lod` or finer; a coarser one is replaced on the spot, also if it is on screen. */
 function ensureTile(city, key, t, lod, night, lite) {
   const old = _built.get(key);
   if (old && old.lod <= lod) return old;
-  const c = buildTile(city, key, t, night, lite, lod);
+  return installTile(key, buildTile(city, key, t, night, lite, lod));
+}
+/** Register a freshly built tile in place of the one in memory (on screen too): what ensureTile does once it has built it. */
+function installTile(key, c) {
+  const old = _built.get(key);
   let on = false;
   if (old) {
     on = !!_stream && !_stream.dead && _stream.live.get(key) === old;
@@ -2210,11 +2945,43 @@ function ensureTile(city, key, t, lod, night, lite) {
     if (on) { placeTile(c, _stream.W.frame); _stream.group.add(c.g); _stream.group.remove(old.g); _stream.live.set(key, c); }
     old.dispose();
   }
-  _built.set(key, c); _byNum.set(c.num, c);
+  _built.set(key, c); _byNum.set(c.num, c); joinTile(c);
   if (on && _stream.onTile) _stream.onTile(c, true); // (the crowd learns the furniture the finer tile brought; told once the new tile is the registered one)
   return c;
 }
 const WEIGHT = [4, 2, 0.5]; // what a tile of each level costs in memory, roughly
+// milliseconds of tile building per frame: what is left of FRAME_MS after the rest of the last frame (Streamer.frameOther,
+// measured by the stage), never more than SLICE_MS and never less than SLICE_MIN (so tiles still arrive on a slow device)
+const SLICE_MS = 9, SLICE_MIN = 2, FRAME_MS = 14;
+/**
+ * Tiles being built in slices, by key: one record per tile, shared by the streamer and a street's buildWorld (the corridor),
+ * so the same tile is never built twice at once. { key, lod, night, lite, t, it, done, value, installed, world }.
+ * A record that is not finished owns nothing (a fresh build: no base), so dropping one costs only the work done.
+ */
+const _jobs = new Map();
+function tileJob(city, key, t, lod, night, lite) {
+  let J = _jobs.get(key);
+  if (J && (J.night !== night || J.lite !== !!lite || J.lod > lod)) { _jobs.delete(key); J = null; } // (another light, or a finer level is wanted now)
+  if (!J) _jobs.set(key, (J = { key, lod, night, lite: !!lite, t, it: buildTileJob(city, key, t, night, lite, lod, SLICED), done: false, value: null, installed: null, world: false }));
+  return J;
+}
+/** Step a record until performance.now() reaches `until` (at least one step); true when it is done (J.value: the tile). */
+function stepJob(J, until) {
+  if (J.done) return true;
+  let r;
+  do r = J.it.next(); while (!r.done && performance.now() < until);
+  if (r.done) { J.done = true; J.value = r.value; if (_jobs.get(J.key) === J) _jobs.delete(J.key); }
+  return J.done;
+}
+/** Register a finished record's tile (once, by whichever builder finished it); null when it was not needed any more. */
+function finishJob(J) {
+  if (J.installed !== null) return J.installed || null;
+  const cur = _built.get(J.key);
+  if (J.night !== _builtNight || (cur && cur.lod <= J.lod)) { J.value.dispose(); J.installed = false; return null; }
+  return (J.installed = installTile(J.key, J.value));
+}
+// the longest stretch a street open keeps the main thread (buildWorld's pause)
+const BREATHE_MS = 8;
 
 class Streamer {
   constructor(W, city) {
@@ -2227,8 +2994,14 @@ class Streamer {
     this.budget = W.lite ? 44 : 230; this.rmax = W.lite ? 380 : 820; this.far = W.lite ? 900 : 2100;
     this.last = 0; this.dead = false; this.ms = 0; this.built = 0;
     this.staged = new Map(); this.target = null; this.busy = false; this.fm = [0, 0]; this.lazyT = 0; // busy: a rebake is waiting for its swap
+    // tile builds in slices (buildTileJob): the one the streamer is building, the rebake's per key, the stragglers' one
+    this.sjobs = new Map(); this.lazyJob = null;
+    this.frameOther = 4; // ms of the last frame that were not tile work (set by the stage)
     /** Called with (tile, true) when a tile's place comes on screen and (tile, false) when it leaves; also with (tile, true) when a finer build replaces the one on screen. */
     this.onTile = null;
+    // a focus shift (stage.show keep): the tiles that were on screen a moment ago come back in this street's first frame, not a few per
+    // frame (they are built and on the GPU already: placing them is all it takes), so no far tile shows as a plain block meanwhile
+    this.handover = _handover; _handover = null;
     _stream = this;
   }
   _mask(key, v) {
@@ -2252,6 +3025,8 @@ class Streamer {
     this._signs = null;
     if (c) { this.group.remove(c.g); this._mask(key, 0); if (this.onTile) this.onTile(c, false); }
   }
+  /** Milliseconds of tile building this frame may take (see SLICE_MS). */
+  sliceMs() { return Math.max(SLICE_MIN, Math.min(SLICE_MS, FRAME_MS - (this.frameOther || 0))); }
   /** x, z: what the camera looks at; dist: how far away it is; az: the side it stands on. */
   update(x, z, dist, az = 0, warm = false) {
     if (this.dead) return;
@@ -2279,11 +3054,18 @@ class Streamer {
       this.want = want.map((q) => q[1]);
     }
     // tiles that are already built come straight back, a few per frame so a street swap does not stutter
+    // (the tiles handed over from the street before come back all at once in the first frame, see the constructor)
     let back = 0;
+    const hand = this.handover;
     for (const key of this.want) {
-      if (back >= 6) break;
-      if (!this.live.has(key) && _built.has(key)) { this._attach(key, _built.get(key)); back++; }
+      if (back >= 6 && !hand) break;
+      if (this.live.has(key) || !_built.has(key)) continue;
+      const mine = hand !== null && hand.has(key);
+      if (back >= 6 && !mine) continue;
+      this._attach(key, _built.get(key));
+      if (!mine) back++;
     }
+    this.handover = null;
     // fetch what is missing, or too coarse for where the camera is now
     const needs = (key) => { const c = _built.get(key); return !c || c.lod > this.lodOf.get(key); };
     let flying = this.pending.size;
@@ -2298,26 +3080,32 @@ class Streamer {
         if (t) this.ready.set(key, t); else this.failed.set(key, performance.now());
       });
     }
-    // build: nearest first, a few milliseconds per frame, with a breather between frames
-    if (this.ready.size && now - this.last > 30) {
+    // build: nearest first, within a time budget per frame (sliceMs). A tile is built in slices (tileJob, shared with a street's
+    // buildWorld), so no frame carries a whole tile. Each frame the nearest wanted tile that is ready or under way goes first: a
+    // far build waits (where it stopped) while a nearer one is built; a build that is no longer wanted, or wanted finer now,
+    // is dropped (it owns nothing yet)
+    for (const [k, J] of _jobs) if (!J.world && (!this.lodOf.has(k) || J.lod > this.lodOf.get(k) || J.night !== _builtNight)) { _jobs.delete(k); if (this.lodOf.has(k) && !this.ready.has(k)) this.ready.set(k, J.t); }
+    const budget = this.sliceMs();
+    if (this.ready.size || _jobs.size) {
       let did = false;
       for (const key of this.want) {
-        const t = this.ready.get(key);
-        if (!t) continue;
+        if (performance.now() - now > budget) break;
+        let J = _jobs.get(key), t = this.ready.get(key);
+        if (!J && !t) continue;
+        if (!needs(key)) { this.ready.delete(key); if (J && !J.world) _jobs.delete(key); continue; }
         this.ready.delete(key);
-        if (!needs(key)) continue;
-        const was = _built.get(key);
-        try {
-          const c = ensureTile(this.city, key, t, this.lodOf.get(key), _builtNight, this.W.lite);
-          if (!was) this._attach(key, c);
-          this.built++;
-        } catch (e) { console.error('tile failed', key, e); this.failed.set(key, performance.now() + 1e7); }
+        J = tileJob(this.city, key, J ? J.t : t, this.lodOf.get(key), _builtNight, this.W.lite);
         did = true;
-        if (performance.now() - now > 7) break;
+        let done = false;
+        try { done = stepJob(J, now + budget); } catch (e) { console.error('tile failed', key, e); _jobs.delete(key); this.failed.set(key, performance.now() + 1e7); continue; }
+        if (!done) break; // (the rest next frame)
+        const was = _built.get(key);
+        try { const c = finishJob(J); if (c && !this.live.has(key) && (!was || was === c)) this._attach(key, c); if (c) this.built++; } catch (e) { console.error('tile failed', key, e); this.failed.set(key, performance.now() + 1e7); }
       }
-      if (!did) this.ready.clear(); // none of it is wanted any more
+      if (!did && !_jobs.size) this.ready.clear(); // none of it is wanted any more
       this.last = performance.now();
       this.ms = this.last - now;
+      this.tileMs = (this.tileMs || 0) + this.ms;
     }
     { const tm = f.M(x, z); this._detail(tm[0], tm[1], warm ? Math.min(dist, 140) : dist); }
     // too much in memory: let go of the farthest tiles that are not wanted right now
@@ -2396,6 +3184,7 @@ class Streamer {
   /** Start baking every tile on screen for `night`. Tiles that are not on screen are simply let go. */
   rebake(night) {
     this.target = night; _builtNight = night; this.busy = true;
+    this.sjobs.clear(); this.lazyJob = null; // (half-built tiles of the other light: dropped, nothing of them is on the GPU yet)
     for (const key of [..._built.keys()]) { const c = _built.get(key); if (c.night !== night && this.live.get(key) !== c) dropTile(key); }
     for (const [key, c] of [...this.staged]) if (c.night !== night) { this._unstage(key); }
     this.busy = this._staleKeys(true).length > 0; // (nothing to swap, e.g. the change was taken back: the stragglers can catch up at once)
@@ -2414,7 +3203,11 @@ class Streamer {
    */
   stageStep(ms = 7, cap = 64) {
     if (this.target === null) return 0;
+    ms = Math.min(ms, this.sliceMs());
     const t0 = performance.now();
+    try { return this._stageStep(ms, cap, t0); } finally { this.tileMs = (this.tileMs || 0) + performance.now() - t0; }
+  }
+  _stageStep(ms, cap, t0) {
     const keys = this._staleKeys(false).slice(0, cap);
     let left = 0;
     for (const key of keys) {
@@ -2424,7 +3217,14 @@ class Streamer {
       if (c && !open()) continue;
       if (performance.now() - t0 > ms) { left++; continue; }
       if (!c) {
-        try { c = buildTile(this.city, key, old.src, this.target, this.W.lite, old.lod); } catch (e) { console.error('rebake failed', key, e); old.night = this.target; continue; }
+        // (in slices: a tile that is not done within `ms` goes on next frame where it stopped)
+        let J = this.sjobs.get(key);
+        if (!J || J.lod !== old.lod || J.base !== old) this.sjobs.set(key, (J = { lod: old.lod, base: old, it: buildTileJob(this.city, key, old.src, this.target, this.W.lite, old.lod, { sliced: true, base: old }) }));
+        let r = null;
+        try { do r = J.it.next(); while (!r.done && performance.now() - t0 <= ms); } catch (e) { console.error('rebake failed', key, e); this.sjobs.delete(key); old.night = this.target; continue; }
+        if (!r.done) { left++; continue; }
+        this.sjobs.delete(key);
+        c = r.value;
         this.staged.set(key, c);
       }
       for (const nc of c.cells) {
@@ -2434,6 +3234,27 @@ class Streamer {
       if (open()) left++;
     }
     return left;
+  }
+  /**
+   * Swap staged tiles for the ones on screen, nearest first, until the geometry they bring to the graphics chip (what they do
+   * not share with the tile they replace) passes `maxBytes`, at least one a call. Returns how many are still staged: the stage
+   * calls it once a frame at the darkest moment of a change of light, then commit() for the rest of the bookkeeping.
+   */
+  commitSome(maxBytes, first = false) {
+    const [mx, my] = this.fm, order = [...this.staged.keys()].map((k) => { const [tx, ty] = k.split('_').map(Number); return [Math.hypot((tx + 0.5) * TILE - mx, (ty + 0.5) * TILE - my), k]; }).sort((a, b) => a[0] - b[0]);
+    let bytes = 0, n = 0;
+    for (const [, key] of order) {
+      const c = this.staged.get(key), old = this.live.get(key);
+      // the first call puts in every close tile (lod 0) whatever the bytes: the near ring changes in one frame, as it did before
+      if (n && bytes >= maxBytes && !(first && c.lod === 0)) { if (first) continue; break; }
+      this.staged.delete(key);
+      if (!old || c.night !== this.target || old.night === c.night) { this._dropStaged(c); continue; }
+      c.g.traverse((o) => { const q = o.geometry; if (q && !(_owners.get(q) > 1)) { for (const a of Object.values(q.attributes)) bytes += a.array.byteLength; if (q.index) bytes += q.index.array.byteLength; } });
+      this._swap(key, old, c);
+      n++;
+    }
+    this._signs = null;
+    return this.staged.size;
   }
   /** Does the staged tile still lack detailed fronts that the one on screen shows? */
   _open(old, c) { return c.cells.some((nc) => { const oc = old.cells.find((q) => q.ci === nc.ci); return oc && oc.detail && !nc.detail; }); }
@@ -2453,7 +3274,7 @@ class Streamer {
     placeTile(c, this.W.frame);
     this.group.add(c.g); this.group.remove(old.g);
     this.live.set(key, c);
-    _built.set(key, c); _byNum.set(c.num, c);
+    _built.set(key, c); _byNum.set(c.num, c); joinTile(c);
     old.dispose();
   }
   /**
@@ -2461,7 +3282,20 @@ class Streamer {
    * tile at a time, whenever there is a moment: near tiles with their detailed fronts, each swapped when it is complete; far ones at once.
    */
   _lazy(now) {
-    if (this.busy || now - this.lazyT < 120) return;
+    if (this.busy) return;
+    const LJ = this.lazyJob;
+    if (LJ) {
+      // a far tile of the old light, in slices of 4 ms a frame (it used to be built in one piece)
+      let r = null;
+      try { do r = LJ.it.next(); while (!r.done && performance.now() - now < 4); } catch (e) { this.lazyJob = null; const o = this.live.get(LJ.key); if (o) o.night = this.target; console.error('rebake failed', LJ.key, e); return; }
+      if (!r.done) return;
+      this.lazyJob = null;
+      const old = this.live.get(LJ.key);
+      if (!old || old.night === this.target || old.lod !== LJ.lod || r.value.night !== this.target) { r.value.dispose(); return; }
+      this._swap(LJ.key, old, r.value);
+      return;
+    }
+    if (now - this.lazyT < 120) return;
     this.lazyT = now;
     if (this._staleKeys(false).length) {
       this.stageStep(5, 3);
@@ -2476,7 +3310,8 @@ class Streamer {
     const key = this._staleKeys(true)[0];
     if (!key) { this.target = null; return; } // everything on screen is baked the new way: nothing more to watch
     const old = this.live.get(key);
-    try { this._swap(key, old, buildTile(this.city, key, old.src, this.target, this.W.lite, old.lod)); } catch (e) { old.night = this.target; console.error('rebake failed', key, e); }
+    this.lazyJob = { key, lod: old.lod, it: buildTileJob(this.city, key, old.src, this.target, this.W.lite, old.lod, { sliced: true, base: old }) };
+    this._lazy(now); // (its first slice now)
   }
   /** The shop signs of the detailed fronts on screen, in scene coordinates. */
   signs() {
@@ -2492,7 +3327,10 @@ class Streamer {
   /** Leave the scene. The tiles themselves stay in memory for the next street. */
   dispose() {
     this.dead = true;
+    this.sjobs.clear(); this.lazyJob = null; // (half-built tiles: never registered, nothing of them on the GPU)
+    for (const [k, J] of _jobs) if (!J.world) _jobs.delete(k); // (a street being built keeps its corridor's)
     for (const key of [...this.staged.keys()]) this._unstage(key);
+    _handover = new Set(this.live.keys()); // for the next street's streamer, if a focus shift starts one right now (trimTiles forgets it)
     for (const key of [...this.live.keys()]) this._detach(key);
     this.ready.clear();
     if (_stream === this) _stream = null;

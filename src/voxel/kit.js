@@ -76,6 +76,7 @@ export function disposeTree(o) {
 
 // ---------------------------------------------------------------- Vox builder
 const _c = new THREE.Color();
+const _cols = new Map(); // colour string -> [r, g, b] as Color.set leaves them (working space)
 const FACES = [
   // each: 4 corner selectors (0 = min, 1 = max per axis) + normal
   [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 0]],
@@ -143,7 +144,17 @@ export class Vox {
   /** vary: random lightness jitter (0..1) to give flat colours a hand-placed feel. */
   box(x, y, z, w, h, d, color, vary = 0) {
     if (this.n + 24 > this.cap) this._grow();
-    _c.set(color);
+    // a colour string is parsed once (three's setStyle, then the colour-space conversion): later boxes take the same r, g, b
+    if (typeof color === 'string') {
+      const q = _cols.get(color);
+      if (q) { _c.r = q[0]; _c.g = q[1]; _c.b = q[2]; }
+      else {
+        // (a string three cannot read leaves the colour as it was: then it is not cached, and the box keeps that colour as before)
+        const pr = _c.r, pg = _c.g, pb = _c.b;
+        _c.r = NaN; _c.set(color);
+        if (Number.isNaN(_c.r)) { _c.r = pr; _c.g = pg; _c.b = pb; } else if (_cols.size < 8192) _cols.set(color, [_c.r, _c.g, _c.b]);
+      }
+    } else _c.set(color);
     if (vary) _c.multiplyScalar(1 + (this._rand() * 2 - 1) * vary);
     const X0 = x - w / 2, X1 = x + w / 2, Y1 = y + h, Z0 = z - d / 2, Z1 = z + d / 2;
     const T = this.T, B = this.B, pos = this.pos, nor = this.nor, col = this.col, tag = this.tag, idx = this.idx;

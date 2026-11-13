@@ -2,7 +2,7 @@
 // gloating with his eyes shut while a cyber cop on a bike rides up behind his back.
 // Storyboard: storyboards/phishing.md. Every B(...) below is one beat of it, with who must be on screen.
 import * as THREE from 'three';
-import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT } from '../kit.js';
+import { wait, tween, all, race, waitUntil, ease, clamp, lerp, TAU, sculpt, piece, MAT, disposeTree } from '../kit.js';
 import { makePerson, makeDog, makeCat, makeBird, item } from '../cast.js';
 import { makeCar, makeBike, makeScooter } from '../props.js';
 import * as S from '../setting.js';
@@ -184,7 +184,7 @@ export default function (T) {
         ctx.fx.cash(hx, 1.2, hz, 8, 2, 4);
         const wad1 = R.add(item.wad()); wad1.scale.setScalar(2); wad1.position.set(hx, 1.0, hz);
         yield* arc(wad1, hx + 0.42, 0.9, dz - fz * 0.05, 0.6, 0.45, 3);
-        hk.armL.remove(w2);
+        hk.armL.remove(w2); disposeTree(w2); // (the wallet on the desk is a fresh one: this one is gone for good)
         const dw = R.add(item.wallet()); dw.scale.setScalar(2); dw.position.set(hx - 0.42, 0.9, dz);
         ctx.sfx('kaching');
         hk.arms = 'count';

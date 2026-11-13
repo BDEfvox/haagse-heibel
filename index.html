@@ -69,9 +69,18 @@
             <span id="news"></span>
             <span class="count">SHENANIGANS <b id="count">000</b></span>
           </div>
+          <button id="btn-walk" class="btn" type="button" aria-pressed="false" disabled title="Put a walker on the street where the camera looks">🚶 Walk</button>
+          <div id="walk-stick" role="group" aria-label="Walking stick: drag the knob to walk, past the rim to run" hidden><i></i></div>
+          <div id="walk-msg" role="status" aria-live="polite"></div>
           <div id="hud-btns">
-            <button id="btn-follow" class="btn hot" hidden>🎬 Follow the action</button>
+            <button id="btn-follow" class="btn hot" aria-pressed="true" aria-label="Follow the action" hidden>🎬 Follow<span class="more"> the action</span></button>
             <button id="btn-next" class="btn">🎲 Next street</button>
+          </div>
+          <div id="cam-pad" role="group" aria-label="Turn and tilt the camera">
+            <button type="button" data-az="1" aria-label="Turn left" title="Turn left (Q)">↺</button>
+            <button type="button" data-el="1" aria-label="Higher view" title="Higher view (R)">▲</button>
+            <button type="button" data-el="-1" aria-label="Lower view" title="Lower view (F)">▼</button>
+            <button type="button" data-az="-1" aria-label="Turn right" title="Turn right (E)">↻</button>
           </div>
           <div id="drag-hint"></div>
           <div id="roam">FREE ROAM<small>look around for more heibel</small></div>

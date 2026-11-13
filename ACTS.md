@@ -219,7 +219,7 @@ A person standing on something or flying: set `a.air = true` and `a.g.position.y
 
 ## 5. Acting: `makePerson(rnd, { kind, scale, shirt, pants, hair, hat })`
 
-kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a parody designer tracksuit (HH monogram, green-red sleeve stripe, cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
+kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a teenager in a beige/brown tracksuit (green-red stripe down sleeves and legs, no lettering; cap or hood, pouch, white trainers) whose plain `walk` is a swagger; `harry` is a Hague mullet man (short on top, long at the back, sometimes a moustache, dark jacket with a herring badge, jeans, boots). Skin is random for both. Fields you set (they ease in):
 
 - `a.arms`: `swing` (default) `up` (panic) `carry` `fist` `hold` `wave` `sneak` `spray` `bag` (hand at the shoulder holding a slung sack) `laugh` `point` `shrug` `cheer` `hips` `cover` (hands over head/ears) `push` `drive` `facepalm` `phone` `count` (counting notes) `rub` (rubbing hands) `reach` `drag` `cross` `beg` `stop` (halt hand) `write`
 - `a.mood`: `neutral happy laugh smug sly angry shock scared sad dizzy sleepy focus whistle`; `a.emote('shock', 1.2)` for a passing one.
@@ -228,13 +228,13 @@ kinds: `civ cop robber raccoon kid granny hoodie chef niffo harry`. `niffo` is a
 - `a.squash(0.25)` one bounce of squash and stretch. `a.heading`, `a.face(h)` (instant).
 - `say(ctx, a, 'TEKST', { size, color, dur })`, `yell(ctx, a, 'TEKST', color, size)`; text at a point: `ctx.fx.text('BONK!', at(x, y, z), { size, color })`. Size 20+ is a punchline (the camera nudges to it).
 - Holding: `a.hold(obj)` right hand, `a.hold(obj, 'handL' | 'front' | 'back' | 'head' | 'shoulder')`, `a.drop()` returns it (to put it somewhere else); `R.discard(a)` lets go and frees it for good, for a thing nothing uses again (a new `hold` frees the old thing the same way). `shoulder(a, item.moneybag())` slings a bag and raises the arm.
-- `item.*`: `moneybag(scale)` (the € swag bag) `wad` `crowbar` `torch` `pad` `megaphone` `lollipop` `cuffs` `fries` `balloon(col)` `spray` `wafel` `purse` `tv` `wallet` `ticket` `bomb` `can` `phone` `rod` `cutters` `broom` `nightcap` `bumper` `paper` `radio` `shoe`.
+- `item.*`: `moneybag(scale)` (the € swag bag) `wad` `crowbar` `torch` `pad` `megaphone` `lollipop` `cuffs` `fries` `balloon(col)` `spray` `wafel` `purse` `tv` `wallet` `ticket` `bomb` `can` `phone` (twice real size, glowing screen towards the holder) `rod` `cutters` `broom` `nightcap` `bumper` `paper` `radio` `shoe`.
   Your own props: `sculpt((v) => { v.box(x, yBottom, z, w, h, d, '#colour'); })`, glowing: `sculpt(fn, MAT.glow)`, both: `piece((v, gl) => {...})`.
 - Animals: `makeDog(rnd)`, `makeCat(rnd)`, `makeBird(rnd, 'gull' | 'pigeon')` (`a.fly = true`, move with a tween).
 
 ## 6. Vehicles: `makeCar(rnd, 'car' | 'police' | 'van' | 'taxi', L.night)`, `makeScooter(rnd, [riders])`, `makeFatbike(rnd, [riders])`, `makeBike(rnd)`
 
-`makeFatbike` is an electric fat-bike like the scooter (1.75 m, 4 inch tyres, long bench for two, big round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
+`makeFatbike` is an electric fat-bike like the scooter (1.75 m; drawn larger than life so it reads from far off: tyres 0.60 m across and 0.28 m wide, a battery block in a strong frame colour, a long dark bench for two, tall bars, a 0.46 m round headlight; riders passed in sit on it as part of it, `bike.riders`); for a separate rider use `mount(bike, rider)` (it reads `bike.seatY`).
 
 Enter with `yield* R.enter(car, x, z, 0, { dir: 1 })` (it drives in from out of the frame heading the way you say) then `car.face(E)`. A car is 4.4 m long (`car.len`, `car.wid`). The body sits
 on springs: it **rolls in bends, dives when braking and squats when accelerating by itself** from how you drive it.
