@@ -2626,6 +2626,37 @@ function runJob(it) {
   return r.value;
 }
 const SLICED = { sliced: true }; // (buildTileJob's option for the callers that step it within a time budget)
+// A rebaked tile (buildTileJob with opt.base) shares the parts that are the same by day and by night with the tile it
+// replaces: these count their owners, and the last one frees them (dispose).
+const _owners = new WeakMap();
+const own = (x) => { if (x) _owners.set(x, (_owners.get(x) || 1) + 1); };
+const letGo = (x) => { const n = _owners.get(x) || 1; if (n > 1) { _owners.set(x, n - 1); return false; } _owners.delete(x); return true; };
+/**
+ * A mesh, an instanced mesh or a group of them from `base`, again: a new object on the same geometry and material (counted:
+ * own), its own copy of the instance data, the flags as built (visible), the transform only where one was set (a copy of a
+ * default one would turn its zero rotations into -0).
+ */
+function again(o) {
+  let c;
+  if (o.isInstancedMesh) {
+    c = new THREE.InstancedMesh(o.geometry, o.material, o.count);
+    c.instanceMatrix.copy(o.instanceMatrix);
+    if (o.instanceColor) c.instanceColor = o.instanceColor.clone();
+    if (o.boundingSphere) c.boundingSphere = o.boundingSphere.clone();
+    if (o.boundingBox) c.boundingBox = o.boundingBox.clone();
+  } else if (o.isMesh) c = new THREE.Mesh(o.geometry, o.material);
+  else c = new THREE.Group();
+  c.name = o.name; c.castShadow = o.castShadow; c.receiveShadow = o.receiveShadow; c.renderOrder = o.renderOrder; c.frustumCulled = o.frustumCulled;
+  c.matrixAutoUpdate = o.matrixAutoUpdate; c.layers.mask = o.layers.mask; c.userData = JSON.parse(JSON.stringify(o.userData));
+  if (o.customDepthMaterial) c.customDepthMaterial = o.customDepthMaterial;
+  if (o.position.x || o.position.y || o.position.z) c.position.copy(o.position);
+  if (o.quaternion.x || o.quaternion.y || o.quaternion.z || o.quaternion.w !== 1) c.quaternion.copy(o.quaternion);
+  if (o.scale.x !== 1 || o.scale.y !== 1 || o.scale.z !== 1) c.scale.copy(o.scale);
+  if (o.geometry) own(o.geometry);
+  if (o.material && o.material.map) own(o.material);
+  for (const k of o.children) c.add(again(k));
+  return c;
+}
 /**
  * buildTile as a job: it hands the frame back (a bare `yield`) between its steps (every 16 buildings and parts, every
  * shelter and feature, inside the ground, the furniture with `opt.sliced`, every 4 cells). What it builds does not depend
@@ -2635,14 +2666,20 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   const [tx, ty] = key.split('_').map(Number), ox = tx * TILE, oy = ty * TILE;
   const rnd = makeRng(hashStr('tile|' + key));
   const g = new THREE.Group();
-  const c = [0.5, 1, 2][lod] * (lite ? 2 : 1), n = Math.round(TILE / c), grid = new Grid(0, 0, n, n, c);
+  // opt.base: the same tile (key, data, level, phone or not) built for the other light. Only what differs by day and by night is
+  // built again: the typed buildings, parts, features and barriers (vx/glx) and the furniture. The ground, the grid, the
+  // lamps, the trees, the ordinary buildings and the plain street-front cells are the same, byte for byte, and are taken
+  // over as new objects on base's geometry (see again); the dice are drawn in the same order, so what is built comes out as
+  // a fresh build would (Node: rebake-proof.mjs).
+  const B = opt && opt.base && opt.base.parts && opt.base.key === key && opt.base.src === t && opt.base.lod === lod && opt.base.lite === !!lite ? opt.base : null;
+  const c = [0.5, 1, 2][lod] * (lite ? 2 : 1), n = Math.round(TILE / c), grid = B ? B.grid : new Grid(0, 0, n, n, c);
   // tile data is in decimetres from the tile's south-west corner; the tile's own coordinates run east and south from its north-west corner
   const loc = (e, from) => { const a = new Float32Array(e.length - from); for (let i = from; i + 1 < e.length; i += 2) { a[i - from] = e[i] / 10; a[i - from + 1] = TILE - e[i + 1] / 10; } return a; };
   const mt = (gx, gz) => [ox + gx, oy + TILE - gz];
   const gnd = (t.g || []).map((e) => ({ cls: e[0], area: e[1], rings: e.slice(2).map((r) => loc(r, 0)) }));
   const roads = (t.r || []).map((e) => ({ cls: e[0], w: e[1] / 10, name: e[2] >= 0 && t.n ? t.n[e[2]] : '', flags: e[3], a: loc(e, 4) }));
   const rails = (t.l || []).map((e) => ({ kind: e[0], flags: e[1], a: loc(e, 2) }));
-  paintBase(city, grid, mt, gnd, roads);
+  if (!B) paintBase(city, grid, mt, gnd, roads);
   yield;
   const v = new Vox(rnd.int(1, 9999), true), gl = new Vox(rnd.int(1, 9999), true), flats = [];
   // buildings that are something in particular (a church, a fuel station, a landmark with its own shape) and the things
@@ -2653,7 +2690,8 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   // store blocks (storeFronts) are plain blocks at their real height from afar and shop fronts from near; a retail building
   // that found no street to front on stays the supermarket it was. Asked at every level of detail, so nothing changes shape.
   const stores = t.bt && t.bt.some((x, bi) => isStore(t, bi)) ? F || frontsOf(key, t) : null;
-  const occB = [], plainLater = [];
+  const occB = [], plainLater = [], seenCell = B ? new Set() : null;
+  let mainCells = 0;
   const oneBuilding = (e, bi) => {
     const flat = loc(e, 3), ring = [];
     flats.push(flat);
@@ -2673,7 +2711,7 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
       // vx/glx and hand it back (the jitter dice, the tag, the frame), so everything drawn into vx/glx after it comes out
       // as it did; it gets dice of its own (a fresh lookOf), so this building's own look is the one an untyped one gets
       shadowTyped(vx, glx, b, mapped, lookOf(key, bi, b), night, lod);
-      plainLater.push({ b, look, bi });
+      if (!B) plainLater.push({ b, look, bi });
       return;
     }
     if (sp || (type && TYPED.has(type) && !(stores && isStore(t, bi) && stores.byB.has(bi)))) {
@@ -2689,12 +2727,13 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
     // buildings with a street front go into a mesh per 64 m cell: near the camera that cell swaps to the detailed fronts
     if (cellVox && F.byB.has(bi)) {
       const ci = cellOf(b.o.cx, b.o.cz);
+      if (B) { if (!seenCell.has(ci)) { seenCell.add(ci); rnd.int(1, 9999); rnd.int(1, 9999); } return; } // (its cell is base's: the cell's two dice only)
       let cv = cellVox.get(ci);
-      if (!cv) cellVox.set(ci, (cv = { v: new Vox(rnd.int(1, 9999), true), gl: new Vox(rnd.int(1, 9999), true) }));
+      if (!cv) { cellVox.set(ci, (cv = { v: new Vox(rnd.int(1, 9999), true), gl: new Vox(rnd.int(1, 9999), true) })); mainCells++; }
       drawGeneric(cv.v, cv.gl, b, look, night, false);
       return;
     }
-    drawGeneric(v, gl, b, look, night, lod === 2);
+    if (!B) drawGeneric(v, gl, b, look, night, lod === 2);
   };
   { const TB = t.b || []; for (let bi = 0; bi < TB.length; bi++) { if (bi && !(bi & 15)) yield; oneBuilding(TB[bi], bi); } }
   // the buildings typed as a tower or a windmill that are not one, as ordinary buildings: after all the others, so no
@@ -2725,7 +2764,7 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   { const TQ = t.q || []; for (let qi = 0; qi < TQ.length; qi++) { if (qi && !(qi & 15)) yield; onePart(TQ[qi], qi); } }
   // the lamps of this tile: the crowd stands its posts there and the ground gets their pools of light (a pure function of
   // the tile's data, worked out here because the shelters keep clear of the posts)
-  const lamps = lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
+  const lamps = B ? B.lamps : lampsOf(t, { roads, rails, flats, water: gnd.filter((q) => q.cls === 1 && q.rings[0]).map((q) => q.rings[0]), trees: loc(t.t || [], 0), ox, oy, loc });
   // the map's stop shelters: where each stands and which way it looks (the same for furnish.js below; see shelterPlaces)
   yield;
   const shel = lod < 2 ? yield* shelterJob(city, key, t, gnd, roads, rails, flats, mt, lamps) : null;
@@ -2763,25 +2802,29 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
     vx.setT(); vx.setW(0);
   }
   yield;
-  paintTop(grid, rails, flats);
-  const G = yield* buildGroundJob(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
+  if (!B) paintTop(grid, rails, flats);
+  const G = B ? B.parts.G : yield* buildGroundJob(city, grid, { mt, gs: [4, 8, 16][lod] * (lite && lod === 0 ? 2 : 1), lamps });
   yield;
-  g.add(...G.meshes);
+  if (B) { for (const m of G.meshes) g.add(again(m)); own(G.tex); own(G.pool); } else g.add(...G.meshes);
   v.setT(); gl.setT();
   // buildings are lifted onto the terrain by the shader and may stick out of the tile: give them a generous bounding sphere
   const roomy = (m) => { m.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(TILE / 2, 30, TILE / 2), 240); return m; };
-  if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add(m); }
-  if (!gl.empty) g.add(roomy(new THREE.Mesh(gl.geometry(), CUTT.glow)));
+  let vM = null, glM = null;
+  if (B) { if (B.parts.v) g.add((vM = again(B.parts.v))); if (B.parts.gl) g.add((glM = again(B.parts.gl))); }
+  else {
+    if (!v.empty) { const m = roomy(v.mesh(CUTT.solid)); m.customDepthMaterial = CUTT.depth; g.add((vM = m)); }
+    if (!gl.empty) g.add((glM = roomy(new THREE.Mesh(gl.geometry(), CUTT.glow))));
+  }
   vx.setB(); glx.setB();
   if (!vx.empty) { const m = roomy(vx.mesh(CUT.solid)); m.customDepthMaterial = CUT.depth; g.add(m); }
   if (!glx.empty) g.add(roomy(new THREE.Mesh(glx.geometry(), CUT.glow)));
   yield;
   // trees: the mapped ones, plus woods and a sprinkle on grass. Their own dice, so they stand the same at every level of detail
   const tr = makeRng(hashStr('trees|' + key));
-  const pts = [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
+  const pts = B ? B.trees : [], ok = mask(C.LAND, C.GRASS, C.FOREST, C.DUNE, C.SAND, C.FARM, C.PLAZA, C.WALK, C.PARKING, C.FOOT, C.DIRT, C.PITCH, C.CURB);
   const push = (gx, gz, size) => { if (ok[grid.get(gx, gz)]) pts.push(gx, gz, size); };
-  if (t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, tr.range(1.35, 1.95));
-  for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
+  if (!B && t.t) for (let i = 0; i + 1 < t.t.length; i += 2) push(t.t[i] / 10, TILE - t.t[i + 1] / 10, tr.range(1.35, 1.95));
+  if (!B) for (let z = 2; z < TILE; z += 7) for (let x = 2; x < TILE; x += 7) {
     const jx = x + tr.range(-2.6, 2.6), jz = z + tr.range(-2.6, 2.6), cl = grid.get(jx, jz), r1 = tr(), size = tr();
     if (cl === C.FOREST) { if (r1 < 0.9) push(jx, jz, 1.7 + size * 0.9); }
     else if (cl === C.GRASS) { if (r1 < 0.07) push(jx, jz, 1.3 + size * 0.7); }
@@ -2791,7 +2834,7 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
     const i = Math.min(grid.w - 1, Math.max(0, Math.floor(gx / c))), j = Math.min(grid.h - 1, Math.max(0, Math.floor(gz / c)));
     return city.landAt(ox + gx, oy + TILE - gz) + grid.off[j * grid.w + i];
   };
-  const trees = treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
+  const trees = B ? (B.parts.trees ? again(B.parts.trees) : null) : treeMesh(pts, tr, lod === 2 ? (lite ? 250 : 600) : lite ? 700 : 1800, yAt, CUTT.solid, CUTT.depth, lod === 2);
   if (trees) g.add(trees);
   yield;
   // street furniture: every street has it, placed by the same rules from the tile's own data (see furnish.js)
@@ -2810,7 +2853,8 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   }
   // the cells of buildings with street fronts: their plain version now, the detailed one on demand
   const cells = [];
-  if (cellVox) for (const [ci, cv] of cellVox) {
+  if (B) for (const q of B.cells) { const plain = q.plain.map(again); for (const m of plain) g.add(m); cells.push({ ci: q.ci, cx: q.cx, cz: q.cz, plain, units: q.units, detail: null, job: null }); }
+  else if (cellVox) for (const [ci, cv] of cellVox) {
     if (cells.length && !(cells.length & 3)) yield;
     cv.v.setT(); cv.gl.setT();
     const plain = [], ccx = ((ci % CELLS) + 0.5) * CELL, ccz = (Math.floor(ci / CELLS) + 0.5) * CELL;
@@ -2825,16 +2869,19 @@ function* buildTileJob(city, key, t, night, lite, lod = 1, opt = null) {
   const O = lod === 0 ? buildOcc({ grid, C, buildings: occB, fronts: F, props, cells: tCells, trees: pts, lamps, barriers: t.x }) : null;
   return {
     occ: O ? O.occ : null, spill: O ? O.spill : spillOf(occB, F),
-    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t,
+    key, num: tileNum(tx, ty), lod, g, grid, ox, oy, roads, rails, pois: t.p || [], trees: pts, props, cells, night, lamps, src: t, lite: !!lite,
+    // what a rebake for the other light takes over (opt.base): the same objects by day and by night
+    parts: { G, v: vM, gl: glM, trees, mainCells: B ? B.parts.mainCells : mainCells },
     dispose() {
       for (const cell of cells) { dropJob(cell); if (cell.detail) for (const sg of cell.detail.signs) P.releaseSign(sg.m); }
+      // (a geometry, a textured material or a texture that a rebake shares is freed by its last owner)
       g.traverse((o) => {
-        if (o.geometry) o.geometry.dispose();
+        if (o.geometry && letGo(o.geometry)) o.geometry.dispose();
         if (o.isInstancedMesh) o.dispose();
-        if (o.material && o.material.map) o.material.dispose();
+        if (o.material && o.material.map && letGo(o.material)) o.material.dispose();
       });
-      G.tex.dispose();
-      if (G.pool) G.pool.dispose();
+      if (letGo(G.tex)) G.tex.dispose();
+      if (G.pool && letGo(G.pool)) G.pool.dispose();
     },
   };
 }
@@ -3112,7 +3159,7 @@ class Streamer {
       if (!c) {
         // (in slices: a tile that is not done within `ms` goes on next frame where it stopped)
         let J = this.sjobs.get(key);
-        if (!J || J.lod !== old.lod) this.sjobs.set(key, (J = { lod: old.lod, it: buildTileJob(this.city, key, old.src, this.target, this.W.lite, old.lod, SLICED) }));
+        if (!J || J.lod !== old.lod || J.base !== old) this.sjobs.set(key, (J = { lod: old.lod, base: old, it: buildTileJob(this.city, key, old.src, this.target, this.W.lite, old.lod, { sliced: true, base: old }) }));
         let r = null;
         try { do r = J.it.next(); while (!r.done && performance.now() - t0 <= ms); } catch (e) { console.error('rebake failed', key, e); this.sjobs.delete(key); old.night = this.target; continue; }
         if (!r.done) { left++; continue; }
@@ -3182,7 +3229,7 @@ class Streamer {
     const key = this._staleKeys(true)[0];
     if (!key) { this.target = null; return; } // everything on screen is baked the new way: nothing more to watch
     const old = this.live.get(key);
-    this.lazyJob = { key, lod: old.lod, it: buildTileJob(this.city, key, old.src, this.target, this.W.lite, old.lod, SLICED) };
+    this.lazyJob = { key, lod: old.lod, it: buildTileJob(this.city, key, old.src, this.target, this.W.lite, old.lod, { sliced: true, base: old }) };
     this._lazy(now); // (its first slice now)
   }
   /** The shop signs of the detailed fronts on screen, in scene coordinates. */
